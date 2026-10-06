@@ -50,14 +50,17 @@ generated Java / TypeScript into `src/main/java/org/mtr/core/generated/`,
 All output directories are git-ignored. See [SCHEMA.md](SCHEMA.md) for the schema mini-language.
 
 `setupWebserver` packages the built Angular app into the `WebserverResources` Java class
-served at `/`. This means the website must be built (`cd website && npm run build`) before
-this Gradle task if you want the dashboard bundled into the jar.
+served at `/`. If `website/dist/website/browser` is missing, the build automatically runs
+`npm install` and `npm run build` first (and regenerates `version.ts` plus the TypeScript
+entities); if Node.js is unavailable the build fails with a clear error instead of silently
+producing an empty `WebserverResources`. A website-less jar used to bundle an empty class,
+which broke the dashboard for every mod shading this library — the check exists so that can
+never happen again. `./gradlew buildWebsite` builds the website on its own.
 
 The full pre-release sequence is therefore:
 
 ```bash
-cd website && npm install && npm run build && cd ..
-./gradlew generateSchemaClasses setupWebserver
+./gradlew generateSchemaClasses setupWebserver   # website builds automatically if needed
 ./gradlew clean build
 ```
 

@@ -154,11 +154,72 @@ tasks {
 		}
 	}
 
+	// Ensures the Transport System Map website has been built into website/dist/website/browser.
+	// WebserverSetup.setup (called from the setupWebserver task) embeds every file in that directory into the
+	// generated WebserverResources class. If the directory is missing, an empty WebserverResources is silently
+	// generated and every mod shading this library serves a broken Transport System Map page.
+	fun ensureWebsiteBuilt() {
+		val websiteDir = File(project.rootDir, "website")
+		val distBrowserDir = File(websiteDir, "dist/website/browser")
+		if (File(distBrowserDir, "index.html").exists()) {
+			return
+		}
+
+		println("Transport System Map website build output not found at $distBrowserDir, building it now...")
+		// The website imports the generated version file and TypeScript entities, regenerate them before compiling the Angular app
+		if (!File(websiteDir, "src/version.ts").exists()) {
+			copy {
+				from(File(websiteDir, "version-template.txt"))
+				into(File(websiteDir, "src"))
+				filter(mapOf("tokens" to mapOf("version" to version)), ReplaceTokens::class.java)
+				rename { "version.ts" }
+			}
+		}
+		Generator.generateTypeScript(project, "schema/map", "website/src/app/entity/generated")
+
+		val npmCommand = if (org.gradle.internal.os.OperatingSystem.current().isWindows) "npm.cmd" else "npm"
+		try {
+			project.exec {
+				workingDir(websiteDir)
+				commandLine(npmCommand, "install", "--no-audit", "--no-fund")
+			}
+			project.exec {
+				workingDir(websiteDir)
+				commandLine(npmCommand, "run", "build")
+			}
+		} catch (e: Exception) {
+			throw GradleException(
+				"Failed to build the Transport System Map website. " +
+					"Please install Node.js, then run `npm install` and `npm run build` inside the `website` directory before building Transport-Simulation-Core. " +
+					"Without the built website, the generated WebserverResources is empty and mods shading this library would ship a broken Transport System Map page.",
+				e)
+		}
+		if (!File(distBrowserDir, "index.html").exists()) {
+			throw GradleException(
+				"The Transport System Map website build output is still missing ($distBrowserDir/index.html). " +
+					"Run `npm install` and `npm run build` inside the `website` directory, then build again. " +
+					"Without the built website, the generated WebserverResources is empty and mods shading this library would ship a broken Transport System Map page.")
+		}
+	}
+
+	register("buildWebsite") {
+		group = "build"
+		description = "Builds the Transport System Map website (Angular) so it can be embedded into WebserverResources. Requires Node.js."
+		doLast {
+			ensureWebsiteBuilt()
+		}
+	}
+
 	val setupWebserverTask = register("setupWebserver") {
 		description = "Setup webserver"
 		outputs.file("src/main/java/org/mtr/core/generated/WebserverResources.java")
+		// Always regenerate: a previously generated (possibly empty) WebserverResources.java must never be
+		// considered up-to-date, otherwise a stale class built without the website would silently persist
+		outputs.upToDateWhen { false }
 
 		doLast {
+			// Build the website first (if not already built) so WebserverSetup embeds real resources instead of generating an empty class
+			ensureWebsiteBuilt()
 			WebserverSetup.setup(project.rootDir, "", "core")
 		}
 	}
