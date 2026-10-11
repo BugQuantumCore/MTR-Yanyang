@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-1.20.1:
+  build-1-20-1:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout MTR-YanYang
@@ -51,7 +51,7 @@ jobs:
           path: Minecraft-Transit-Railway/build/release/*.jar
           if-no-files-found: error
 
-  build-1.20.4:
+  build-1-20-4:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout MTR-YanYang
