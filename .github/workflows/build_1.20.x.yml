@@ -1,0 +1,95 @@
+name: Build 1.20.x
+
+on:
+  push:
+    branches: [ '1.20.x' ]
+  pull_request:
+    branches: [ '1.20.x' ]
+  workflow_dispatch:
+
+jobs:
+  build-1.20.1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MTR-YanYang
+        uses: actions/checkout@v4
+        with:
+          path: Minecraft-Transit-Railway
+
+      - name: Checkout Transport-Simulation-Core
+        uses: actions/checkout@v4
+        with:
+          repository: Yanyang-Technology-Group/Transport-Simulation-Core
+          path: Transport-Simulation-Core
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Build (1.20.1)
+        run: |
+          ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
+            -PmodLoader=fabric \
+            -PminecraftVersion=1.20.1
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Upload Artifacts (1.20.1)
+        uses: actions/upload-artifact@v4
+        with:
+          name: YYMTR-fabric-1.20.1
+          path: Minecraft-Transit-Railway/build/release/*.jar
+          if-no-files-found: error
+
+  build-1.20.4:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MTR-YanYang
+        uses: actions/checkout@v4
+        with:
+          path: Minecraft-Transit-Railway
+
+      - name: Checkout Transport-Simulation-Core
+        uses: actions/checkout@v4
+        with:
+          repository: Yanyang-Technology-Group/Transport-Simulation-Core
+          path: Transport-Simulation-Core
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Build (1.20.4)
+        run: |
+          ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
+            -PmodLoader=fabric \
+            -PminecraftVersion=1.20.4
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Upload Artifacts (1.20.4)
+        uses: actions/upload-artifact@v4
+        with:
+          name: YYMTR-fabric-1.20.4
+          path: Minecraft-Transit-Railway/build/release/*.jar
+          if-no-files-found: error

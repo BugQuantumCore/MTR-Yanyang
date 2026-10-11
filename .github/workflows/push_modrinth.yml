@@ -1,0 +1,67 @@
+name: Publish to Modrinth
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-modrinth:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        loader: [ "fab", "for", "nf" ]
+        mc-version: [ "1.20.1", "1.20.4", "1.21.1", "1.21.4" ]
+    steps:
+      - name: Download Release Assets
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ github.event.release.tag_name }}
+          fileName: "YYMTR-${{ matrix.loader }}.*+${{ matrix.mc-version }}_*.jar"
+          out-file-path: "release-artifacts"
+
+      - name: Check file exists
+        id: check
+        run: |
+          if ls release-artifacts/YYMTR-${{ matrix.loader }}.*+${{ matrix.mc-version }}_*.jar 1> /dev/null 2>&1; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Map loader to Modrinth name
+        id: loader
+        if: steps.check.outputs.found == 'true'
+        run: |
+          case "${{ matrix.loader }}" in
+            fab) echo "name=fabric" >> $GITHUB_OUTPUT ;;
+            for) echo "name=forge" >> $GITHUB_OUTPUT ;;
+            nf)  echo "name=neoforge" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Set dependencies
+        id: deps
+        if: steps.check.outputs.found == 'true'
+        run: |
+          case "${{ matrix.loader }}" in
+            fab) echo "deps=fabric-api@*" >> $GITHUB_OUTPUT ;;
+            for) echo "deps=forge@*" >> $GITHUB_OUTPUT ;;
+            nf)  echo "deps=neoforge@*" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Publish to Modrinth
+        if: steps.check.outputs.found == 'true'
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          modrinth-id: "KJKYqhp2"
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          files: "release-artifacts/YYMTR-${{ matrix.loader }}.*+${{ matrix.mc-version }}_*.jar"
+          name: "${{ github.event.release.name }} (${{ matrix.mc-version }} ${{ steps.loader.outputs.name }})"
+          version: "${{ github.event.release.tag_name }}-${{ matrix.mc-version }}-${{ steps.loader.outputs.name }}"
+          version-type: "release"
+          changelog: "${{ github.event.release.body }}"
+          loaders: "${{ steps.loader.outputs.name }}"
+          game-versions: "${{ matrix.mc-version }}"
+          dependencies: "${{ steps.deps.outputs.deps }}"
