@@ -16,12 +16,6 @@ jobs:
         with:
           path: Minecraft-Transit-Railway
 
-      - name: Checkout Transport-Simulation-Core
-        uses: actions/checkout@v4
-        with:
-          repository: Yanyang-Technology-Group/Transport-Simulation-Core
-          path: Transport-Simulation-Core
-
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
@@ -58,12 +52,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: Minecraft-Transit-Railway
-
-      - name: Checkout Transport-Simulation-Core
-        uses: actions/checkout@v4
-        with:
-          repository: Yanyang-Technology-Group/Transport-Simulation-Core
-          path: Transport-Simulation-Core
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4

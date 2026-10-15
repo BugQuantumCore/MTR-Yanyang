@@ -15,10 +15,3 @@ if (modLoader != "forge") include("fabric")
 if (modLoader != "fabric") include("forge")
 
 rootProject.name = "Minecraft-Transit-Railway"
-
-// Only the dependency-free Java 17 compute module is shared with the newer TSC checkout.
-final File pathComputationDirectory = file(providers.gradleProperty("pathComputationDir").getOrElse("../Transport-Simulation-Core/path-computation"))
-if (!new File(pathComputationDirectory, "settings.gradle.kts").isFile()) {
-	throw new GradleException("Missing TSC path-computation module at ${pathComputationDirectory}. Check out Transport-Simulation-Core next to this repository or set -PpathComputationDir=<path>.")
-}
-includeBuild(pathComputationDirectory)

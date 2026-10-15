@@ -10,7 +10,7 @@ This branch's published optimization baseline is Fabric 1.20.1. Build configurat
 
 ## Building Fabric 1.20.4
 
-Run Gradle with JDK 21, with a Java 17 toolchain installed locally. Missing toolchains are not downloaded automatically. Check out `Transport-Simulation-Core` next to this repository as described in the README, or pass `-PpathComputationDir=<path-to-path-computation>`.
+Run Gradle with JDK 21, with a Java 17 toolchain installed locally. Missing toolchains are not downloaded automatically.
 
 ```sh
 ./gradlew :fabric:setupFiles :fabric:test :fabric:build -PmodLoader=fabric -PminecraftVersion=1.20.4
@@ -22,7 +22,7 @@ On PowerShell, quote the entire property argument:
 .\gradlew.bat :fabric:setupFiles :fabric:test :fabric:build '-PmodLoader=fabric' '-PminecraftVersion=1.20.4'
 ```
 
-`modLoader` accepts `fabric`, `forge`, or `all` (the default). Selecting Fabric avoids configuring Forge and downloading its unrelated build dependencies. CI checks out the pinned TSC path-computation dependency inside the workspace.
+`modLoader` accepts `fabric`, `forge`, or `all` (the default). Selecting Fabric avoids configuring Forge and downloading its unrelated build dependencies.
 
 ## Remaining 1.21 migration work
 
@@ -33,6 +33,6 @@ Before enabling either 1.21 target:
 1. Port the version-specific `org.mtr.mapping.holder` and `org.mtr.mapping.mapper` implementations, including changes to networking, item data, registry access, GUI and rendering APIs.
 2. Update the common mapping library's access-widener and mixin generators. The bundled generators contain version-specific code only through 1.20.4; copying or renaming an old mapping jar is not sufficient.
 3. Select matching Fabric API, Yarn, Mod Menu, Jade, WTHIT and Iris dependencies, and verify optional Iris/MAGIC mixins against their actual target class layouts.
-4. Run unit tests and launch both client and dedicated server on each target version; verify rendering, world save/load, packet synchronization and parallel path computation.
+4. Run unit tests and launch both client and dedicated server on each target version; verify rendering, world save/load and packet synchronization.
 
 Forge/NeoForge support is a separate port: some optimization sources currently call Fabric rendering events and Yarn-named Minecraft classes directly. This document does not claim Forge compatibility.

@@ -48,36 +48,47 @@ java {
 	withJavadocJar()
 }
 
-if (project.hasProperty("pathIntegrationTest")) {
+tasks.named("processTestResources") {
+	inputs.property("serverOptimizationTest", project.hasProperty("serverOptimizationTest"))
+}
+
+if (project.hasProperty("serverOptimizationTest")) {
 	loom {
 		mods {
 			mtr { sourceSet sourceSets.main }
-			mtrPathTest { sourceSet sourceSets.test }
+			mtrServerOptimizationTest { sourceSet sourceSets.test }
 		}
 		runs {
-			pathTest {
+			serverOptimizationTest {
 				server()
 				source sourceSets.test
-				runDir "build/path-integration"
-				vmArg "-Dmtr.path.workers=4"
-				vmArg "-Dmtr.path.metrics=true"
+				runDir "build/server-optimization-test"
 			}
 		}
 	}
-	tasks.named("runPathTest", JavaExec) {
+	tasks.named("runServerOptimizationTest", JavaExec) {
 		javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(buildTools.javaLanguageVersion) }
+		if (project.hasProperty("computeBenchmark")) {
+			jvmArgs "-Dmtr.test.computeBenchmark=true"
+		}
+		final File runDirectory = layout.buildDirectory.dir("server-optimization-test").get().asFile
+		final File testMetadata = layout.buildDirectory.file("resources/test/fabric.mod.json").get().asFile
+		doFirst {
+			if (!testMetadata.isFile() || !testMetadata.getText("UTF-8").contains('"id": "mtr_server_optimization_test"')) {
+				throw new GradleException("Server optimization test metadata is missing or stale; expected ${testMetadata}")
+			}
+			delete(new File(runDirectory, "server-optimization-test.ok"))
+		}
+		doLast {
+			final File marker = new File(runDirectory, "server-optimization-test.ok")
+			if (!marker.isFile() || marker.getText("UTF-8") != "MTR_SERVER_OPTIMIZATION_INTEGRATION_OK") {
+				throw new GradleException("The Fabric server exited without completing the server optimization integration assertions")
+			}
+		}
 	}
-}
-
-tasks.register("pathBenchmark", JavaExec) {
-	dependsOn testClasses
-	classpath = sourceSets.test.runtimeClasspath
-	mainClass = "org.mtr.mod.data.PathBenchmark"
-	javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(buildTools.javaLanguageVersion) }
-}
-
-processTestResources {
-	rename "mtr-path-test.mod.json", "fabric.mod.json"
+	processTestResources {
+		rename "mtr-server-optimization-test.mod.json", "fabric.mod.json"
+	}
 }
 
 tasks.register("setupWebsiteFiles") {

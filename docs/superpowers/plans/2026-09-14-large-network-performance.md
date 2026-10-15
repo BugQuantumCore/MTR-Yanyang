@@ -3,6 +3,13 @@
 The user approved the preceding analysis and requested implementation. The
 follow-up work is performed entirely by the primary agent; delegation is forbidden.
 
+Status note (2026-10-15): This plan records the earlier rendering and allocation
+work. The separately added server-side parallel path integration, recorded in
+MTR commit `f22d8ff` and TSC commit `3ab979e`, was removed from the current source
+because it felt slower in practice. The historical checklist and measurements
+below remain records of that earlier work; they do not describe a currently
+supported path-computation feature or a current TSC path-computation dependency.
+
 ## Objective and Compatibility
 
 The user confirmed Minecraft 1.20.1 Fabric as the only build target during
