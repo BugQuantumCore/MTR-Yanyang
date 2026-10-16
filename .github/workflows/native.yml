@@ -70,15 +70,58 @@ jobs:
           distribution: 'temurin'
 
       - name: Configure
-        # JAVA_HOME is passed explicitly because FindJNI's own discovery misses a JDK bundle
-        # on macOS and does not check include/darwin; CMakeLists.txt also searches JAVA_HOME
-        # directly for the same reason. The verification step below reports whether the
-        # bridge was enabled, rather than a shell test here deciding it: a configure that
-        # succeeds but produces no shared library is reported there with the paths it checked.
-        run: >
-          cmake -S native -B native/build
-          -DCMAKE_BUILD_TYPE=Release
-          -DWROBJ_BUILD_TESTS=ON
+        # The output is written to a file as well as to the console, because the Actions log for
+        # a failed job needs an authenticated token to read while an artifact does not. The
+        # JNI discovery reports which JDK root it used, and that line is the one that matters
+        # when the shared library turns out to be missing.
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S native -B native/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWROBJ_BUILD_TESTS=ON 2>&1 | tee native-configure.log
+          grep -E "wrobj:|JNI" native-configure.log || true
+
+      - name: Collect the diagnostic
+        # Always runs, so it is present even when the build or the verification fails.
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "platform: ${{ matrix.name }}"
+            echo "expected library: native/build/${{ matrix.library }}"
+            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+            echo
+            echo "--- cmake configure log ---"
+            cat native-configure.log 2>/dev/null || echo "(no configure log)"
+            echo
+            echo "--- java ---"
+            command -v java && java -version 2>&1 | head -n 3
+            echo
+            echo "--- jni.h locations ---"
+            for dir in "${JAVA_HOME:-/nonexistent}/include" "${JAVA_HOME:-/nonexistent}/include/darwin" \
+                       "${JAVA_HOME:-/nonexistent}/include/linux"; do
+              [ -f "$dir/jni.h" ] && echo "FOUND $dir"
+            done
+            ls -d /usr/lib/jvm/* 2>/dev/null
+            echo
+            echo "--- build root ---"
+            ls -la native/build 2>&1 | head -n 40
+            echo
+            echo "--- anything named wrobj ---"
+            find native/build -name '*wrobj*' 2>/dev/null | head -n 20
+          } > "native-diagnostic-${{ matrix.platform }}.txt" 2>&1
+          cat "native-diagnostic-${{ matrix.platform }}.txt"
+
+      - name: Upload the diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-diagnostic-${{ matrix.platform }}
+          path: native-diagnostic-${{ matrix.platform }}.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build
         run: cmake --build native/build --config Release --parallel
