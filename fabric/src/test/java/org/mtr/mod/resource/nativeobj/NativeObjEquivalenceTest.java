@@ -626,6 +626,16 @@ public class NativeObjEquivalenceTest {
 	 * rotations each in their own pass, then the scale (whose non-uniform branch corrects the
 	 * normals), then the mirror (whose odd-parity branch reverses the winding).</p>
 	 */
+	/**
+	 * Applies a schema-level placement transform to a mesh.
+	 *
+	 * <p>The rotations go through {@code RawMesh.applyRotation}, which is
+	 * {@code Vector3f.rotateAxis(Math.toRadians(angle), axis)} - an axis-angle rotation per
+	 * vertex, not a matrix multiply. That matters for exactness: a matrix path
+	 * ({@code Matrix4f.rotateY} then {@code transformPosition}) reaches the same place
+	 * arithmetically but not bit for bit, and the placements case is currently sensitive at the
+	 * one-bit level, so this has to stay on the axis-angle path the native side also uses.</p>
+	 */
 	private static void applyTransform(org.mtr.mapping.render.model.RawMesh mesh,
 			double[] translation, double[] rotation, double[] scale, boolean[] mirror) {
 		mesh.applyTranslation((float) translation[0], (float) translation[1], (float) translation[2]);
