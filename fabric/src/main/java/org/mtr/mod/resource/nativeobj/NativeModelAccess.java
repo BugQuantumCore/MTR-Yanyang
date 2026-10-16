@@ -135,10 +135,12 @@ public final class NativeModelAccess {
 			indexBufferGetter = arrayLookup.findGetter(
 					VertexArray.class, "indexBuffer", IndexBuffer.class);
 
-			final MethodHandles.Lookup indexLookup = MethodHandles.privateLookupIn(
-					IndexBuffer.class, MethodHandles.lookup());
-			indexBufferVertexCountGetter = indexLookup.findGetter(
-					IndexBuffer.class, "vertexCount", int.class);
+			// IndexBuffer exposes getVertexCount() publicly, so the private field does not have to be
+			// reached at all. Preferring a published accessor over a field lookup matters in a chain
+			// where every failure is silent: an accessor is the part of the class other code depends
+			// on and is therefore the part least likely to be renamed out from under this.
+			indexBufferVertexCountGetter = MethodHandles.publicLookup().findVirtual(
+					IndexBuffer.class, "getVertexCount", MethodType.methodType(int.class));
 
 			// The renderer's shader manager is private and its methods are public, so the
 			// lookup only has to reach the field.
