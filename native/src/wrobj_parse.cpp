@@ -330,8 +330,46 @@ void readOptionalFloats(const std::vector<std::string_view>& tokens, size_t firs
 // Java-compatible hash and equality
 // ---------------------------------------------------------------------------
 
+/// Java Float.floatToIntBits: the raw IEEE-754 bits, with NaN canonicalised.
+///
+/// Declared before floatEqualsJava because that comparison is defined in terms of these bits.
+/// The -0.0 case is the point: its bits differ from +0.0 while C++ == says they are equal.
+static int32_t floatBits(float value) {
+    if (value != value) {
+        return 0x7FC00000;
+    }
+    int32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+/// Java Float.compare(a, b) == 0 for two float fields, compared by bit pattern.
+///
+/// Not the same as C++ operator==, and the difference is load-bearing here. Float.compare orders
+/// -0.0 below +0.0, so the two are *not* equal, while C++ == reports them equal because IEEE 754
+/// says they compare equal. A vertex carrying -0.0 in any component is therefore a distinct
+/// vertex to the JVM and a duplicate to a port using ==.
+///
+/// This is reachable in ordinary use rather than being a corner case: a negative scale multiplies
+/// a coordinate of +0.0 into -0.0. The model-scale-negative case does exactly that with its z
+/// scale of -1, and the JVM kept 12 distinct vertices where an ==-based port kept 8.
+///
+/// Comparing bit patterns reproduces Float.compare exactly, except for NaN, which Java
+/// canonicalises in floatToIntBits and which is handled here the same way.
+static bool floatEqualsJava(float a, float b) {
+    const int32_t bitsA = floatBits(a);
+    const int32_t bitsB = floatBits(b);
+    return bitsA == bitsB;
+}
+
 bool vertexEquals(const Vertex& a, const Vertex& b) {
-    return a.u == b.u && a.v == b.v && a.position == b.position && a.normal == b.normal;
+    return floatEqualsJava(a.u, b.u) && floatEqualsJava(a.v, b.v)
+            && floatEqualsJava(a.position.x, b.position.x)
+            && floatEqualsJava(a.position.y, b.position.y)
+            && floatEqualsJava(a.position.z, b.position.z)
+            && floatEqualsJava(a.normal.x, b.normal.x)
+            && floatEqualsJava(a.normal.y, b.normal.y)
+            && floatEqualsJava(a.normal.z, b.normal.z);
 }
 
 namespace {
