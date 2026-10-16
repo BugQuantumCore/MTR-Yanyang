@@ -431,17 +431,28 @@ actually been built and run, as opposed to what is intended to work:
 | Platform | Built | Tests run | Notes |
 |---|---|---|---|
 | Windows x64 | yes, locally and on CI | 151 + 71 native, 4 JVM | the reference platform for this work |
-| Linux x64 | **not confirmed** | — | fixes for its JNI discovery are in the tree but the CI job has not been scheduled |
-| macOS x64 / arm64 | **not confirmed** | — | as above |
-| Android arm64 | **not confirmed** | — | see below |
+| Linux x64 | **yes** | 151 + 71 native | Ubuntu 24.04, gcc 13, libstdc++ 13, WSL2 |
+| macOS x64 / arm64 | **not confirmed** | — | shares the library-naming fix Linux needed; the CI job has not been scheduled |
+| Android arm64 | **not confirmed** | — | the NDK could not be downloaded here; see below |
 
 "Not confirmed" means the code is written and committed but has never been compiled on the
-platform. Two defects of exactly the kind that fails only there were found by inspection
-rather than by CI: `M_PI`, which is a POSIX extension that one platform's headers happen
-to expose, and four translation units relying on MSVC's headers to include `<cmath>`,
-`<vector>` and `<string>` on their behalf. Both are fixed. That the class existed at all
-twice is the argument for treating this table as the honest state rather than a to-do
-list.
+platform. Three defects of exactly the kind that fails only there were found by inspection
+or by building on Linux rather than by CI:
+
+- `M_PI`, a POSIX extension that one platform's headers happen to expose and another's do
+  not. Replaced with a spelled-out constant.
+- Four translation units relying on MSVC's headers to include `<cmath>`, `<vector>` and
+  `<string>` on their behalf. libstdc++ does not do that.
+- The shared library name. `CMakeLists` sets `PREFIX ""`, so the artefacts are `wrobj.so`
+  and `wrobj.dylib`, while `NativeObjPipeline` looked for `libwrobj.so` and the workflow
+  verified the same prefixed names. On Linux that meant a successful build reported as a
+  missing artefact, and a mod that would silently fall back to the Java pipeline.
+  Windows hid it because `wrobj.dll` has no prefix.
+
+The Linux build is reproducible with `native/tools/build-linux.sh`, which configures,
+builds, runs ctest and prints both assertion counts. `build-linux-jni.sh` additionally
+installs a JDK when one is missing, so the JNI bridge and the JDK discovery are exercised
+too.
 
 ### Android
 
@@ -454,6 +465,10 @@ cmake -S native -B native/build-android \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
   -DANDROID_STL=c++_static -DWROBJ_BUILD_TESTS=OFF
 ```
+
+The NDK could not be fetched from this machine - `dl.google.com` answers a HEAD request but
+the transfer does not complete - so this cross build has not been run. `native/tools/build-android.sh`
+performs it and is expected to work; only the network was unavailable.
 
 Three things make it different from the desktop targets:
 
