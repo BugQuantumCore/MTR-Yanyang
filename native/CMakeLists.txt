@@ -181,15 +181,40 @@ endif()
 # The Android NDK does not register with CMake's JNI find module, but it ships the headers
 # in its sysroot. Without this the cross build would silently produce no shared library,
 # which the packaging step would then report as a missing artefact.
+#
+# The sysroot is located by globbing rather than by interpolating ANDROID_HOST_TAG: that
+# variable is set by some NDK toolchain files and not others, and when it is unset the
+# interpolation silently yields a path containing an empty component, which then simply does
+# not exist. Globbing for jni.h under the NDK finds the headers whichever host tag is in use.
 if(ANDROID AND NOT JNI_FOUND)
-    set(_wrobj_android_jni_include
-            "${ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/include")
-    if(EXISTS "${_wrobj_android_jni_include}/jni.h")
+    set(_wrobj_android_roots "")
+    if(CMAKE_SYSROOT)
+        list(APPEND _wrobj_android_roots "${CMAKE_SYSROOT}/usr/include")
+    endif()
+    if(ANDROID_NDK AND ANDROID_HOST_TAG)
+        list(APPEND _wrobj_android_roots
+                "${ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/include")
+    endif()
+    if(ANDROID_NDK)
+        file(GLOB _wrobj_android_globbed
+                "${ANDROID_NDK}/toolchains/llvm/prebuilt/*/sysroot/usr/include")
+        list(APPEND _wrobj_android_roots ${_wrobj_android_globbed})
+    endif()
+
+    set(_wrobj_android_jni_include "")
+    foreach(_root IN LISTS _wrobj_android_roots)
+        if(EXISTS "${_root}/jni.h")
+            set(_wrobj_android_jni_include "${_root}")
+            break()
+        endif()
+    endforeach()
+
+    if(_wrobj_android_jni_include)
         set(JNI_FOUND TRUE)
         set(JNI_INCLUDE_DIRS "${_wrobj_android_jni_include}")
         message(STATUS "wrobj: using the NDK's JNI headers at ${_wrobj_android_jni_include}")
     else()
-        message(STATUS "wrobj: the NDK's JNI headers were not found at ${_wrobj_android_jni_include}")
+        message(STATUS "wrobj: no JNI headers in the NDK; searched: ${_wrobj_android_roots}")
     endif()
 endif()
 
@@ -203,13 +228,16 @@ if(JNI_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     if(ANDROID)
-        # Android has no libstdc++ shared object to link against: the platform ships only
-        # the C runtime, so the C++ runtime has to be inside the library or the loader will
-        # refuse it with an unresolved symbol. This is the standard recipe for an NDK shared
-        # library and it is also why the tests are not built for Android by default.
-        target_link_options(wrobj PRIVATE
-                "-Wl,-z,max-page-size=16384"
-                "-static-libstdc++")
+        # Android has no libstdc++ shared object to link against: the platform ships only the
+        # C runtime, so the C++ runtime has to be inside the library or the loader refuses it
+        # with an unresolved symbol. The runtime is selected with -DANDROID_STL=c++_static at
+        # configure time, which is the NDK's own mechanism. -static-libstdc++ is deliberately
+        # NOT passed as well: the NDK toolchain already decides how to link the runtime, and a
+        # second instruction can conflict with that choice.
+        #
+        # -Wl,-z,max-page-size=16384 is required for Android 15 and later on 16 KB page
+        # devices, and is harmless on older ones.
+        target_link_options(wrobj PRIVATE "-Wl,-z,max-page-size=16384")
         # The GL calls still go through the host - see wrgl_emit.hpp - so nothing here links
         # GLES. The launcher's JVM already has a binding, and on a translation layer such as
         # gl4ES that binding is what routes to the driver.

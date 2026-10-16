@@ -207,6 +207,12 @@ jobs:
         # linked here - see native/include/wrobj/wrgl_emit.hpp for why the draw path routes
         # GL through the host instead.
         #
+        # ANDROID_STL=c++_static is the NDK's own mechanism for putting the C++ runtime inside
+        # the library. Android ships no libstdc++ shared object, so without this the loader
+        # rejects the library with an unresolved symbol. The STL is selected here rather than
+        # by adding -static-libstdc++ in CMakeLists because the NDK toolchain already decides
+        # how to link the runtime, and passing the flag as well can conflict with that choice.
+        #
         # ANDROID_NDK_LATEST_HOME is provided by the runner image; the fallback covers older
         # images that only set ANDROID_NDK_HOME.
         shell: bash
@@ -218,12 +224,16 @@ jobs:
             exit 1
           fi
           echo "Using NDK at $NDK"
+          echo "--- jni.h in the NDK ---"
+          find "$NDK" -name jni.h -print 2>/dev/null | head -n 5 || true
           cmake -S native -B native/build-android \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
-            -DWROBJ_BUILD_TESTS=OFF
+            -DANDROID_STL=c++_static \
+            -DWROBJ_BUILD_TESTS=OFF 2>&1 | tee native-android-configure.log
+          grep -E "wrobj:" native-android-configure.log || true
 
       - name: Build
         run: cmake --build native/build-android --config Release --parallel
