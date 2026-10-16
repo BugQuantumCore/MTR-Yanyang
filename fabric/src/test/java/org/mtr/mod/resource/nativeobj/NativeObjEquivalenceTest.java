@@ -152,10 +152,33 @@ public class NativeObjEquivalenceTest {
 			}
 		}
 
+		// The whole lists are printed before the first difference is asserted, because the
+		// shape of the divergence is what localises it: a permutation means the vertex order
+		// the faces reference differs, whereas a truncation or a shifted run means the face
+		// sequence itself does.
+		final String referenceIndices = describeIndices(reference.indexData);
+		final String nativeIndices = describeIndices(nativeBuffers.indexData);
+		if (!referenceIndices.equals(nativeIndices)) {
+			System.out.println("### " + label + " reference indices: " + referenceIndices);
+			System.out.println("### " + label + " native indices:    " + nativeIndices);
+		}
+
 		for (int i = 0; i < reference.indexData.length; i += 4) {
 			assertEquals(readInt(reference.indexData, i), readInt(nativeBuffers.indexData, i),
 					label + ": index " + (i / 4));
 		}
+	}
+
+	/** The index buffer as a space-separated list, for divergence reporting. */
+	private static String describeIndices(byte[] indexData) {
+		final StringBuilder builder = new StringBuilder();
+		for (int i = 0; i + 4 <= indexData.length; i += 4) {
+			if (builder.length() > 0) {
+				builder.append(' ');
+			}
+			builder.append(readInt(indexData, i));
+		}
+		return builder.toString();
 	}
 
 	// -----------------------------------------------------------------------

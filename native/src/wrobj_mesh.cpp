@@ -128,10 +128,54 @@ void RawMesh::distinct() {
         }
     }
 
+    // The Java implementation puts the de-duplicated faces into a HashSet and then does
+    // this.faces.addAll(distinctFaces), so the face order that survives is the set's iteration
+    // order rather than the order the faces were added in. That order is decided by
+    // HashMap bucket index and is therefore reproducible, it just is not insertion order.
+    //
+    // This matters because the index buffer is written from this list: getting it wrong keeps
+    // every vertex and every triangle correct while permuting the faces, which is exactly the
+    // symptom the equivalence harness reported on uv-seams (index 6 was 18 against 4, with
+    // byte-identical vertex data). Vertex indices are unaffected, because Java assigns those
+    // inside the forEach above, in input order, before the set is ever consulted.
+    //
+    // Java's HashSet<Face> here holds one element per distinct face. A HashSet is backed by a
+    // HashMap whose table starts at 16 and doubles once size exceeds 0.75 * capacity, so the
+    // capacity is the smallest power of two above 4/3 of the face count. Bucket index is
+    // (hash ^ (hash >>> 16)) & (capacity - 1), and entries within one bucket keep insertion
+    // order, so ordering by bucket index is a stable sort of the insertion-ordered list.
+    const size_t faceTotal = orderedFaceIndices.size();
+    uint32_t tableCapacity = 16;
+    while (faceTotal > static_cast<size_t>(tableCapacity) * 3 / 4) {
+        tableCapacity *= 2;
+    }
+    const uint32_t mask = tableCapacity - 1;
+
+    // Arrays.hashCode(int[]): result = 1; for each element result = 31 * result + element,
+    // with Java's 32-bit wraparound. This is Face.hashCode.
+    const auto bucketOf = [mask](const Face& face) {
+        int32_t result = 1;
+        for (const int32_t index : face.vertices) {
+            result = static_cast<int32_t>(static_cast<uint32_t>(result) * 31U
+                    + static_cast<uint32_t>(index));
+        }
+        const uint32_t spread = static_cast<uint32_t>(result) ^ (static_cast<uint32_t>(result) >> 16);
+        return spread & mask;
+    };
+
+    std::vector<size_t> bucketOrder(faceTotal);
+    for (size_t i = 0; i < faceTotal; i++) {
+        bucketOrder[i] = i;
+    }
+    std::stable_sort(bucketOrder.begin(), bucketOrder.end(),
+            [&](size_t a, size_t b) {
+                return bucketOf(faces[orderedFaceIndices[a]]) < bucketOf(faces[orderedFaceIndices[b]]);
+            });
+
     std::vector<Face> distinctFaces;
-    distinctFaces.reserve(orderedFaceIndices.size());
-    for (const size_t index : orderedFaceIndices) {
-        distinctFaces.push_back(std::move(faces[index]));
+    distinctFaces.reserve(faceTotal);
+    for (const size_t position : bucketOrder) {
+        distinctFaces.push_back(std::move(faces[orderedFaceIndices[position]]));
     }
 
     vertices = std::move(distinctVertices);
