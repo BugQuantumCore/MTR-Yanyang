@@ -92,10 +92,17 @@ if(MSVC)
     target_compile_definitions(wrobj_core PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(wrobj_core PRIVATE -Wall -Wextra -Wpedantic)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # Contracting a*b+c into fma changes the last bit of the result.
-        target_compile_options(wrobj_core PRIVATE -ffp-contract=off)
-    endif()
+    # Contracting a*b+c into a fused multiply-add changes the last bit of the result, and this
+    # library exists to reproduce the JVM's arithmetic bit for bit, so contraction has to be off
+    # everywhere.
+    #
+    # This was guarded to non-Clang compilers, which is exactly backwards: gcc defaults to
+    # -ffp-contract=fast and needs the flag, while clang defaults to -ffp-contract=on and needs
+    # it just as much. Both accept it. macOS is built with AppleClang, so the guard meant the one
+    # platform that could not be tested locally was also the one where every rotation, scale and
+    # normal would have differed from the JVM in the last bit. Windows (MSVC, /fp:precise) and
+    # Linux (gcc) both had it.
+    target_compile_options(wrobj_core PRIVATE -ffp-contract=off)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -250,9 +257,14 @@ if(JNI_FOUND)
         target_compile_definitions(wrobj PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
     else()
         target_compile_options(wrobj PRIVATE -Wall -Wextra)
+        # The core's flag, applied here too. The bridge marshals arrays rather than doing geometry,
+        # but it moves floats across the boundary and there is no reason for the two translation
+        # sets to disagree about contraction.
+        target_compile_options(wrobj PRIVATE -ffp-contract=off)
         if(NOT ANDROID)
             # Not needed on Android, where the C++ runtime is static, and a plain -lm is
-            # required on Linux for the sqrt and cos the model pipeline uses.
+            # required on Linux for the sqrt and cos the model pipeline uses. macOS needs no
+            # flag: these are part of its C library.
             target_link_libraries(wrobj PRIVATE m)
         endif()
     endif()
