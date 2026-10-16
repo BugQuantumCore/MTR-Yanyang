@@ -361,6 +361,17 @@ public class NativeObjEquivalenceTest {
 
 				mesh.validateVertexIndex();
 
+				// Printed immediately after construction, before any placement or transform, so the
+				// reference's own mesh can be compared with what the native builder produces for
+				// the same document. A real mesh shares vertices between the triangles of a quad;
+				// if this already shows one dedicated triple per triangle then the sharing is lost
+				// here, and if it shows sharing then it is lost later, in the placement copies.
+				System.out.println("### ref-source texture='" + resolved + "' "
+						+ mesh.vertices.size() + " vertices " + mesh.faces.size() + " faces");
+				for (final Face debugFace : mesh.faces) {
+					System.out.println("###   src face " + java.util.Arrays.toString(debugFace.vertices));
+				}
+
 				// ObjModel.loadModel rotates every source mesh by 180 degrees about X.
 				mesh.applyRotation(new org.mtr.mapping.holder.Vector3f(1.0F, 0.0F, 0.0F), 180.0F);
 
@@ -438,6 +449,17 @@ public class NativeObjEquivalenceTest {
 				placed.computeIfAbsent(placedKey, k -> new org.mtr.mapping.render.model.RawMesh(
 						new org.mtr.mapping.render.batch.MaterialProperties(k.shaderType, null, k.color)))
 						.append(copy);
+
+				// Printed after each append, so the offsetting that keeps indices valid as
+				// placements accumulate is visible step by step. If the indices here are sequential
+				// triples rather than offset copies of the source faces, the offset is not being
+				// applied and every placement is colliding with the previous one's vertices.
+				final org.mtr.mapping.render.model.RawMesh afterAppend = placed.get(placedKey);
+				System.out.println("###   after append: " + afterAppend.vertices.size()
+						+ " vertices " + afterAppend.faces.size() + " faces");
+				for (final Face debugFace : afterAppend.faces) {
+					System.out.println("###     face " + java.util.Arrays.toString(debugFace.vertices));
+				}
 			}
 		}
 
