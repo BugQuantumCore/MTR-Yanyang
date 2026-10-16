@@ -340,8 +340,23 @@ public class NativeObjEquivalenceTest {
 
 				for (int i = 0; i < renderable.getNumFaces(); i++) {
 					final ObjFace face = renderable.getFace(i);
-					mesh.faces.add(new Face(new int[]{
-							face.getVertexIndex(0), face.getVertexIndex(1), face.getVertexIndex(2)}));
+					// Fan-triangulated rather than truncated to the first three corners. The
+					// renderable Obj still carries polygons, and taking three indices from a quad
+					// silently drops the rest of it: eight six-vertex polygons became eight
+					// triangles here where the native pipeline produced sixteen. That made the two
+					// sides disagree on bucket counts and on the emitted face order, which is what
+					// the placements and two-materials cases were reporting.
+					//
+					// The fan is the same index pattern the native convertToRenderable uses and the
+					// same one Face.triangulate uses, so the two sides agree on vertex order as well
+					// as on the triangle set.
+					final int corners = face.getNumVertices();
+					for (int j = 0; j + 2 < corners; j++) {
+						mesh.faces.add(new Face(new int[]{
+								face.getVertexIndex(0),
+								face.getVertexIndex(j + 1),
+								face.getVertexIndex(j + 2)}));
+					}
 				}
 
 				mesh.validateVertexIndex();
@@ -434,6 +449,16 @@ public class NativeObjEquivalenceTest {
 		for (final Map.Entry<MaterialKey, org.mtr.mapping.render.model.RawMesh> entry : placed.entrySet()) {
 			final org.mtr.mapping.render.model.RawMesh mesh = entry.getValue();
 			mesh.generateNormals();
+			mesh.generateNormals();
+			// The face order going INTO distinct(). This is the one input the native and Java
+			// sides have not been compared on, and it decides everything downstream: Java assigns
+			// vertex indices in this order and then rebuilds the face list from a HashSet, so a
+			// different order here produces a different vertex order and a different emitted
+			// face sequence even when every triangle is present exactly once.
+			System.out.println("### bucket " + buffers.draws.size()
+					+ " texture='" + entry.getKey().texture + "' PRE-distinct: "
+					+ mesh.vertices.size() + " vertices, " + mesh.faces.size() + " faces -> "
+					+ describeFaces(mesh.faces));
 			mesh.distinct();
 			// Printed after the Java distinct() call, so this is the ordering the JVM itself
 			// produced rather than this harness's idea of it. Two independent signals come out of
