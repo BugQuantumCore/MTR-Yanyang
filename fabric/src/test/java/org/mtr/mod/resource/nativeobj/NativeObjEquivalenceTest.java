@@ -219,6 +219,25 @@ public class NativeObjEquivalenceTest {
 		return builder.length() == 0 ? "(none)" : builder.toString();
 	}
 
+	/** One bucket's faces as a list of vertex triples, for divergence reporting. */
+	private static String describeFaces(java.util.List<org.mtr.mapping.render.model.Face> faces) {
+		final StringBuilder builder = new StringBuilder();
+		for (final org.mtr.mapping.render.model.Face face : faces) {
+			if (builder.length() > 0) {
+				builder.append(' ');
+			}
+			builder.append('(');
+			for (int i = 0; i < face.vertices.length; i++) {
+				if (i > 0) {
+					builder.append(',');
+				}
+				builder.append(face.vertices[i]);
+			}
+			builder.append(')');
+		}
+		return builder.toString();
+	}
+
 	/** The index buffer as a space-separated list, for divergence reporting. */
 	private static String describeIndices(byte[] indexData) {	final StringBuilder builder = new StringBuilder();
 		for (int i = 0; i + 4 <= indexData.length; i += 4) {
@@ -416,6 +435,14 @@ public class NativeObjEquivalenceTest {
 			final org.mtr.mapping.render.model.RawMesh mesh = entry.getValue();
 			mesh.generateNormals();
 			mesh.distinct();
+			// Printed after the Java distinct() call, so this is the ordering the JVM itself
+			// produced rather than this harness's idea of it. Two independent signals come out of
+			// it: the face count, which is what the HashSet capacity is derived from, and the
+			// face order, which is the HashSet's iteration order.
+			System.out.println("### bucket " + buffers.draws.size()
+					+ " texture='" + entry.getKey().texture + "'"
+					+ " distinct: " + mesh.vertices.size() + " vertices, "
+					+ mesh.faces.size() + " faces -> " + describeFaces(mesh.faces));
 			// A bucket whose geometry collapsed to nothing contributes no draw and therefore no
 			// key, which is why the key is recorded here rather than when the bucket was
 			// accumulated. The native side derives its key table from the material groups that
