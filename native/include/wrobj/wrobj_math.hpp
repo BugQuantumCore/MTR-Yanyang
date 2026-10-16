@@ -26,6 +26,13 @@
 
 namespace wrobj {
 
+/// JOML's own degrees-to-radians factor, as used by Math.toRadians.
+///
+/// Spelled the same way JOML spells it rather than as a truncated literal, because the value
+/// has to agree bit for bit: Math.toRadians(angle) is angle / 180.0 * PI in double, and a
+/// rounding difference here would show up as a last-bit difference in every rotated vertex.
+inline constexpr double kDegreesToRadians = 0.017453292519943295;
+
 struct Vec3f {
     float x = 0.0F;
     float y = 0.0F;
