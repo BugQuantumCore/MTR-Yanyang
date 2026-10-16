@@ -759,26 +759,8 @@ extern "C" WrObjResult* wr_obj_builder_build(WrObjBuilder* builder) {
     // ObjModel.fromObjModels: generateNormals then distinct, per accumulated
     // material bucket. RawMesh.upload calls distinct() once more; it is a no-op
     // here because the mesh was just de-duplicated.
-    if (std::getenv("WROBJ_TRACE") != nullptr) {
-        std::fprintf(stderr, "TRACE before normals: %zu bucket(s)\n", builder->accumulated.meshes.size());
-    }
     builder->accumulated.generateNormals();
-    if (std::getenv("WROBJ_TRACE") != nullptr) {
-        for (size_t i = 0; i < builder->accumulated.meshes.size(); i++) {
-            const RawMesh& mesh = builder->accumulated.meshes[i];
-            std::fprintf(stderr, "TRACE after normals: bucket %zu %zu vertices %zu faces\n",
-                    i, mesh.vertices.size(), mesh.faces.size());
-        }
-    }
     builder->accumulated.distinct();
-    if (std::getenv("WROBJ_TRACE") != nullptr) {
-        for (size_t i = 0; i < builder->accumulated.meshes.size(); i++) {
-            const RawMesh& mesh = builder->accumulated.meshes[i];
-            std::fprintf(stderr, "TRACE after distinct: bucket %zu %zu vertices %zu faces\n",
-                    i, mesh.vertices.size(), mesh.faces.size());
-        }
-    }
-
     std::vector<uint8_t> vertexBytes;
     std::vector<uint32_t> indexBytes;
     std::vector<WrObjResultDraw> draws;
