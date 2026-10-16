@@ -799,6 +799,8 @@ public class NativeObjEquivalenceTest {
 		int differingVertices = 0;
 		double largestGap = 0.0;
 		String largestAt = "(none)";
+		double largestRawDifference = 0.0;
+		String largestRawAt = "(none)";
 
 		for (int vertex = 0; vertex * VERTEX_STRIDE < reference.length; vertex++) {
 			final int base = vertex * VERTEX_STRIDE;
@@ -819,6 +821,15 @@ public class NativeObjEquivalenceTest {
 					// far below any visible geometry, and the relative term still catches a real
 					// error on a large coordinate.
 					final double difference = Math.abs((double) expected - (double) actual);
+					// The raw difference is reported, and the tolerance only decides the verdict.
+					// Reporting the tolerated value as the gap made every within-tolerance case print
+					// "gap 0.0", which reads as byte-identical and is a different claim: placements and
+					// schema-transform both print 0.0 while differing in 3 and 35 bytes.
+					if (difference > largestRawDifference) {
+						largestRawDifference = difference;
+						largestRawAt = "vertex " + vertex + " offset " + offset + " ("
+								+ expected + " against " + actual + ")";
+					}
 					final double scale = Math.max(Math.abs((double) expected), Math.abs((double) actual));
 					final double gap = difference <= ABSOLUTE_TOLERANCE || scale == 0.0
 							? 0.0 : difference / scale;
@@ -848,7 +859,8 @@ public class NativeObjEquivalenceTest {
 		System.out.println("### " + label + ": " + differingBytes + " of " + reference.length
 				+ " byte(s) differ across " + differingVertices + " of "
 				+ (reference.length / VERTEX_STRIDE) + " vertex/vertices; largest float gap "
-				+ largestGap + " at " + largestAt);
+				+ largestGap + " at " + largestAt + "; largest raw float difference "
+				+ largestRawDifference + " at " + largestRawAt);
 		return new Divergence(largestGap, largestAt);
 	}
 
