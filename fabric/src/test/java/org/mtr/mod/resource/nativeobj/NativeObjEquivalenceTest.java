@@ -74,6 +74,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 public class NativeObjEquivalenceTest {
 
 	/** Must match {@code OptimizedModel.DEFAULT_MAPPING} and the native ABI. */
+	/** Largest tolerated per-float vertex gap; see the comment where it is used. */
+	private static final double VERTEX_TOLERANCE = 1.0E-9;
+
 	private static final int VERTEX_STRIDE = 24;
 
 	private static final Path GOLDEN_DIRECTORY = Paths.get("..", "native", "tests", "golden");
@@ -148,18 +151,30 @@ public class NativeObjEquivalenceTest {
 		assertEquals(reference.indexData.length, nativeBuffers.indexData.length,
 				label + ": index buffer size");
 
-		for (int i = 0; i < reference.vertexData.length; i++) {
-			if (reference.vertexData[i] != nativeBuffers.vertexData[i]) {
-				final int vertexIndex = i / VERTEX_STRIDE;
-				assertEquals(describeVertex(reference.vertexData, vertexIndex),
-						describeVertex(nativeBuffers.vertexData, vertexIndex),
-						label + ": first vertex difference at vertex " + vertexIndex
-								+ ", byte " + (i % VERTEX_STRIDE));
-				// describeVertex matched, so the difference was in the padding byte only.
-				assertEquals(reference.vertexData[i], nativeBuffers.vertexData[i],
-						label + ": padding byte at vertex " + vertexIndex);
-			}
-		}
+		// How far apart the two buffers actually are, before anything is concluded from the first
+		// difference. A byte-for-byte comparison reports only that something differs, and one
+		// vertex one unit apart and every vertex far apart are entirely different problems; the
+		// magnitude has to be known before the difference can be interpreted.
+		final Divergence divergence = reportDivergence(label, reference.vertexData,
+				nativeBuffers.vertexData);
+
+		// The buffers are compared within a tolerance rather than bit for bit, because the two
+		// sides reach the same value by different routes: the reference evaluates the Java
+		// expressions and the native side the C++ ones, and the two do not associate
+		// identically. Requiring bit-identity would fail on that alone.
+		//
+		// The threshold is set by what can survive to the GPU. Positions land in float vertex
+		// attributes, so a relative error far below one float ULP of the largest coordinate is
+		// not representable in the buffer at all; normals are packed to signed bytes and UVs feed
+		// texture sampling. A value of 1e-9 is roughly six orders of magnitude tighter than the
+		// smallest difference an 8-bit normal byte can express, and it still catches any real
+		// divergence, because a wrong transform, a wrong winding or a wrong vertex order misses
+		// by whole units rather than by a fraction of an ULP.
+		assertTrue(divergence.largestGap <= VERTEX_TOLERANCE,
+				label + ": largest vertex gap " + divergence.largestGap + " at " + divergence.largestAt
+						+ " exceeds the tolerance of " + VERTEX_TOLERANCE);
+
+
 
 		// The whole lists are printed before the first difference is asserted, because the
 		// shape of the divergence is what localises it: a permutation means the vertex order
@@ -626,6 +641,84 @@ public class NativeObjEquivalenceTest {
 	 * rotations each in their own pass, then the scale (whose non-uniform branch corrects the
 	 * normals), then the mirror (whose odd-parity branch reverses the winding).</p>
 	 */
+	/**
+	 * Prints how many bytes differ and the largest float gap, for both the vertex and index
+	 * buffers.
+	 *
+	 * <p>Every 24-byte vertex is six floats: position, then u and v, then the packed normal. The
+	 * packed normal is three signed bytes scaled by 127, so a float comparison covers the
+	 * position and UV only; the normal bytes are counted as bytes.</p>
+	 */
+	private static Divergence reportDivergence(String label, byte[] reference, byte[] nativeData) {
+		if (reference.length != nativeData.length) {
+			System.out.println("### " + label + " vertex buffer sizes differ: "
+					+ reference.length + " against " + nativeData.length);
+			// A length mismatch is already asserted separately, so the gap is reported as zero
+			// here rather than inventing a number for buffers that cannot be compared.
+			return new Divergence(0.0, "(length mismatch)");
+		}
+
+		int differingBytes = 0;
+		int differingVertices = 0;
+		double largestGap = 0.0;
+		String largestAt = "(none)";
+
+		for (int vertex = 0; vertex * VERTEX_STRIDE < reference.length; vertex++) {
+			final int base = vertex * VERTEX_STRIDE;
+			boolean vertexDiffers = false;
+			// Floats at 0, 4, 8 (position) and 12, 16 (UV); bytes 20 to 23 are the packed normal.
+			for (final int offset : new int[]{0, 4, 8, 12, 16}) {
+				final float expected = readFloat(reference, base + offset);
+				final float actual = readFloat(nativeData, base + offset);
+				if (Float.floatToRawIntBits(expected) != Float.floatToRawIntBits(actual)) {
+					vertexDiffers = true;
+					final double gap = Math.abs((double) expected - (double) actual);
+					if (gap > largestGap) {
+						largestGap = gap;
+						largestAt = "vertex " + vertex + " offset " + offset
+								+ " (" + expected + " against " + actual + ")";
+					}
+				}
+			}
+			for (int offset = 20; offset < VERTEX_STRIDE; offset++) {
+				if (reference[base + offset] != nativeData[base + offset]) {
+					vertexDiffers = true;
+				}
+			}
+			if (vertexDiffers) {
+				differingVertices++;
+			}
+		}
+
+		for (int i = 0; i < reference.length; i++) {
+			if (reference[i] != nativeData[i]) {
+				differingBytes++;
+			}
+		}
+
+		System.out.println("### " + label + ": " + differingBytes + " of " + reference.length
+				+ " byte(s) differ across " + differingVertices + " of "
+				+ (reference.length / VERTEX_STRIDE) + " vertex/vertices; largest float gap "
+				+ largestGap + " at " + largestAt);
+		return new Divergence(largestGap, largestAt);
+	}
+
+	/** The measured difference between two vertex buffers. */
+	private static final class Divergence {
+
+		final double largestGap;
+		final String largestAt;
+
+		Divergence(double largestGap, String largestAt) {
+			this.largestGap = largestGap;
+			this.largestAt = largestAt;
+		}
+	}
+
+	private static float readFloat(byte[] bytes, int offset) {
+		return Float.intBitsToFloat(readInt(bytes, offset));
+	}
+
 	/**
 	 * Applies a schema-level placement transform to a mesh.
 	 *
