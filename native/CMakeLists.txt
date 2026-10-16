@@ -149,9 +149,17 @@ if(NOT JNI_FOUND)
                 list(APPEND _wrobj_jni_dirs "${_root}/${_sub}")
             endif()
         endforeach()
-        # A JDK bundle on macOS keeps jni_md.h one level below include, under darwin, which the
-        # per-subdirectory probe above already covers; this catches the flat layout too.
-        if(EXISTS "${_root}/include/jni.h" AND DIRECTORY "${_root}/include")
+        # A JDK on Linux and macOS keeps jni.h directly under include and jni_md.h one level
+        # below it, under a per-platform directory. The probe above only matches when both
+        # headers sit in the same directory, so this catches the split layout.
+        #
+        # IS_DIRECTORY, not DIRECTORY: if() has no DIRECTORY keyword, and the invalid form is a
+        # configure-time error rather than a false condition. That error only fired on the
+        # platforms where find_package(JNI) had already failed - Linux and macOS - so Windows
+        # configured and built normally while the other two aborted before creating the shared
+        # library target at all. That is the whole reason the Linux and macOS jobs reported no
+        # native library while passing every test: the tests build without JNI.
+        if(EXISTS "${_root}/include/jni.h" AND IS_DIRECTORY "${_root}/include")
             file(GLOB _wrobj_jni_md "${_root}/include/*/jni_md.h")
             foreach(_md IN LISTS _wrobj_jni_md)
                 get_filename_component(_md_dir "${_md}" DIRECTORY)
