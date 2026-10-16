@@ -235,6 +235,21 @@ void collectKeys(
         wrobj::convertToRenderable(fragment, renderable);
 
         for (const ParsedFace& face : renderable.faces) {
+            // javagl only creates a material group when the document carried a `usemtl`
+            // statement: ObjSplitting.splitByMaterialGroups iterates
+            // obj.getNumMaterialGroups(), and ObjReader never creates that group when no
+            // usemtl was seen. So a face whose material key is empty belongs to no material
+            // group at all and produces no key - an OBJ with no usemtl yields an empty model,
+            // not a model with one unnamed bucket.
+            //
+            // This is not a theoretical difference: ObjModelLoader.loadModel iterates the
+            // result of splitByMaterialGroups, so an empty key here would add a bucket the
+            // Java renderer never produces, and the two would disagree on bucket count and on
+            // the vertex buffer layout.
+            if (face.materialKey.empty()) {
+                continue;
+            }
+
             bool alreadySeen = false;
             for (const KeyEntry& entry : keys) {
                 if (entry.key == face.materialKey) {
@@ -307,9 +322,19 @@ bool buildSourceMeshes(
     wrobj::convertToRenderable(fragment, renderable);
 
     // splitByMaterialGroups: distinct material keys in first-use order.
+    //
+    // A face with an empty material key is skipped for the same reason as in collectKeys:
+    // javagl creates no material group without a `usemtl` statement, so there is no bucket to
+    // put those faces in and the Java renderer drops them. Both walks have to agree on the
+    // resulting key set and its order, because the key metadata below is matched to these
+    // faces by name and the host's handle array is indexed by that order.
     std::vector<std::string> materialKeys;
     std::vector<std::vector<ParsedFace>> facesByMaterial;
     for (const ParsedFace& face : renderable.faces) {
+        if (face.materialKey.empty()) {
+            continue;
+        }
+
         size_t index = 0;
         for (; index < materialKeys.size(); index++) {
             if (materialKeys[index] == face.materialKey) {

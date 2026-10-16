@@ -537,8 +537,14 @@ void testTextureStringNormalisation() {
 
     // A namespaced string keeps its colon, and the shader options on the group name are
     // stripped from the texture side of the key.
+    //
+    // This case carries a `usemtl`, because javagl creates no material group at all without
+    // one: ObjSplitting.splitByMaterialGroups iterates obj.getNumMaterialGroups(), and
+    // ObjReader never creates that group when no usemtl was seen. An OBJ with no usemtl has
+    // no material groups, so ObjModelLoader.loadModel produces an empty mesh list - see
+    // testNoUsemtlYieldsNoKeys, which pins that.
     {
-        const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl _\nf 1 2 3\n";
         WrObjKeyList* keys = wr_obj_keys_load(obj.data(), static_cast<int32_t>(obj.size()),
                 nullptr, 0, 0);
         check(keys != nullptr && keys->count == 1, "a document with no MTL yields one key");
@@ -698,6 +704,7 @@ void testEndToEndGeometry() {
 
     const std::string obj =
             "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+            "usemtl _\n"
             "f 1 2 3\n";
 
     WrObjKeyList* keys = wr_obj_keys_load(obj.data(), static_cast<int32_t>(obj.size()),
@@ -706,8 +713,8 @@ void testEndToEndGeometry() {
     if (keys == nullptr) {
         return;
     }
-    checkEqual(keys->count, int32_t(1), "one implicit key");
-    checkEqual(std::string(keys->entries[0].key), std::string(), "key is the empty default");
+    checkEqual(keys->count, int32_t(1), "one key");
+    checkEqual(std::string(keys->entries[0].key), std::string("_"), "key is the group name");
 
     const int32_t handles[1] = {7};
 
@@ -779,12 +786,62 @@ void testBuildIsDeterministic() {
     check(first == second, "same buffer contents");
 }
 
+/**
+ * Pins the rule that decided a real divergence: no `usemtl` means no material groups.
+ *
+ * <p>javagl's ObjSplitting.splitByMaterialGroups iterates obj.getNumMaterialGroups(), and
+ * ObjReader never creates that group when the document carried no usemtl statement. So an
+ * OBJ with no usemtl has no material groups, ObjModelLoader.loadModel produces an empty mesh
+ * list, and the model renders as nothing. A previous version of the native code synthesised
+ * one unnamed bucket for exactly this case, which made the native and Java paths disagree on
+ * bucket count and on the packed vertex buffer.</p>
+ *
+ * <p>The assertion is on the count rather than on the absence of a crash because zero is the
+ * whole point: one bucket and zero buckets are both "valid-looking" outputs, and only the
+ * count distinguishes them.</p>
+ */
+void testNoUsemtlYieldsNoKeys() {
+    std::cout << "keys: a document with no usemtl has no material groups\n";
+
+    const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+
+    WrObjKeyList* keys = wr_obj_keys_load(obj.data(), static_cast<int32_t>(obj.size()),
+            nullptr, 0, 0);
+    // Null rather than an empty list: the C API reports "no keys" by returning null, which is
+    // why wr_obj_keys_load's contract has to be "null on failure or on an empty result" and
+    // why the Java bridge turns null into a null array rather than into an empty one.
+    check(keys == nullptr, "no usemtl produces no keys at all");
+    wr_obj_keys_free(keys);
+
+    // The builder has nothing to build, so it declines. Returning null is the honest answer:
+    // a builder that produced an empty result would be indistinguishable from a model that
+    // legitimately has no geometry.
+    const int32_t handles[1] = {0};
+    const int32_t colorSet[1] = {0};
+    WrObjBuilder* builder = wr_obj_builder_create(obj.data(), static_cast<int32_t>(obj.size()),
+            nullptr, 0, handles, colorSet, 1, 0, 0);
+    check(builder == nullptr, "a document with no usemtl produces no builder");
+    wr_obj_builder_free(builder);
+
+    // The same document with a usemtl does produce both, which is what makes the assertion
+    // above about the usemtl rather than about some other property of the input.
+    const std::string withMaterial = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl _\nf 1 2 3\n";
+    WrObjKeyList* withKeys = wr_obj_keys_load(withMaterial.data(),
+            static_cast<int32_t>(withMaterial.size()), nullptr, 0, 0);
+    check(withKeys != nullptr && withKeys->count == 1,
+            "the same document with a usemtl produces one key");
+    wr_obj_keys_free(withKeys);
+}
+
 void testSeparateBuildersDoNotShare() {
     std::cout << "api: separate builders stay isolated\n";
 
     // This is the invariant behind the YanYang cross-condition rendering fix: two
     // parts must not accumulate into one buffer.
-    const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    //
+    // The `usemtl` is load-bearing: without one the document has no material groups, so the
+    // builder has nothing to build and returns null. See testNoUsemtlYieldsNoKeys.
+    const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl _\nf 1 2 3\n";
     const int32_t handles[1] = {0};
     const int32_t colorSet[1] = {0};
 
@@ -1100,6 +1157,7 @@ int main(int argc, char** argv) {
     testColorPackingMatchesJvm();
     testEndToEndGeometry();
     testBuildIsDeterministic();
+    testNoUsemtlYieldsNoKeys();
     testSeparateBuildersDoNotShare();
 
     if (argc > 1) {

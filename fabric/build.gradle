@@ -281,3 +281,20 @@ test {
 	useJUnitPlatform()
 	testLogging { showStandardStreams = true }
 }
+
+// Writes the test runtime classpath to a file.
+//
+// The test worker cannot load the test classes through Gradle even though the classes are
+// compiled and the classpath provably contains their output directory, so the suite has to
+// be runnable outside Gradle to be diagnosable. This task is the only reliable way to obtain
+// the exact classpath Loom builds, which mixes the remapped Minecraft jar with the test
+// dependencies.
+tasks.register("dumpTestClasspath") {
+	description = "Writes the test runtime classpath to build/test-classpath.txt."
+	group = "help"
+	doLast {
+		final File out = new File(project.buildDir, "test-classpath.txt")
+		out.text = sourceSets.test.runtimeClasspath.asPath
+		logger.lifecycle("wrgl: wrote {} entries to {}", sourceSets.test.runtimeClasspath.files.size(), out)
+	}
+}
