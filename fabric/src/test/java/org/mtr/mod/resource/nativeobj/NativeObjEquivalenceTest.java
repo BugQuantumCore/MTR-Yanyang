@@ -450,15 +450,19 @@ public class NativeObjEquivalenceTest {
 			final org.mtr.mapping.render.model.RawMesh mesh = entry.getValue();
 			mesh.generateNormals();
 			mesh.generateNormals();
-			// The face order going INTO distinct(). This is the one input the native and Java
-			// sides have not been compared on, and it decides everything downstream: Java assigns
-			// vertex indices in this order and then rebuilds the face list from a HashSet, so a
-			// different order here produces a different vertex order and a different emitted
-			// face sequence even when every triangle is present exactly once.
+			// Printed with the raw index arrays, not a reformatted view, so the numbers are the
+			// ones Face.hashCode actually sees. The order of this list decides everything
+			// downstream: Java assigns vertex indices in it and then rebuilds the face list from
+			// a HashSet, so a different order here produces a different emitted face sequence even
+			// when every triangle is present exactly once.
 			System.out.println("### bucket " + buffers.draws.size()
 					+ " texture='" + entry.getKey().texture + "' PRE-distinct: "
-					+ mesh.vertices.size() + " vertices, " + mesh.faces.size() + " faces -> "
-					+ describeFaces(mesh.faces));
+					+ mesh.vertices.size() + " vertices, " + mesh.faces.size() + " faces");
+			for (final org.mtr.mapping.render.model.Face face : mesh.faces) {
+				System.out.println("###   PRE face " + java.util.Arrays.toString(face.vertices)
+						+ " hashCode=" + face.hashCode()
+						+ " bin16=" + ((face.hashCode() ^ (face.hashCode() >>> 16)) & 15));
+			}
 			mesh.distinct();
 			// Printed after the Java distinct() call, so this is the ordering the JVM itself
 			// produced rather than this harness's idea of it. Two independent signals come out of
