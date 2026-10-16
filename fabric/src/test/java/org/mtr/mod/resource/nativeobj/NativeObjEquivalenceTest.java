@@ -434,6 +434,10 @@ public class NativeObjEquivalenceTest {
 		for (final double[] transform : transforms) {
 			final OptimizedModel.ShaderType shaderType =
 					OptimizedModel.ShaderType.values()[(int) transform[0]];
+			System.out.println("### placement shader=" + shaderType
+					+ " d=(" + transform[1] + "," + transform[2] + "," + transform[3] + ")"
+					+ " flip=" + (transform[4] != 0.0)
+					+ " accumulated=" + accumulated.size());
 			for (final Map.Entry<MaterialKey, org.mtr.mapping.render.model.RawMesh> entry : accumulated.entrySet()) {
 				final MaterialKey key = entry.getKey();
 				final MaterialKey placedKey = key.shaderType == OptimizedModel.ShaderType.CUTOUT
