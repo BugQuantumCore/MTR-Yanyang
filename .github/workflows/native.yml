@@ -102,21 +102,33 @@ jobs:
 
       - name: Verify the library was produced
         # Fail here with the actual directory contents rather than at the upload step with a
-        # path that did not match. Both CMake and CMakeLists.txt pin the output directory to
-        # the build root, so this is a strict check.
+        # path that did not match. The findings also go to the job summary, because the
+        # Actions log for a failed job needs a token to read and the summary does not.
         shell: bash
         run: |
-          set -euo pipefail
-          echo "--- build root ---"
-          ls -la native/build
+          set -uo pipefail
+          {
+            echo "### ${{ matrix.name }}"
+            echo ""
+            echo '```'
+            echo "expected: native/build/${{ matrix.library }}"
+            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+            echo "--- java on PATH ---"
+            command -v java && java -version 2>&1 | head -n 3
+            echo "--- jni.h candidates ---"
+            for dir in "${JAVA_HOME:-/nonexistent}/include" "${JAVA_HOME:-/nonexistent}/include/darwin" \
+                       "${JAVA_HOME:-/nonexistent}/include/linux" /usr/lib/jvm/*/include \
+                       /usr/local/opt/openjdk/include; do
+              [ -f "$dir/jni.h" ] && echo "FOUND $dir"
+            done
+            echo "--- build root ---"
+            ls -la native/build 2>&1 | head -n 40
+            echo "--- anything named wrobj ---"
+            find native/build -name '*wrobj*' 2>/dev/null | head -n 20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ ! -f "native/build/${{ matrix.library }}" ]; then
             echo "expected native/build/${{ matrix.library }} was not produced" >&2
-            echo "--- build root ---"
-            ls -la native/build || true
-            echo "--- anything named wrobj ---"
-            find native/build -name '*wrobj*' -print 2>/dev/null || true
-            echo "--- JAVA_HOME=${JAVA_HOME:-<unset>} ---"
-            find "${JAVA_HOME:-/nonexistent}" -name 'jni.h' -print 2>/dev/null | head -n 5 || true
             exit 1
           fi
           echo "found native/build/${{ matrix.library }}"
