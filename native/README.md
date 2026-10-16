@@ -432,17 +432,22 @@ actually been built and run, as opposed to what is intended to work:
 |---|---|---|---|
 | Windows x64 | yes, locally and on CI | 151 + 71 native, 4 JVM | the reference platform for this work |
 | Linux x64 | **yes** | 151 + 71 native | Ubuntu 24.04, gcc 13, libstdc++ 13, WSL2 |
-| macOS x64 / arm64 | **not confirmed** | — | shares the library-naming fix Linux needed; the CI job has not been scheduled |
-| Android arm64 | **not confirmed** | — | the NDK could not be downloaded here; see below |
+| macOS x64 / arm64 | **not confirmed** | — | two macOS-only defects found by inspection and fixed (library naming, `-ffp-contract`); clang builds clean on Linux as a proxy but macOS itself has not been compiled |
+| Android arm64 | **cross build verified** | — | NDK r26d, clang 17.0.2, `arm64-v8a`; aarch64 `wrobj.so` with a static C++ runtime. Not run on a device |
 
 "Not confirmed" means the code is written and committed but has never been compiled on the
-platform. Three defects of exactly the kind that fails only there were found by inspection
-or by building on Linux rather than by CI:
+platform. Four defects of exactly the kind that fails only on a platform nobody has compiled were
+found by inspection or by building on Linux and Android rather than by CI:
 
 - `M_PI`, a POSIX extension that one platform's headers happen to expose and another's do
   not. Replaced with a spelled-out constant.
 - Four translation units relying on MSVC's headers to include `<cmath>`, `<vector>` and
   `<string>` on their behalf. libstdc++ does not do that.
+- `JNI_VERSION_1_8`, which the JDK's `jni.h` defines and the NDK's does not. Both
+  `JNI_OnLoad` implementations return it, so neither bridge compiled for Android at all.
+- `-ffp-contract=off` was guarded to non-Clang compilers, which is backwards: gcc defaults to
+  `-ffp-contract=fast` and clang to `-ffp-contract=on`, so both need it. macOS is AppleClang,
+  so every rotation, scale and normal there would have differed from the JVM in the last bit.
 - The shared library name. `CMakeLists` sets `PREFIX ""`, so the artefacts are `wrobj.so`
   and `wrobj.dylib`, while `NativeObjPipeline` looked for `libwrobj.so` and the workflow
   verified the same prefixed names. On Linux that meant a successful build reported as a
@@ -466,9 +471,20 @@ cmake -S native -B native/build-android \
   -DANDROID_STL=c++_static -DWROBJ_BUILD_TESTS=OFF
 ```
 
-The NDK could not be fetched from this machine - `dl.google.com` answers a HEAD request but
-the transfer does not complete - so this cross build has not been run. `native/tools/build-android.sh`
-performs it and is expected to work; only the network was unavailable.
+The cross build has been run. NDK r26d, clang 17.0.2, `ANDROID_ABI=arm64-v8a`,
+`ANDROID_STL=c++_static`. It produces `wrobj.so`, 3063592 bytes, reported by `file` as
+`ELF 64-bit LSB shared object, ARM aarch64` with `NEEDED` of `libm.so`, `libdl.so` and
+`libc.so` only. No `libc++` entry is the point of `c++_static`, and no GL library appears
+because the draw path routes every call through the host.
+
+Building it found a defect that would have prevented Android from loading the library at
+all: the NDK's `jni.h` does not define `JNI_VERSION_1_8`, which both `JNI_OnLoad`
+implementations return. A guarded `jni/jni_version_compat.hpp` now supplies it.
+`native/tools/build-android.sh` performs the whole thing; `fetch-ndk.sh` and
+`extract-ndk.sh` fetch and unpack the NDK when `unzip` is unavailable.
+
+What this does not establish is that the library runs on a device. There is no emulator or
+handset here, and the test suites need one.
 
 Three things make it different from the desktop targets:
 
