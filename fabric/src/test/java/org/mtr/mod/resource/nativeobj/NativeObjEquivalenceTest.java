@@ -151,12 +151,20 @@ public class NativeObjEquivalenceTest {
 		// never ran for the one case that fails, which left its vertex data uncharacterised while
 		// the other nine cases were all reporting zero difference. Measuring first means a failure
 		// anywhere below still leaves the magnitude on record.
+		// The vertex-buffer measurement runs before every assertion that could stop the test, not
+		// merely before the per-bucket loop.
+		//
+		// It has to, because this case fails on buffer size: the measurement used to sit after the
+		// size assertions, so it never ran for the one case whose vertex data was in doubt, while
+		// the other nine all reported zero difference. A measurement that only runs when the test
+		// passes is not a measurement.
+		final Divergence divergence = reportDivergence(label, reference.vertexData,
+				nativeBuffers.vertexData);
+
 		assertEquals(reference.vertexData.length, nativeBuffers.vertexData.length,
 				label + ": vertex buffer size");
 		assertEquals(reference.indexData.length, nativeBuffers.indexData.length,
 				label + ": index buffer size");
-		final Divergence divergence = reportDivergence(label, reference.vertexData,
-				nativeBuffers.vertexData);
 
 		for (int i = 0; i < Math.min(reference.draws.size(), nativeBuffers.draws.size()); i++) {
 			assertEquals(reference.draws.get(i).toString(), nativeBuffers.draws.get(i).toString(),
@@ -766,9 +774,25 @@ public class NativeObjEquivalenceTest {
 		if (reference.length != nativeData.length) {
 			System.out.println("### " + label + " vertex buffer sizes differ: "
 					+ reference.length + " against " + nativeData.length);
-			// A length mismatch is already asserted separately, so the gap is reported as zero
-			// here rather than inventing a number for buffers that cannot be compared.
-			return new Divergence(0.0, "(length mismatch)");
+			// Returning here would leave the contents unmeasured, which is how this case went
+			// several rounds with its vertex data never compared: the size assertion fired first
+			// and this branch bailed out silently. The overlapping prefix is compared and
+			// reported, so a size mismatch still says whether the shared region agrees.
+			final int overlap = Math.min(reference.length, nativeData.length);
+			int prefixMismatch = 0;
+			int firstMismatch = -1;
+			for (int i = 0; i < overlap; i++) {
+				if (reference[i] != nativeData[i]) {
+					prefixMismatch++;
+					if (firstMismatch < 0) {
+						firstMismatch = i;
+					}
+				}
+			}
+			System.out.println("### " + label + ": of the first " + overlap + " byte(s), "
+					+ prefixMismatch + " differ; first at byte " + firstMismatch
+					+ ", vertex " + (firstMismatch < 0 ? -1 : firstMismatch / VERTEX_STRIDE));
+			return new Divergence(0.0, "(length mismatch, prefix compared)");
 		}
 
 		int differingBytes = 0;
