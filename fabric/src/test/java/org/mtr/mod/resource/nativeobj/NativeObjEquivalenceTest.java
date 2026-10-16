@@ -268,21 +268,25 @@ public class NativeObjEquivalenceTest {
 						testCase.schemaScale, testCase.schemaMirror);
 
 				final MaterialKey key = new MaterialKey(shaderType, resolved, color);
-				buffers.recordKey(key);
 				accumulated.computeIfAbsent(key, k -> new org.mtr.mapping.render.model.RawMesh(
 						new org.mtr.mapping.render.batch.MaterialProperties(shaderType, null, color)))
 						.append(mesh);
 			});
 		});
 
-		packBuffers(buffers, accumulated, testCase.transforms);
+		// The same rule the loader uses to decide whether a material's own colour is available:
+		// javagl's branch is `!materials.isEmpty()`, where materials is the map built from the
+		// MTL files the OBJ declared. The native side keys its hasColor flag off the identical
+		// condition, so this is the flag that makes the two colour conventions comparable.
+		packBuffers(buffers, accumulated, testCase.transforms,
+				mtlText != null && !mtlText.isEmpty());
 		return buffers;
 	}
 
 	/** Applies the placements, then generates normals, de-duplicates and packs. */
 	private void packBuffers(ModelBuffers buffers,
 			Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> accumulated,
-			List<double[]> transforms) {
+			List<double[]> transforms, boolean hasMtl) {
 		final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> placed = new LinkedHashMap<>();
 
 		for (final double[] transform : transforms) {
@@ -315,14 +319,20 @@ public class NativeObjEquivalenceTest {
 			final org.mtr.mapping.render.model.RawMesh mesh = entry.getValue();
 			mesh.generateNormals();
 			mesh.distinct();
+			// A bucket whose geometry collapsed to nothing contributes no draw and therefore no
+			// key, which is why the key is recorded here rather than when the bucket was
+			// accumulated. The native side derives its key table from the material groups that
+			// survive the same cull, so recording keys at accumulation time would put the two
+			// lists out of step and make every later index comparison meaningless.
 			if (mesh.faces.isEmpty() || mesh.vertices.isEmpty()) {
 				continue;
 			}
 
+			final int keyIndex = buffers.recordKey(entry.getKey(), hasMtl);
 			buffers.draws.add(new DrawRecord(
 					entry.getKey().shaderType.ordinal(),
-					entry.getKey().color == null ? 0xFFFFFFFF : entry.getKey().color,
-					buffers.keys.indexOf(entry.getKey()),
+					ModelBuffers.colourOf(entry.getKey(), hasMtl),
+					keyIndex,
 					vertexOffset, mesh.vertices.size(),
 					indexOffset, mesh.faces.size() * 3));
 
@@ -390,7 +400,13 @@ public class NativeObjEquivalenceTest {
 			lookupKeys[i] = keys[i].textureString + '\u0000' + keys[i].shaderType;
 			// The native key's textureString is already normalised by the native parser, and it
 			// is what the reference side compares against.
-			buffers.keys.add(new KeyRecord(keys[i].shaderType, keys[i].color, keys[i].textureString));
+			//
+			// The colour goes through the same normalisation as the reference side, for the same
+			// reason: hasColor=false means no MTL supplied a colour, and the native bridge reports
+			// the raw field (which is white) in that case. Only an authoritative colour is
+			// compared, so a non-authoritative one is recorded as zero on both sides.
+			buffers.keys.add(new KeyRecord(keys[i].shaderType,
+					keys[i].hasColor ? keys[i].color : 0, keys[i].textureString));
 		}
 
 		// The native handle for a key is its index, so the resolver returns the index and the
@@ -785,13 +801,37 @@ public class NativeObjEquivalenceTest {
 		byte[] vertexData = new byte[0];
 		byte[] indexData = new byte[0];
 
-		void recordKey(MaterialKey key) {
-			if (keys.stream().anyMatch(record -> record.texture.equals(key.texture)
-					&& record.shaderType == key.shaderType.ordinal())) {
-				return;
+		/**
+		 * Records a bucket key and returns its index in {@link #keys}.
+		 *
+		 * <p>Deduplicated on texture and shader type, which is what {@code MaterialProperties}
+		 * compares on this path, so a repeated key returns the existing index rather than
+		 * appending. Returning the index rather than letting the caller use {@code size() - 1}
+		 * is what makes a deduplicated key come out with the right index.</p>
+		 */
+		int recordKey(MaterialKey key, boolean hasMtl) {
+			for (int i = 0; i < keys.size(); i++) {
+				final KeyRecord record = keys.get(i);
+				if (record.texture.equals(key.texture) && record.shaderType == key.shaderType.ordinal()) {
+					return i;
+				}
 			}
-			keys.add(new KeyRecord(key.shaderType.ordinal(),
-					key.color == null ? 0xFFFFFFFF : key.color, key.texture));
+			keys.add(new KeyRecord(key.shaderType.ordinal(), colourOf(key, hasMtl), key.texture));
+			return keys.size() - 1;
+		}
+
+		/**
+		 * The colour a key reports, in the convention the native bridge uses.
+		 *
+		 * <p>A colour is authoritative only when an MTL supplied {@code Kd}/{@code d}. With no
+		 * MTL at all, the loader's material-group branch fills in
+		 * {@code mergeColor(255, 255, 255, 255)} because it has no colour to read, and the native
+		 * side expresses the same thing as {@code hasColor=false} with a zero colour. The two
+		 * agree in meaning and not in bits, so the non-authoritative case is normalised to zero
+		 * here. Comparing them raw produced a spurious 0xffffffff against 0x0 mismatch.</p>
+		 */
+		private static int colourOf(MaterialKey key, boolean hasMtl) {
+			return hasMtl && key.color != null ? key.color : 0;
 		}
 	}
 }

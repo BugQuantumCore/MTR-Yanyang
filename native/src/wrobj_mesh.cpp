@@ -202,9 +202,16 @@ void RawMesh::applyTranslation(float x, float y, float z) {
 }
 
 void RawMesh::applyRotationAxis(float angle, const Vec3f& axis) {
+    // The public API takes degrees; rotateAxis takes radians, exactly as JOML splits it:
+    // RawMesh.applyRotation does Math.toRadians(angle) and then calls
+    // Vector3f.rotateAxis with the result. Passing degrees straight through rotates by a
+    // wildly wrong amount rather than failing, which is why the equivalence harness caught
+    // this as a few millimetres of position drift and a completely wrong normal rather than
+    // as an obvious error.
+    const float radians = static_cast<float>(static_cast<double>(angle) * kDegreesToRadians);
     for (Vertex& vertex : vertices) {
-        rotateAxis(vertex.position, angle, axis.x, axis.y, axis.z);
-        rotateAxis(vertex.normal, angle, axis.x, axis.y, axis.z);
+        rotateAxis(vertex.position, radians, axis.x, axis.y, axis.z);
+        rotateAxis(vertex.normal, radians, axis.x, axis.y, axis.z);
     }
 }
 
