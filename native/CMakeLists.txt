@@ -29,6 +29,31 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Both artefacts land directly in the build root whatever the generator.
+#
+# This matters more than it looks. CMake chooses a generator per platform: Ninja on Linux
+# and macOS, and on the GitHub Windows runners the default is a multi-config generator,
+# which appends a per-configuration directory to the output path. The CI upload step and
+# fabric/build.gradle both look the library up by name, so an implicit subdirectory turns a
+# successful build into "the artefact was not produced" - which is exactly how the first
+# version of this workflow failed on all four desktop platforms at once.
+#
+# Setting the per-configuration properties as well as the plain ones covers both generator
+# families, and the CI step verifies the file exists rather than trusting a glob.
+set(WROBJ_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
+set(WROBJ_CONFIGS Release RelWithDebInfo MinSizeRel Debug)
+
+set(WROBJ_OUTPUT_PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}"
+        LIBRARY_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}")
+foreach(_config IN LISTS WROBJ_CONFIGS)
+    list(APPEND WROBJ_OUTPUT_PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}"
+            LIBRARY_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}")
+endforeach()
+
 # The internal headers are private; only include/wrobj/wrobj.hpp is public.
 set(WROBJ_PUBLIC_HEADERS
         include/wrobj/wrobj.hpp)
@@ -56,13 +81,8 @@ target_include_directories(wrobj_core
 
 set_target_properties(wrobj_core PROPERTIES
         CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN ON
-        # Both artefacts land directly in the build root whatever the generator. The CI
-        # upload step and the packaging step look for them by name, and a per-configuration
-        # subdirectory would otherwise change the path between generators.
-        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+        VISIBILITY_INLINES_HIDDEN ON)
+set_target_properties(wrobj_core PROPERTIES ${WROBJ_OUTPUT_PROPERTIES})
 
 # A stable alias so dependents do not need to know the target was renamed to keep
 # the JNI import library clear of it.
@@ -144,12 +164,8 @@ if(JNI_FOUND)
 
     set_target_properties(wrobj PROPERTIES
             PREFIX ""
-            OUTPUT_NAME "wrobj"
-            # Single-config generators ignore these, multi-config ones need them; setting
-            # both keeps the library at native/build/<name> on every platform.
-            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+            OUTPUT_NAME "wrobj")
+    set_target_properties(wrobj PROPERTIES ${WROBJ_OUTPUT_PROPERTIES})
 
     message(STATUS "wrobj: JNI bridge enabled")
 else()

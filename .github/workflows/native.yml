@@ -121,6 +121,10 @@ jobs:
 
   build-android:
     name: android-arm64
+    # Android is a best-effort target: the desktop platforms and the packaged jar must not
+    # depend on a cross build that needs an NDK and a translation layer to be exercised. The
+    # library is still built, staged and shipped when it succeeds.
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -173,7 +177,11 @@ jobs:
 
   process-natives:
     name: Assemble the native resources
-    needs: [ build-and-test, build-android ]
+    # Not gated on the Android job, which is continue-on-error: a missing Android library
+    # means the Android loader falls back to the Java pipeline on that platform, not that
+    # the release is broken.
+    needs: [ build-and-test ]
+    if: always() && needs.build-and-test.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
