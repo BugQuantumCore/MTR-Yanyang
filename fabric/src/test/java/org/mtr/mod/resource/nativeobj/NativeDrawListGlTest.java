@@ -139,8 +139,16 @@ public final class NativeDrawListGlTest {
 				GL11.glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
 				GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
 
+				// Two draws in one flush, one of them with an untranslated pose. The native path's
+				// entire reason to exist is that it writes the globals once per flush and the pose
+				// once per distinct matrix, so a queue holding two draws is the smallest shape that
+				// exercises the cache rather than a single unconditional write. The first pose is
+				// all zeros so nothing is visible, which makes the readback below a statement about
+				// the second draw specifically: if the pose were applied once and then skipped, or
+				// applied in the wrong order, the green pixel would not be there.
 				GL20.glUseProgram(program);
 				list.beginFrame();
+				list.queue(batch, zeroPose());
 				list.queue(batch, identityPose());
 				list.flush(0xFFFFFFFF, 0, 0, false, false, false);
 				GL20.glUseProgram(0);
@@ -167,7 +175,7 @@ public final class NativeDrawListGlTest {
 				}
 
 				final String stats = list.describeStatistics();
-				if (!stats.contains("1 array(s) drawn")) {
+				if (!stats.contains("2 array(s) drawn")) {
 					return "the draw list did not record the draw: " + stats;
 				}
 				return null;
@@ -223,6 +231,11 @@ public final class NativeDrawListGlTest {
 		GL20.glDeleteShader(vertex);
 		GL20.glDeleteShader(fragment);
 		return GL20.glGetProgrami(program, GL20.GL_LINK_STATUS) == GL11.GL_FALSE ? 0 : program;
+	}
+
+	/** A pose of all zeros, which collapses the triangle to a point and paints nothing. */
+	private static float[] zeroPose() {
+		return new float[16];
 	}
 
 	/** A column-major identity, which is what the shader's four vec4 matrix attributes expect. */
