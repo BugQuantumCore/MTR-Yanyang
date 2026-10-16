@@ -102,11 +102,35 @@ endif()
 # JNI bridge
 # ---------------------------------------------------------------------------
 #
-# find_package(JNI) honours JAVA_HOME. Building the bridge without the JNI
-# headers is impossible, so a missing JDK disables the shared library instead of
-# failing the configure step.
+# find_package(JNI) honours JAVA_HOME, but its own discovery is unreliable: it misses a JDK
+# bundle on macOS and does not look in include/darwin. A configure that silently builds no
+# shared library is the failure mode this guards against, because the static core and the
+# tests still build, so nothing looks wrong until the artefact is missing.
+#
+# Building the bridge without the JNI headers is impossible, so a missing JDK still only
+# disables the shared library rather than failing the configure step - that is what lets a
+# contributor without a JDK build and run the native tests.
 
 find_package(JNI QUIET)
+
+if(NOT JNI_FOUND AND DEFINED ENV{JAVA_HOME} AND NOT "$ENV{JAVA_HOME}" STREQUAL "")
+    set(_wrobj_jni_candidates
+            "$ENV{JAVA_HOME}/include"
+            "$ENV{JAVA_HOME}/include/darwin"
+            "$ENV{JAVA_HOME}/include/linux"
+            "$ENV{JAVA_HOME}/include/win32")
+    set(_wrobj_jni_dirs "")
+    foreach(_dir IN LISTS _wrobj_jni_candidates)
+        if(EXISTS "${_dir}/jni.h" AND EXISTS "${_dir}/jni_md.h")
+            list(APPEND _wrobj_jni_dirs "${_dir}")
+        endif()
+    endforeach()
+    if(_wrobj_jni_dirs)
+        set(JNI_FOUND TRUE)
+        set(JNI_INCLUDE_DIRS "${_wrobj_jni_dirs}")
+        message(STATUS "wrobj: located the JNI headers under JAVA_HOME: ${_wrobj_jni_dirs}")
+    endif()
+endif()
 
 # The Android NDK does not register with CMake's JNI find module, but it ships the headers
 # in its sysroot. Without this the cross build would silently produce no shared library,
