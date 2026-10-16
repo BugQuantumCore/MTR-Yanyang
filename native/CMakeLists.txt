@@ -221,6 +221,7 @@ endif()
 if(JNI_FOUND)
     add_library(wrobj SHARED
             jni/wrobj_jni.cpp
+            jni/jni_version_compat.hpp
             jni/wrgl_jni.cpp)
     target_link_libraries(wrobj PRIVATE wrobj::core)
     target_include_directories(wrobj PRIVATE

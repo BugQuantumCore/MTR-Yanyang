@@ -24,7 +24,7 @@
 //  * A pending Java exception from the texture resolver short-circuits the work:
 //    the exception is left set and the native call reports failure.
 
-#include <jni.h>
+#include "jni_version_compat.hpp"
 
 #include <cstring>
 #include <string>

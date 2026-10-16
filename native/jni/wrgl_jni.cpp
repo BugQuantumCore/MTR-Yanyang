@@ -29,7 +29,7 @@
 // missed release would pin one object; the Java holder does the release in a
 // constructor-failure-safe order and the bridge is idempotent about it.
 
-#include <jni.h>
+#include "jni_version_compat.hpp"
 
 #include <cstring>
 #include <new>
