@@ -244,11 +244,37 @@ jobs:
         # This is the gate that matters: it compiles the mod against the mapping library,
         # runs the JUnit suite - including the native equivalence tests and the vertex
         # layout check - and packages the jar with the natives staged above.
+        #
+        # The output is teed through grep-saver because GitHub's log viewer truncates long
+        # javac output, and a truncated error list is worse than useless when the failure is
+        # the thing being diagnosed.
+        shell: bash
+        working-directory: ./Minecraft-Transit-Railway
         run: |
+          set -o pipefail
           ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
             -PmodLoader=fabric \
-            -PminecraftVersion=1.20.1
-        working-directory: ./Minecraft-Transit-Railway
+            -PminecraftVersion=1.20.1 \
+            --console=plain 2>&1 | tee gradle-build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Compilation and test errors"
+            grep -nE 'error:|error;|Execution failed|What went wrong|FAILED|Caused by' gradle-build.log || true
+            echo "::endgroup::"
+            echo "::group::Last 120 lines of the build log"
+            tail -n 120 gradle-build.log
+            echo "::endgroup::"
+            exit "$status"
+          fi
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: Minecraft-Transit-Railway/gradle-build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Verify the natives made it into the jar
         shell: bash

@@ -110,6 +110,21 @@ if (Test-Path -LiteralPath $stubRoot) { Remove-Item -LiteralPath $stubRoot -Recu
 New-Item -ItemType Directory -Force -Path $stubRoot | Out-Null
 
 $stubs = @{
+    'org\mtr\mod\data\IGui.java' = @'
+package org.mtr.mod.data;
+
+/**
+ * Stub for the mod's GUI constants interface.
+ *
+ * Only ARGB_WHITE is referenced by the checked subset, and the value is copied from the real
+ * interface so a compile here means the same thing it does in the mod. The real interface
+ * also carries drawing helpers that would drag in the whole client.
+ */
+public interface IGui {
+	int ARGB_WHITE = 0xFFFFFFFF;
+	int ARGB_BLACK = 0xFF000000;
+}
+'@
     'org\mtr\mod\Init.java' = @'
 package org.mtr.mod;
 
@@ -144,7 +159,10 @@ $files = @(
     'org\mtr\mod\resource\nativeobj\NativeObjModelBuilder.java',
     'org\mtr\mod\resource\nativeobj\NativeGlHost.java',
     'org\mtr\mod\resource\nativeobj\NativeDrawList.java',
-    'org\mtr\mod\resource\nativeobj\NativeModelAccess.java'
+    'org\mtr\mod\resource\nativeobj\NativeModelAccess.java',
+    # The renderer wrapper is checked too: it only depends on the mapping library plus the
+    # access helper, and it is the file most likely to drift from the backend's API.
+    'org\mtr\mod\resource\OptimizedRendererWrapper.java'
 ) | ForEach-Object { Join-Path $sourceRoot $_ }
 
 foreach ($file in $files) {

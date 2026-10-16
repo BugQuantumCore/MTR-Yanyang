@@ -169,7 +169,7 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
-		if (graphicsHolder.matrixStack == null) {
+		if (graphicsHolder == null) {
 			return;
 		}
 
@@ -178,10 +178,14 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
-		// The pose comes from the matrix stack, exactly where OptimizedRenderer.queue reads
-		// it. JOML stores it column-major, which is the order the shader's four vec4 matrix
-		// attributes expect, so it passes straight through.
-		graphicsHolder.matrixStack.peek().getPositionMatrix().get(poseScratch);
+		// The pose comes from the graphics holder's matrix stack, exactly where
+		// OptimizedRenderer.queue reads it. The holder's field is package-private in the
+		// mapping's package, so the read goes through the same access helper as the rest of
+		// the backend's private state. A holder with no matrix stack queues nothing, which is
+		// what the reference does too.
+		if (!NativeModelAccess.readPoseMatrix(graphicsHolder, poseScratch)) {
+			return;
+		}
 
 		queue.add(new QueuedModel(batches, poseScratch.clone(), light, ARGB_WHITE));
 	}
