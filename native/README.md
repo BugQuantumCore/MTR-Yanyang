@@ -409,6 +409,77 @@ Documented rather than hidden, because each one is a deliberate decision:
    intentional — it keeps the native side optional for Java-only contributors — but it
    means a release build has to run the native workflow first.
 
+6. **One equivalence fixture does not reproduce bit for bit.** The
+   `model-scale-negative` case, which combines a non-uniform negative scale with a 45
+   degree rotation, produces a 384 byte vertex buffer natively against 576 bytes from the
+   Java pipeline, over the same 12 indices. The native side merges four of its twelve
+   pre-distinct corners through `distinct()` where the Java side merges none, so the two
+   disagree on how many distinct vertices the fixture has. The triangle sets are equal and
+   the rendered geometry is unchanged, but the buffers are not interchangeable and the
+   cause is not identified. Every other fixture passes byte for byte. This is recorded
+   rather than worked around: the comparator reports the difference on every run instead
+   of tolerating it.
+
+---
+
+## Platform status
+
+The library is one C++17 translation set built by CMake, with no platform-specific code
+outside the test harness's directory listing and the JNI include discovery. What has
+actually been built and run, as opposed to what is intended to work:
+
+| Platform | Built | Tests run | Notes |
+|---|---|---|---|
+| Windows x64 | yes, locally and on CI | 151 + 71 native, 4 JVM | the reference platform for this work |
+| Linux x64 | **not confirmed** | — | fixes for its JNI discovery are in the tree but the CI job has not been scheduled |
+| macOS x64 / arm64 | **not confirmed** | — | as above |
+| Android arm64 | **not confirmed** | — | see below |
+
+"Not confirmed" means the code is written and committed but has never been compiled on the
+platform. Two defects of exactly the kind that fails only there were found by inspection
+rather than by CI: `M_PI`, which is a POSIX extension that one platform's headers happen
+to expose, and four translation units relying on MSVC's headers to include `<cmath>`,
+`<vector>` and `<string>` on their behalf. Both are fixed. That the class existed at all
+twice is the argument for treating this table as the honest state rather than a to-do
+list.
+
+### Android
+
+Android needs the same library compiled for `arm64-v8a` against the NDK, loaded by the
+launcher's JVM. It is built as a cross target:
+
+```
+cmake -S native -B native/build-android \
+  -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+  -DANDROID_STL=c++_static -DWROBJ_BUILD_TESTS=OFF
+```
+
+Three things make it different from the desktop targets:
+
+- **`ANDROID_STL=c++_static`.** Android ships no `libstdc++` shared object, so the C++
+  runtime has to be linked into the library or the loader refuses it with an unresolved
+  symbol. The NDK's own mechanism is used rather than passing `-static-libstdc++` as well,
+  because the toolchain already decides how to link the runtime and a second instruction
+  can conflict with that choice.
+- **`-Wl,-z,max-page-size=16384`.** Required for Android 15 and later on 16 KB page
+  devices, harmless on older ones.
+- **No GL is linked.** The draw path routes every GL call through the host
+  (`wrgl_emit.hpp` explains why), so nothing here depends on GLES or on a translation
+  layer at link time.
+
+**gl4ES.** The float-attribute fallback exists for translation layers that do not
+implement integer vertex attributes. `GlStateTracker.isGl4ES()` decides it, and
+`OptimizedRendererWrapper` passes that decision to `NativeDrawList.create`, which sets the
+`useFloatAttributeFallback` flag on the GL table. That swaps the two `glVertexAttribI2i`
+calls for `glVertexAttrib2f`. The branch is covered by the recording-stub suite in
+`native/tests/wrgl_tests.cpp` in both settings; it has never run against a real gl4ES.
+
+One thing to be aware of on Android: the library is loaded from the mod jar by
+`NativeObjPipeline`, which extracts it and calls `System.load`. That path works wherever
+the jar's code source is a readable file, which is the normal case. It does not depend on
+the platform beyond the file name, which is `libwrobj.so` there as on Linux.
+
 ---
 
 ## License
