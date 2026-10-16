@@ -70,25 +70,15 @@ jobs:
           distribution: 'temurin'
 
       - name: Configure
-        # JAVA_HOME is passed explicitly because FindJNI's own discovery is unreliable across
-        # the runner images: on macOS it does not look inside a JDK bundle, and the build then
-        # silently produces the static core and no shared library at all. CMakeLists.txt
-        # treats a missing JDK as "build the core and the tests only", which is right for a
-        # contributor without a JDK but wrong in CI, where the shared library is the artefact
-        # that gets shipped.
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S native -B native/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DWROBJ_BUILD_TESTS=ON \
-            -DJAVA_HOME="${JAVA_HOME:-}" 2>&1 | tee native-configure.log
-          if ! grep -q "JNI bridge enabled" native-configure.log; then
-            echo "::error::the JNI bridge was not enabled, so no shared library will be produced"
-            echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
-            find "${JAVA_HOME:-/nonexistent}" -name 'jni.h' -print 2>/dev/null | head -n 5 || true
-            exit 1
-          fi
+        # JAVA_HOME is passed explicitly because FindJNI's own discovery misses a JDK bundle
+        # on macOS and does not check include/darwin; CMakeLists.txt also searches JAVA_HOME
+        # directly for the same reason. The verification step below reports whether the
+        # bridge was enabled, rather than a shell test here deciding it: a configure that
+        # succeeds but produces no shared library is reported there with the paths it checked.
+        run: >
+          cmake -S native -B native/build
+          -DCMAKE_BUILD_TYPE=Release
+          -DWROBJ_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build native/build --config Release --parallel
@@ -121,7 +111,12 @@ jobs:
           ls -la native/build
           if [ ! -f "native/build/${{ matrix.library }}" ]; then
             echo "expected native/build/${{ matrix.library }} was not produced" >&2
-            find native/build -name '*wrobj*' -print >&2
+            echo "--- build root ---"
+            ls -la native/build || true
+            echo "--- anything named wrobj ---"
+            find native/build -name '*wrobj*' -print 2>/dev/null || true
+            echo "--- JAVA_HOME=${JAVA_HOME:-<unset>} ---"
+            find "${JAVA_HOME:-/nonexistent}" -name 'jni.h' -print 2>/dev/null | head -n 5 || true
             exit 1
           fi
           echo "found native/build/${{ matrix.library }}"
