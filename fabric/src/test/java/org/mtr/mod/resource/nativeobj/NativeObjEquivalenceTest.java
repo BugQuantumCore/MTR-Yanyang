@@ -113,6 +113,15 @@ public class NativeObjEquivalenceTest {
 
 		final String label = testCase.name;
 
+		// Both key lists and the draw records are printed before the counts are asserted, for the
+		// same reason the index lists are: the shape of the divergence is what localises it. Two
+		// keys against four says the two sides disagree about how many buckets the placements
+		// produce, and seeing which keys survived says whether that is a merge or a cull.
+		System.out.println("### " + label + " reference keys: " + describeKeys(reference.keys));
+		System.out.println("### " + label + " native keys:    " + describeKeys(nativeBuffers.keys));
+		System.out.println("### " + label + " reference draws: " + describeDraws(reference.draws));
+		System.out.println("### " + label + " native draws:    " + describeDraws(nativeBuffers.draws));
+
 		assertEquals(reference.keys.size(), nativeBuffers.keys.size(),
 				label + ": material key count");
 		for (int i = 0; i < Math.min(reference.keys.size(), nativeBuffers.keys.size()); i++) {
@@ -169,9 +178,34 @@ public class NativeObjEquivalenceTest {
 		}
 	}
 
-	/** The index buffer as a space-separated list, for divergence reporting. */
-	private static String describeIndices(byte[] indexData) {
+	/** The material keys as a list, for divergence reporting. */
+	private static String describeKeys(List<KeyRecord> keys) {
 		final StringBuilder builder = new StringBuilder();
+		for (final KeyRecord key : keys) {
+			if (builder.length() > 0) {
+				builder.append(", ");
+			}
+			builder.append("[shader=").append(key.shaderType)
+					.append(" color=0x").append(Integer.toHexString(key.color))
+					.append(" texture='").append(key.texture).append("']");
+		}
+		return builder.length() == 0 ? "(none)" : builder.toString();
+	}
+
+	/** The draw records as a list, for divergence reporting. */
+	private static String describeDraws(List<DrawRecord> draws) {
+		final StringBuilder builder = new StringBuilder();
+		for (final DrawRecord draw : draws) {
+			if (builder.length() > 0) {
+				builder.append(", ");
+			}
+			builder.append(draw);
+		}
+		return builder.length() == 0 ? "(none)" : builder.toString();
+	}
+
+	/** The index buffer as a space-separated list, for divergence reporting. */
+	private static String describeIndices(byte[] indexData) {	final StringBuilder builder = new StringBuilder();
 		for (int i = 0; i + 4 <= indexData.length; i += 4) {
 			if (builder.length() > 0) {
 				builder.append(' ');
@@ -306,11 +340,36 @@ public class NativeObjEquivalenceTest {
 		return buffers;
 	}
 
+	/**
+	 * The key-table index of the source material group a placed bucket came from.
+	 *
+	 * <p>A placement changes the shader type and the geometry but never the texture or the
+	 * colour, so the source group is recovered by those two. The entry is created on first use,
+	 * which is what gives the table the native side's first-use order rather than an order
+	 * derived from the placements.</p>
+	 */
+	private static int sourceKeyIndex(List<MaterialKey> sourceKeys, MaterialKey placedKey,
+			boolean hasMtl, ModelBuffers buffers) {
+		final int colour = ModelBuffers.colourOf(placedKey, hasMtl);
+		for (int i = 0; i < sourceKeys.size(); i++) {
+			final MaterialKey candidate = sourceKeys.get(i);
+			if (candidate.texture.equals(placedKey.texture)
+					&& ModelBuffers.colourOf(candidate, hasMtl) == colour) {
+				return i;
+			}
+		}
+		// The table entry is written here rather than at the call site, so the first-use order is
+		// the order the entries were created in, which is the order the native table has.
+		sourceKeys.add(placedKey);
+		return buffers.recordKey(placedKey, hasMtl);
+	}
+
 	/** Applies the placements, then generates normals, de-duplicates and packs. */
 	private void packBuffers(ModelBuffers buffers,
 			Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> accumulated,
 			List<double[]> transforms, boolean hasMtl) {
 		final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> placed = new LinkedHashMap<>();
+		final List<MaterialKey> sourceKeys = new ArrayList<>();
 
 		for (final double[] transform : transforms) {
 			final OptimizedModel.ShaderType shaderType =
@@ -351,7 +410,25 @@ public class NativeObjEquivalenceTest {
 				continue;
 			}
 
-			final int keyIndex = buffers.recordKey(entry.getKey(), hasMtl);
+			// The key table is indexed by the source material group, not by the placed bucket.
+			// A placement overrides the shader type on the bucket's material properties and the
+			// key entry keeps the source group's own shader type, which is why the native key
+			// list is shorter than the draw list here: four placed buckets, two source keys.
+			// Recording a key per placed bucket instead invents entries the native side never
+			// produces and makes the counts incomparable.
+			//
+			// The lookup is by the source key's own identity rather than by the placed one, so a
+			// CUTOUT placement finds the entry whose shader type is still the source group's.
+			// The key table is indexed by the source material group, not by the placed bucket: a
+			// placement overrides the shader type on the bucket's material properties while the
+			// key entry keeps the source group's own type. That is why the native key list is
+			// shorter than the draw list here - four placed buckets, two source keys - and
+			// recording a key per placed bucket invents the entries the native side never makes.
+			//
+			// The source group is recovered by texture and colour, which a placement does not
+			// change, and the entry is created on first use so the order matches the native
+			// table's first-use order.
+			final int keyIndex = sourceKeyIndex(sourceKeys, entry.getKey(), hasMtl, buffers);
 			buffers.draws.add(new DrawRecord(
 					entry.getKey().shaderType.ordinal(),
 					ModelBuffers.colourOf(entry.getKey(), hasMtl),
@@ -825,12 +902,16 @@ public class NativeObjEquivalenceTest {
 		byte[] indexData = new byte[0];
 
 		/**
-		 * Records a bucket key and returns its index in {@link #keys}.
+		 * Records a source material group key and returns its index in {@link #keys}.
 		 *
-		 * <p>Deduplicated on texture and shader type, which is what {@code MaterialProperties}
-		 * compares on this path, so a repeated key returns the existing index rather than
-		 * appending. Returning the index rather than letting the caller use {@code size() - 1}
-		 * is what makes a deduplicated key come out with the right index.</p>
+		 * <p>Deduplicated on texture and colour rather than on texture and shader type, because
+		 * a placement overrides the shader type on the bucket while the key entry keeps the
+		 * source group's own type. Keying on the placed type would add an entry for every
+		 * placement that changed the type, which is exactly how this list grew to four entries
+		 * where the native builder has two.</p>
+		 *
+		 * <p>Returns the index rather than letting the caller use {@code size() - 1}, so a
+		 * deduplicated key still reports the index it was first recorded at.</p>
 		 */
 		int recordKey(MaterialKey key, boolean hasMtl) {
 			for (int i = 0; i < keys.size(); i++) {
