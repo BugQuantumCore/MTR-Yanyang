@@ -44,6 +44,14 @@ public final class NativeDrawListGlTest {
 	 */
 	@org.junit.jupiter.api.Test
 	public void nativeFlushReachesTheDriver() {
+		// The status message names the file that was loaded, so a run against a stale library is
+		// visible rather than silent. Two copies of the library exist in a checkout - the one
+		// cmake builds under native/build-windows and the one processResources stages into
+		// fabric/build/resources - and they can be hours apart in age and a few hundred bytes
+		// apart in size. Printing the path makes the difference obvious; without it a result can
+		// describe a build that was replaced long ago.
+		System.out.println("  library: " + NativeObjPipeline.getStatusMessage());
+
 		org.junit.jupiter.api.Assumptions.assumeTrue(NativeObjPipeline.isAvailable(),
 				"the native wrobj library is not available: " + NativeObjPipeline.getStatusMessage());
 
