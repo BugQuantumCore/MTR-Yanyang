@@ -26,16 +26,42 @@
 
 namespace wrobj {
 
-/// The two JOML helpers the cardinal rotations are built from.
+
+/// JOML's Math.cosFromSin, in the internal form.
 ///
-/// Both operate entirely in float, which is what makes them differ in the last bit from the
-/// Rodrigues form. Options.FASTMATH is off by default in this JOML build, so cosFromSin is the
-/// internal form and not a sin(angle + PI/2).
+/// Options.FASTMATH is off in this JOML build, so this is sqrt(1 - sin*sin) with the quadrant
+/// chosen by reducing angle + PI/2 modulo 2*PI, not a call to sin(angle + PI/2).
+///
+/// Java's Math.PI is spelled out rather than taken from M_PI, which is a POSIX extension that
+/// <cmath> exposes on some platforms and not others. It compiled on this platform until an
+/// unrelated include changed and then did not.
+
+/// JOML's own degrees-to-radians factor, as used by Math.toRadians.
+///
+/// Spelled the same way JOML spells it rather than as a truncated literal, because the value
+/// has to agree bit for bit: Math.toRadians(angle) is angle / 180.0 * PI in double, and a
+/// rounding difference here would show up as a last-bit difference in every rotated vertex.
+inline constexpr double kDegreesToRadians = 0.017453292519943295;
+
+struct Vec3f {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+
+    Vec3f() = default;
+    Vec3f(float xIn, float yIn, float zIn) : x(xIn), y(yIn), z(zIn) {}
+
+    bool isZero() const { return x == 0.0F && y == 0.0F && z == 0.0F; }
+
+    bool operator==(const Vec3f& other) const { return x == other.x && y == other.y && z == other.z; }
+    bool operator!=(const Vec3f& other) const { return !(*this == other); }
+};
+
 inline float jomlCosFromSin(float sin, float angle) {
     const float cos = std::sqrt(1.0F - sin * sin);
-    const float pi = static_cast<float>(M_PI);
-    const float twoPi = static_cast<float>(M_PI) * 2.0F;
-    float a = angle + pi / 2.0F;
+    const float pi = 3.14159265358979323846F;
+    const float twoPi = pi * 2.0F;
+    const float a = angle + pi / 2.0F;
     float b = a - static_cast<float>(static_cast<int>(a / twoPi)) * twoPi;
     if (b < 0.0F) {
         b += twoPi;
@@ -70,26 +96,7 @@ inline void jomlRotateZ(Vec3f& v, float angle) {
     v.y = y;
 }
 
-/// JOML's own degrees-to-radians factor, as used by Math.toRadians.
-///
-/// Spelled the same way JOML spells it rather than as a truncated literal, because the value
-/// has to agree bit for bit: Math.toRadians(angle) is angle / 180.0 * PI in double, and a
-/// rounding difference here would show up as a last-bit difference in every rotated vertex.
-inline constexpr double kDegreesToRadians = 0.017453292519943295;
 
-struct Vec3f {
-    float x = 0.0F;
-    float y = 0.0F;
-    float z = 0.0F;
-
-    Vec3f() = default;
-    Vec3f(float xIn, float yIn, float zIn) : x(xIn), y(yIn), z(zIn) {}
-
-    bool isZero() const { return x == 0.0F && y == 0.0F && z == 0.0F; }
-
-    bool operator==(const Vec3f& other) const { return x == other.x && y == other.y && z == other.z; }
-    bool operator!=(const Vec3f& other) const { return !(*this == other); }
-};
 
 /// Row-major 4x4, matching org.joml.Matrix4f's memory layout (m<row><column>).
 struct Mat4f {
