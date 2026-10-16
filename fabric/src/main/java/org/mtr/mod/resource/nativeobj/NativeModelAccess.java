@@ -117,10 +117,12 @@ public final class NativeModelAccess {
 			// in named modules, so the unnamed module rules apply and this succeeds.
 			final MethodHandles.Lookup modelLookup = MethodHandles.privateLookupIn(
 					OptimizedModel.class, MethodHandles.lookup());
+			// The field is declared java.util.List<VertexArray>, which is exactly what the accessor
+			// returns, so no filter is needed. An earlier version wrapped this in a
+			// filterReturnValue(identity(List.class)) that did nothing except add a link whose
+			// failure would have been indistinguishable from the lookup's own.
 			uploadedPartsGetter = modelLookup.findGetter(
 					OptimizedModel.class, "uploadedParts", List.class);
-			uploadedPartsGetter = MethodHandles.filterReturnValue(uploadedPartsGetter,
-					MethodHandles.identity(List.class));
 
 			final MethodHandles.Lookup arrayLookup = MethodHandles.privateLookupIn(
 					VertexArray.class, MethodHandles.lookup());
