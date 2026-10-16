@@ -52,6 +52,47 @@ tasks.named("processTestResources") {
 	inputs.property("serverOptimizationTest", project.hasProperty("serverOptimizationTest"))
 }
 
+// ---------------------------------------------------------------------------
+// Native OBJ pipeline resources
+// ---------------------------------------------------------------------------
+//
+// The mod loads a native library through org.mtr.mod.resource.nativeobj.NativeObjPipeline,
+// which looks it up at native/<os>-<arch>/ inside the jar. This stages whatever has been
+// placed in native/packaged/ so a normal build picks it up.
+//
+// The directory is optional on purpose: a checkout with no native build produces a jar
+// without the library, and the mod falls back to its original Java OBJ pipeline instead of
+// failing to load. That keeps the native side genuinely optional for contributors who only
+// work on the Java code.
+//
+// CI assembles native/packaged/ from the per-platform artifacts of
+// .github/workflows/native.yml. For a local release build, run
+// native/tools/build-native.ps1 and then stage the library under
+// native/packaged/<os>-<arch>/ yourself.
+
+final File packagedNatives = new File(project.rootDir, "native/packaged")
+
+tasks.register("copyNativeModelPipeline", Copy) {
+	description = "Stages native/packaged/ into the jar under native/<os>-<arch>/."
+	group = "build"
+
+	onlyIf { packagedNatives.isDirectory() }
+
+	from(packagedNatives) {
+		into "native"
+	}
+	into layout.buildDirectory.dir("generated/nativeResources")
+}
+
+sourceSets.main.resources.srcDir(layout.buildDirectory.dir("generated/nativeResources"))
+
+tasks.named("processResources") {
+	dependsOn("copyNativeModelPipeline")
+	// The staged directory is not a declared input of the resources source set, so without
+	// this a rebuilt library would not invalidate the task.
+	inputs.dir(packagedNatives).optional()
+}
+
 if (project.hasProperty("serverOptimizationTest")) {
 	loom {
 		mods {

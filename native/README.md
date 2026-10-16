@@ -1,0 +1,416 @@
+# Native OBJ model pipeline
+
+A C++ reimplementation of Minecraft Transit Railway's OBJ model pipeline, built to
+remove the CPU and allocation cost of loading and preparing vehicle models without
+changing a single byte of what reaches OpenGL.
+
+This directory is self-contained. It depends on nothing but a C++17 compiler and
+CMake, so it builds and tests without Gradle and without Minecraft. The mod picks
+the resulting library up automatically, and behaves exactly as before when the
+library is missing.
+
+---
+
+## Why this exists
+
+MTR's optimized rendering path is the default for every vehicle, and it builds its
+GPU buffers through a Java pipeline:
+
+```
+ModelResourceLoader.loadModel
+  OptimizedModel.ObjModel.loadModel
+    ObjModelLoader.loadModel              de.javagl.obj parsing, group splitting
+      ObjUtils.convertToRenderable        triangulate, make UVs and normals unique
+      RawMesh                             one Vertex object per renderable vertex
+    RawMesh.applyRotation X 180           per mesh
+    ObjModel.addTransformation            per vehicle part position: full copy
+    RawModel.append                       merge by MaterialProperties
+    RawModel.generateNormals              copy every vertex again
+    RawModel.distinct                     HashMap<Vertex, Integer> per material
+    RawModel.upload                       interleaved buffer on the Java heap
+```
+
+Three things make this expensive, and all three are structural rather than a matter
+of tuning:
+
+1. **Object count.** Every renderable vertex becomes a `Vertex` holding two
+   `Vector3f` wrappers, each wrapping a JOML vector. `generateNormals` copies every
+   vertex a second time, and every placement copies the whole mesh again. A
+   resource pack with a few detailed trains produces tens of millions of short-lived
+   objects per reload.
+2. **Copy count.** A model with `n` placements is traversed `n` times: the transform
+   loops run per placement, then normals, then de-duplication, then packing each walk
+   the whole thing again.
+3. **Heap traffic.** The finished interleaved buffer is allocated on the Java heap,
+   filled, handed to `glBufferData`, and then becomes garbage. For a large model that
+   is a multi-megabyte allocation per material per reload.
+
+The rewrite keeps the algorithms identical and moves them into flat arrays. The
+vertex order, the face order, the de-duplication order and the float rounding are
+all preserved, so the buffers are byte for byte the same — which is what makes the
+change safe to ship.
+
+---
+
+## Layout
+
+```
+native/
+  include/wrobj/
+    wrobj.hpp            public C API (the contract hosts use)
+    wrobj_model.hpp      data model mirroring the Java classes
+    wrobj_math.hpp       JOML-exact vector and matrix primitives
+  src/
+    wrobj_parse.cpp      OBJ and MTL readers
+    wrobj_mesh.cpp       RawMesh and RawModel algorithms
+    wrobj_pipeline.cpp   group extraction and convertToRenderable
+    wrobj.cpp            builder API, normals, de-duplication, packing
+  jni/
+    wrobj_jni.cpp        JNI bridge, buffer handoff, class caching
+  tests/
+    wrobj_tests.cpp      unit tests plus the golden equivalence harness
+    wrobj_bench.cpp      throughput and buffer-shape benchmark
+    golden_format.*      golden file reader, writer and differ
+    color_probe.cpp      isolates the ARGB packing arithmetic
+    golden/              hand-written reference models and the case manifest
+  tools/
+    build-native.ps1     configure and build on Windows
+    run-native-tests.ps1 run the tests against an existing build tree
+    check-java-integration.ps1  type-check the integration and run the JNI smoke test
+    generate-golden.ps1  produce goldens with the real MTR code and compare
+    GenerateGolden.java  golden generator (requires the remapped jars)
+    ColorReference.java  prints the JVM's own colour packing results
+    TexturePathReference.java  prints the JVM's own texture path normalisation
+```
+
+The Java side lives in `fabric/src/main/java/org/mtr/mod/resource/nativeobj/` and
+`fabric/src/test/java/org/mtr/mod/resource/nativeobj/`.
+
+---
+
+## Building
+
+```powershell
+# Windows
+pwsh -File native/tools/build-native.ps1
+
+# Any platform, with a JDK present for the JNI bridge
+cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build --parallel
+ctest --test-dir native/build --output-on-failure
+```
+
+`JNI_HEADERS` are looked up with `find_package(JNI)`, which honours `JAVA_HOME`.
+Without a JDK the core library and the tests still build; only the shared library is
+skipped. That is what lets CI run the native tests without downloading a JDK.
+
+Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `WROBJ_BUILD_TESTS` | `ON` | Build the test and benchmark binaries |
+| `CMAKE_BUILD_TYPE` | `Release` | Single-config generators only |
+
+---
+
+## Design
+
+### Division of responsibility
+
+The native side owns OBJ and MTL parsing, all geometry, and the buffer packing. The
+host owns texture identity, because in the mod that identity is a Minecraft
+`Identifier` that only Java can construct.
+
+The handshake is three steps:
+
+1. `wr_obj_keys_load` parses the document and reports its material group keys along
+   with each key's shader type, texture string and colour. The texture string is the
+   one `ObjModelLoader` would have computed, including the three-way rule for "no
+   MTL", "key missing from the MTL" and `map_Kd`, and it is already lower-cased with
+   forward slashes.
+2. The host resolves each texture string to an opaque integer handle. That handle is
+   never interpreted natively; it only ever gets compared.
+3. `wr_obj_builder_create` takes the handles back and builds the source meshes.
+
+The handle joins the shader type and the colour in the merge key, which is exactly
+`MaterialProperties`' equality contract. Two keys whose materials resolved
+differently therefore cannot be merged, and the bucket structure matches the Java
+path's.
+
+### Why the builder is per instance
+
+`ObjModel.addTransformation` appends placed copies into the instance's own
+accumulated model. The Java path therefore deep-copies the model per vehicle part,
+and `ModelPropertiesPart` documents why: sharing one instance accumulates every part
+variant together and renders forward and flipped seats on top of each other.
+
+`WrObjBuilder` is the same thing. One builder per model instance, created by
+`NativeObjModel.copy()`, and the native tests pin that two builders stay isolated.
+
+### Why an ABI integer is checked
+
+A library that agrees on method names but not on semantics produces subtly wrong
+geometry rather than an error. `wr_obj_abi_version` must equal
+`NativeObjPipeline.EXPECTED_ABI` or the load is rejected and the Java pipeline runs
+instead.
+
+### What the native side deliberately does not do
+
+- **It does not build Minecraft identifiers.** See the handshake above.
+- **It does not touch OpenGL.** Buffers are returned as raw pointers; the host wraps
+  them in direct `ByteBuffer`s and uploads by address.
+- **It does not do atlas sheets.** `AtlasManager` is only populated when
+  `ObjModel.loadModel` receives a non-null atlas index, and MTR passes `null` from
+  `ModelResourceLoader`, so the reference pipeline's atlas path is unreachable. The
+  native side reproduces that by not implementing it.
+
+---
+
+## The equivalence argument
+
+The claim is that the two pipelines produce identical GPU buffers. Four layers
+support it, in increasing order of strength.
+
+### 1. Unit tests (143 assertions)
+
+`native/tests/wrobj_tests.cpp` covers the parser and algorithm decisions that are
+easy to get subtly wrong, each with a hand-written case:
+
+| Area | What is pinned |
+| --- | --- |
+| Component handling | `v`/`vt`/`vn` with one to four components, and the `FloatTuple` zero defaults |
+| Relative indices | `f -4 -3 -2 -1` resolving against the *running* vertex count |
+| Index validation | an out-of-range index aborting the load, as `DefaultObj.checkIndices` does |
+| ASCII decoding | bytes ≥ 0x80 becoming U+FFFD, because `ObjReader` uses US-ASCII |
+| Group state machine | one shared `g`/`o` keyword, so an `o` after a `g` is ignored |
+| Material groups | faces before the first `usemtl` belonging to no material group |
+| Triangulation | javagl's `(0, i-1, i)` fan, not `(0, i, i+1)` |
+| De-duplication | colour and light excluded from `Vertex.equals`, duplicate faces collapsing |
+| Normals | face normals for zero normals, `+Y` for a degenerate triangle, authored normals surviving |
+| Transforms | the inverse-transpose normal correction on non-uniform scale, winding parity on mirror |
+| Material options | `#shader,flipv=1` parsing and the `legacyMapping` string table |
+| MTL | `Kd`, `d`, `Tr` inversion, `map_Kd` option consumption, `d` defaulting to 1 |
+| MTL splicing | a trailing backslash joining the next line and dropping two characters |
+| Texture normalisation | eleven `map_Kd` strings whose expected values came from the JVM |
+| Colour packing | five cases whose expected values came from the JVM |
+| End to end | a build produces one bucket with the host's texture handle |
+| Determinism | two builds of the same input are byte identical |
+| Isolation | two builders do not share accumulated geometry |
+
+### 2. Colour and path values come from the JVM, not from the source
+
+Two reference programs exist because reading the source gave the wrong answer twice.
+
+**Colour.** MTR packs a material colour with `mergeColor(r, g, b, a) = r << 24 | g << 16
+| b << 8 | a`. That is *not* the usual ARGB layout: red is the most significant byte and
+alpha the least significant one, so opaque red is `0xFF0000FF`.
+`native/tools/ColorReference.java` runs the exact expressions on the JDK:
+
+```
+mergeColor(255, 0, 0, 255)   = 0xFF0000FF
+Kd 1 0 0, d unset            -> 0xFF0000FF
+Kd 0 0 1, d 0.5              -> 0x0000FF7F
+Kd 0.5 0.25 0.75, d unset    -> 0x7F3FBFFF
+Kd 0.1 0.2 0.3, d 0          -> 0x19334C00
+Kd 0.999 0.5 0.001, d 0.999  -> 0xFE7F00FE
+```
+
+Every channel truncates rather than rounds, so `0.85F * 255.0F` is 216 and not 217. The
+packing is done in unsigned arithmetic, because shifting a signed value into the sign bit
+is undefined behaviour before C++20 and any red above 127 does exactly that.
+
+**Texture paths.** `ObjModelLoader` normalises a texture string with
+`texture.replace("\\\\", "/").replace("\\", "/")` before resolving it, and the resolved
+path is part of the material identity that decides which meshes merge. A doubled
+backslash collapses to **one** slash, which is not what a naive single-pass replacement
+produces — the first version of this port emitted two, which would have split materials
+that the Java pipeline merges into separate buckets.
+`native/tools/TexturePathReference.java` prints the JVM's answers:
+
+```
+"textures\body.png"     -> "textures/body.png"
+"textures\\body.png"    -> "textures/body.png"
+"textures\\\body.png"   -> "textures//body.png"
+"UPPER/Case.PNG"        -> "upper/case.png"
+```
+
+### 3. The vertex layout is checked against the mapping it must match
+
+`fabric/src/test/.../NativeVertexLayoutCompatibilityTest.java` reads
+`OptimizedModel`'s static initialiser out of the backend jar with ASM, derives the
+declared layout, and asserts that the stride is 24 bytes with position at offset 0, UV at
+12 and the normal at 20 — the order `packVertices` writes.
+
+This is the check that matters most, because the failure mode is silent: a layout
+mismatch would make the GPU read position bytes as UV and normals out of the padding,
+which renders as garbage rather than as an error. It runs with no GL context and was
+confirmed to pass against the bundled backend jar.
+
+### 4. Golden buffers produced by the real code
+
+The strongest layer.
+`fabric/src/test/java/.../NativeObjEquivalenceTest.java` runs the same case twice — once
+through the real `ObjReader`, `ObjSplitting`, `ObjUtils.convertToRenderable`, `RawMesh`
+and `RawModel`, and once through `NativeObjModel` — and compares the interleaved vertex
+buffer, the index buffer and every bucket record byte for byte.
+
+It has to live in the Gradle test source set because the published mappings jar is
+compiled against an intermediate namespace and only becomes `net.minecraft.*` after Loom
+remaps it, so `MaterialProperties` cannot even be class-loaded outside a development
+environment. Both the test and `native/tools/GenerateGolden.java` are compile-verified
+against the bundled mappings jar.
+
+The cases in `tests/golden/manifest.txt` were chosen so that each one decides something a
+simpler test would miss:
+
+| Case | The decision it pins |
+| --- | --- |
+| `basic-quad` | the implicit `default` group, and a quad fanning into two triangles |
+| `two-materials` | material group ordering, `legacyMapping`, `map_Kd`, `Kd`/`d` packing, `flipv=1` |
+| `uv-seams` | `makeTexCoordsUnique` forking a vertex per distinct (vertex, texcoord) pair |
+| `generated-normals` | `generateNormals` feeding `distinct`, with a shared edge |
+| `placements` | the CUTOUT shader override, the post-translation Y-180 rotation, and merging by `MaterialProperties` |
+| `relative-indices` | relative indices against the running vertex count |
+| `group-name-textures` | the "no MTL" branch, including the `_` marker for no texture |
+| `schema-transform` | the `ObjectResource`-level translation, rotation, scale and mirror |
+| `model-scale-negative` | the inverse-transpose normal correction together with the winding flip from a negative scale component |
+| `model-scale-positive` | the same correction with the winding left alone, and the order of the two model-level operations |
+
+---
+
+## Performance
+
+Measurements from `native/tests/wrobj_bench.exe` on this machine, Windows x64, MSVC
+19.51, `Release`. These time the native path only: the Java-versus-native comparison
+is what the mod-side harness is for, and the numbers here show the shape of the work
+and make regressions visible.
+
+The model is MTR's own `assets/mtr/models/object/teapot.obj` — 540 KB of OBJ,
+13,209 triangles, no normals (so every normal is generated) and no MTL.
+
+```
+native/tests/wrobj_bench.exe <model.obj> [<model.mtl>] [iterations] [placements]
+```
+
+| Placements | Vertices | Triangles | Vertex buffer | Total | Parse | Normals + distinct + pack |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 105,684 | 50,560 | 2.4 MiB | **81 ms** | 25 ms | 57 ms |
+| 40 | 528,000 | 252,800 | 12.1 MiB | **370 ms** | 28 ms | 342 ms |
+
+Throughput is roughly 1.3–1.4 M vertices per second in both cases, and the checksum
+is stable across runs so a change in output is visible even when the timings are
+noisy.
+
+Two things worth reading off that table:
+
+- **Parsing is a fixed cost.** Going from 8 to 40 placements barely moves the parse
+  phase (25 ms → 28 ms) while the geometry phase grows fivefold. That is the shape the
+  rewrite is designed for: a resource pack pays the parse once per model and then pays
+  a per-placement cost that is a straight memory walk rather than an object graph.
+- **The reference pipeline would have allocated 11 MiB of Java heap for the 8-placement
+  case and 59 MiB for the 40-placement one.** That estimate is reported by the
+  library (`estimatedJavaHeapBytes`) and counts one `Vertex` plus a pair of `Vector3f`
+  per final vertex, one `Face` plus its `int[]` per triangle, and a map entry per
+  de-duplication probe. It is an estimate, not a measurement, and it is the figure to
+  watch when deciding whether a change helped.
+
+### Where the time goes away
+
+| Cost in the reference pipeline | Cost here |
+| --- | --- |
+| A `Vertex` with two `Vector3f` per renderable vertex | one 24-byte struct in a `std::vector` |
+| A full vertex copy in `generateNormals` | one pass, writing directly into the mesh |
+| `HashMap<Vertex, Integer>` with boxed keys per material | open addressing over a 64-bit hash |
+| A placement copy per part position, each re-walked | one merged pass per material |
+| An interleaved buffer allocated on the Java heap | packed into native memory, uploaded by address |
+
+### What is *not* faster
+
+Being explicit about the limits of the change:
+
+- **The draw path is untouched.** `BatchManager` still makes one draw call per vertex
+  array and still applies six global vertex attributes per array. The rewrite is about
+  model loading and buffer preparation, not about draw submission.
+- **The shader and render-layer work is untouched.** It needs a live client.
+- **The first model load is still bounded by disk I/O and by the OBJ file size.** What
+  changes is the cost *after* the bytes are in memory.
+- **Memory peak during a build is not obviously lower.** The native side holds the
+  source meshes and the accumulated model at the same time, as the Java side does. What
+  goes away is the garbage, not the working set.
+
+---
+
+## Fallback and failure handling
+
+The mod must never fail to start because of this library. Every entry point follows
+the same rule: attempt, log, and fall back.
+
+| Situation | Behaviour |
+| --- | --- |
+| Library not present | `NativeObjPipeline.isAvailable()` returns false; the Java pipeline runs |
+| ABI mismatch | load rejected with a warning; the Java pipeline runs |
+| A model the native parser rejects | logged, then the Java pipeline loads that model |
+| A malformed draw record | logged and skipped rather than trusted |
+| Texture resolver throws | the exception propagates and the caller falls back |
+
+`NativeObjPipeline.getStatusMessage()` and `getStatistics()` report which path was
+taken and how much work it did, so a player report can say plainly what happened.
+
+---
+
+## Threading and lifetime
+
+- `wr_obj_keys_load` and `wr_obj_builder_create` are pure functions of their inputs
+  apart from the texture resolver callback, which runs on the calling thread.
+- Builders are **not** thread-safe. The mod creates and uses each one on the thread
+  that loads the model, which is the same constraint the Java path has.
+- `WrObjResult` owns one native allocation. It is freed by
+  `Java_..._nativeFreeResult`, and `NativeObjResult.release()` is idempotent so a
+  double release cannot corrupt the heap.
+- `NativeObjModel.close()` releases a builder. MTR's `CachedResource` lifespan plus
+  the reload path decide when; a leak here would grow with every resource pack reload.
+
+---
+
+## Known divergences
+
+Documented rather than hidden, because each one is a deliberate decision:
+
+1. **Atlas sheets are not implemented.** `AtlasManager` only does anything when
+   `ObjModel.loadModel` gets a non-null atlas index, and `ModelResourceLoader` passes
+   `null`. The code is unreachable on the OBJ path today. If a future caller starts
+   passing one, the native path would silently ignore the atlas, so the host should
+   check for that before switching.
+
+2. **Source-mesh handles are not released on model unload.** Every placement builder
+   releases its handle once it has uploaded its geometry, which is where the bulk of the
+   memory goes. The source-mesh handle itself lives as long as the `CachedResource` that
+   produced the model — the same span the Java path keeps its `rawMeshes` alive for — and
+   `NativeObjModel.close()` exists to release it, but the mod has no model-unload hook to
+   call it from. Closing from a placement builder would be wrong: copies share the parent
+   model, so one part finishing would break the others. Attaching the release needs a
+   lifecycle decision on MTR's side, not on this one.
+
+3. **The resource pack creator's own model preview uses the same path.** It goes
+   through `StoredModelResourceBase.load`, which selects the backend the same way, so
+   a model shown in the creator preview and the same model on a train are built by the
+   same code.
+
+4. **`ObjModelLoader`'s exception behaviour is approximated.** A document that
+   `ObjReader` rejects aborts the whole load there, and the native parser returns
+   failure for the same inputs. Where javagl would throw from an unusual but valid
+   file, the native parser may accept it instead; the equivalence harness covers the
+   shapes that appear in real packs.
+
+5. **The native paths are not built by the normal mod build.** `native/packaged/` is
+   produced by CI from `.github/workflows/native.yml`, and `fabric/build.gradle` stages
+   whatever is there. A local `./gradlew build` therefore produces a jar with no native
+   library unless the directory has been populated, and the mod falls back. That is
+   intentional — it keeps the native side optional for Java-only contributors — but it
+   means a release build has to run the native workflow first.
+
+---
+
+## License
+
+MIT, matching the rest of the project.

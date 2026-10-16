@@ -1,0 +1,257 @@
+# SPDX-License-Identifier: MIT
+#
+# Builds and tests the native OBJ pipeline on every supported platform, then builds the
+# mod with the resulting libraries packaged in, so the Gradle build is verified against
+# the real native artifacts rather than against a checkout without them.
+#
+# The native module is deliberately independent of Gradle and of the JVM: it needs only a
+# C++17 compiler and CMake. That makes the native half of this workflow cheap and makes the
+# equivalence tests runnable without downloading Minecraft.
+#
+# Two things are produced per platform:
+#   * a test result, so a regression fails here rather than in game;
+#   * the shared library, which process-natives lays out for the mod jar under
+#     native/<os>-<arch>/ - the path NativeObjPipeline looks in.
+
+name: Native OBJ pipeline
+
+on:
+  push:
+    branches: [ '1.20.x' ]
+    paths:
+      - 'native/**'
+      - 'fabric/build.gradle'
+      - '.github/workflows/native.yml'
+  pull_request:
+    branches: [ '1.20.x' ]
+    paths:
+      - 'native/**'
+      - 'fabric/build.gradle'
+      - '.github/workflows/native.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            platform: windows-x64
+            library: wrobj.dll
+            artifact: wrobj-windows-x64
+          - name: linux-x64
+            os: ubuntu-latest
+            platform: linux-x64
+            library: libwrobj.so
+            artifact: wrobj-linux-x64
+          - name: macos-x64
+            os: macos-13
+            platform: macos-x64
+            library: libwrobj.dylib
+            artifact: wrobj-macos-x64
+          - name: macos-arm64
+            os: macos-14
+            platform: macos-arm64
+            library: libwrobj.dylib
+            artifact: wrobj-macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Configure
+        run: >
+          cmake -S native -B native/build
+          -DCMAKE_BUILD_TYPE=Release
+          -DWROBJ_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build native/build --config Release --parallel
+
+      - name: Test
+        # Both suites are pure native and need no GL context: the model pipeline suite and
+        # the draw list suite, the latter against a recording stub in place of a driver.
+        run: ctest --test-dir native/build --build-config Release --output-on-failure
+
+      - name: Run the test binaries directly
+        # ctest hides the assertion counts, and those counts are the useful signal when a
+        # change quietly stops exercising a case.
+        shell: bash
+        run: |
+          set -euo pipefail
+          for binary in $(find native/build -type f \( -name 'wrobj_tests' -o -name 'wrobj_tests.exe' \
+              -o -name 'wrgl_tests' -o -name 'wrgl_tests.exe' \) -perm -u+x); do
+            echo "=== $binary ==="
+            "$binary"
+          done
+
+      - name: Upload the library
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            native/build/**/${{ matrix.library }}
+            native/build/${{ matrix.library }}
+          if-no-files-found: error
+          retention-days: 30
+
+  build-android:
+    name: android-arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Configure for Android
+        # Android is a cross build: the library is compiled by the NDK for the device and
+        # loaded by the launcher's JVM, which already has a GL binding. No GL symbols are
+        # linked here - see native/include/wrobj/wrgl_emit.hpp for why the draw path routes
+        # GL through the host instead.
+        #
+        # ANDROID_NDK_LATEST_HOME is provided by the runner image; the fallback covers older
+        # images that only set ANDROID_NDK_HOME.
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [ -z "$NDK" ]; then
+            echo "No Android NDK found on this runner" >&2
+            exit 1
+          fi
+          echo "Using NDK at $NDK"
+          cmake -S native -B native/build-android \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DWROBJ_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build native/build-android --config Release --parallel
+
+      - name: Check what was produced
+        shell: bash
+        run: find native/build-android -name 'libwrobj.so' -print
+
+      - name: Upload the library
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrobj-android-arm64
+          path: native/build-android/**/libwrobj.so
+          if-no-files-found: error
+          retention-days: 30
+
+  process-natives:
+    name: Assemble the native resources
+    needs: [ build-and-test, build-android ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download every platform
+        uses: actions/download-artifact@v4
+        with:
+          path: natives
+
+      - name: Lay them out for the jar
+        # fabric/build.gradle stages native/packaged/ into the jar under native/<platform>/,
+        # and NativeObjPipeline looks the library up under exactly that path. A platform
+        # that is missing simply falls back to the Java pipeline on that platform.
+        run: |
+          set -euo pipefail
+          for platform in windows-x64 linux-x64 macos-x64 macos-arm64 android-arm64; do
+            mkdir -p "native/packaged/${platform}"
+          done
+          cp natives/wrobj-windows-x64/wrobj.dll             "native/packaged/windows-x64/"  2>/dev/null || true
+          cp natives/wrobj-linux-x64/libwrobj.so             "native/packaged/linux-x64/"    2>/dev/null || true
+          cp natives/wrobj-macos-x64/libwrobj.dylib          "native/packaged/macos-x64/"    2>/dev/null || true
+          cp natives/wrobj-macos-arm64/libwrobj.dylib        "native/packaged/macos-arm64/"  2>/dev/null || true
+          cp natives/wrobj-android-arm64/libwrobj.so         "native/packaged/android-arm64/" 2>/dev/null || true
+          echo "--- staged ---"
+          find native/packaged -type f -print -exec ls -l {} \;
+
+      - name: Upload the assembled resources
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrobj-natives
+          path: native/packaged
+          if-no-files-found: error
+          retention-days: 30
+
+  build-mod:
+    name: Build the mod (Fabric 1.20.1)
+    needs: [ process-natives ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: Minecraft-Transit-Railway
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download the assembled natives
+        uses: actions/download-artifact@v4
+        with:
+          name: wrobj-natives
+          path: Minecraft-Transit-Railway/native/packaged
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Build and test (1.20.1)
+        # This is the gate that matters: it compiles the mod against the mapping library,
+        # runs the JUnit suite - including the native equivalence tests and the vertex
+        # layout check - and packages the jar with the natives staged above.
+        run: |
+          ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
+            -PmodLoader=fabric \
+            -PminecraftVersion=1.20.1
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Verify the natives made it into the jar
+        shell: bash
+        working-directory: ./Minecraft-Transit-Railway
+        run: |
+          set -euo pipefail
+          jar_file=$(find build/release -name '*.jar' ! -name '*sources*' | head -n 1)
+          echo "checking $jar_file"
+          unzip -l "$jar_file" | grep -E 'native/.*(wrobj\.dll|libwrobj\.(so|dylib))' || {
+            echo "the native libraries are not in the jar" >&2
+            exit 1
+          }
+
+      - name: Upload the mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: YYMTR-fabric-1.20.1
+          path: Minecraft-Transit-Railway/build/release/*.jar
+          if-no-files-found: error
+          retention-days: 14

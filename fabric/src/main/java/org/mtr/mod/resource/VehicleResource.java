@@ -543,7 +543,7 @@ public final class VehicleResource extends VehicleResourceSchema {
 
 				final OptimizedModelWrapper optimizedModel2;
 				final ObjectArrayList<OptimizedModelWrapper.ObjModelWrapper> objModels = objModelsModel.get(partCondition);
-				optimizedModel2 = objModels == null ? null : OptimizedModelWrapper.fromObjModels(objModels);
+				optimizedModel2 = objModels == null ? null : OptimizedModelWrapper.fromObjModelWrappers(objModels);
 				optimizedModels.put(partCondition, new OptimizedModelWrapper(optimizedModel1, optimizedModel2));
 			}
 

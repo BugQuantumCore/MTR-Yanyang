@@ -54,3 +54,14 @@ mtr_custom_resources.json
 **/font/mtr.json
 **/lang/*.json
 !en_us.json
+
+# native OBJ pipeline
+#
+# Build trees are per-platform and large, and the staged resources are CI output that
+# fabric/build.gradle copies into the jar. Committed sources are native/include,
+# native/src, native/jni, native/tests and native/tools.
+native/build/
+native/build-*/
+native/packaged/
+native/tools/*.class
+native/**/*.obj.bak
