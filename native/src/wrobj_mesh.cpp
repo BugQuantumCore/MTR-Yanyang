@@ -140,13 +140,17 @@ void RawMesh::distinct() {
     // inside the forEach above, in input order, before the set is ever consulted.
     //
     // Java's HashSet<Face> here holds one element per distinct face. A HashSet is backed by a
-    // HashMap whose table starts at 16 and doubles once size exceeds 0.75 * capacity, so the
-    // capacity is the smallest power of two above 4/3 of the face count. Bucket index is
-    // (hash ^ (hash >>> 16)) & (capacity - 1), and entries within one bucket keep insertion
-    // order, so ordering by bucket index is a stable sort of the insertion-ordered list.
+    // HashMap whose table starts at 16 and doubles once size exceeds 0.75 * capacity. Bucket
+    // index is (hash ^ (hash >>> 16)) & (capacity - 1), and entries within one bucket keep
+    // insertion order, so ordering by bucket index is a stable sort of the insertion-ordered
+    // list.
+    //
+    // The growth is simulated rather than solved for, because the closed form (smallest power
+    // of two above 4/3 of the count) is off by one doubling at the boundary where a count equal
+    // to 0.75 * capacity still fits the current table.
     const size_t faceTotal = orderedFaceIndices.size();
     uint32_t tableCapacity = 16;
-    while (faceTotal > static_cast<size_t>(tableCapacity) * 3 / 4) {
+    while (faceTotal > static_cast<size_t>(tableCapacity) - static_cast<size_t>(tableCapacity) / 4) {
         tableCapacity *= 2;
     }
     const uint32_t mask = tableCapacity - 1;
