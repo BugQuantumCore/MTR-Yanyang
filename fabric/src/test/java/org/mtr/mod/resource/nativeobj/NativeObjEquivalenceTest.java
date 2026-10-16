@@ -88,6 +88,37 @@ public class NativeObjEquivalenceTest {
 	// The test
 	// -----------------------------------------------------------------------
 
+	/**
+	 * Asserts that the native draw path can reach the private backend state it depends on.
+	 *
+	 * <p>This is the failure that would otherwise be silent in production.
+	 * {@code NativeModelAccess} reflects on {@code OptimizedModel} and {@code VertexArray} to reach
+	 * a handful of private fields and methods, and every failure path in it disables the native draw
+	 * path and falls back to the Java batch manager. A mapping update that renames a field, or a
+	 * module configuration that denies the lookup, would therefore cost the entire draw-path
+	 * performance win while producing no error a player or a log reader would notice - the game
+	 * simply renders through the old path.</p>
+	 *
+	 * <p>It has to live here rather than in the standalone smoke test. Reflection links the target
+	 * class, not just locates it, and linking {@code OptimizedModel} pulls in signatures that
+	 * reference {@code net.minecraft.*} types. The published mappings jar is compiled against an
+	 * intermediate namespace and only becomes {@code net.minecraft.*} after Loom remaps it, so the
+	 * smoke test's environment fails with {@code NoClassDefFoundError} however correct the code is.
+	 * This source set has the remapped classes, which makes it the only place the check is
+	 * meaningful.</p>
+	 */
+	@Test
+	public void nativeDrawPathCanReachTheBackendState() {
+		assumeTrue(NativeObjPipeline.isAvailable(),
+				"the native wrobj library is not available: " + NativeObjPipeline.getStatusMessage());
+
+		assertTrue(NativeModelAccess.isAvailable(),
+				"NativeModelAccess could not resolve the backend's private state: "
+						+ NativeModelAccess.getFailureReason());
+		assertTrue(NativeModelAccess.canReadPose(),
+				"the pose matrix reader could not be composed from its four lookups");
+	}
+
 	@Test
 	public void nativePipelineReproducesTheJavaBuffers() throws Exception {
 		assumeTrue(NativeObjPipeline.isAvailable(),

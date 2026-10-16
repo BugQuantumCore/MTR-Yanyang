@@ -47,6 +47,7 @@ public final class NativeObjSmokeTest {
 		smokeTestDeterminism();
 		smokeTestIsolation();
 		smokeTestDrawList();
+		smokeTestDrawPathAccess();
 
 		System.out.println();
 		System.out.println(checks + " check(s), " + failures + " failure(s)");
@@ -221,7 +222,12 @@ public final class NativeObjSmokeTest {
 	}
 
 	private static void smokeTestIsolation() {
-		final byte[] obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n".getBytes(StandardCharsets.UTF_8);
+		// The usemtl is load-bearing. A document with none has no material groups at all -
+		// ObjSplitting.splitByMaterialGroups iterates obj.getNumMaterialGroups(), and ObjReader
+		// creates that group only when it sees a usemtl - so the native builder has nothing to
+		// build and declines rather than returning an empty model. This fixture predates that rule
+		// and was still asserting on a builder that can no longer exist for it.
+		final byte[] obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl _\nf 1 2 3\n".getBytes(StandardCharsets.UTF_8);
 
 		final long first = NativeObjPipeline.createBuilder(obj, null, false, false,
 				NativeTextureResolver.unresolved());
@@ -284,6 +290,34 @@ public final class NativeObjSmokeTest {
 	 * pure-native suite in {@code native/tests/wrgl_tests.cpp}, which runs the same logic
 	 * against a recording stub in place of a driver.</p>
 	 */
+	/**
+	 * Reports whether the native draw path can reach the backend's private state.
+	 *
+	 * <p>This cannot be asserted here, and the reason is worth recording rather than leaving as a
+	 * gap. {@code NativeModelAccess} reaches that state by reflecting on
+	 * {@code OptimizedModel} and {@code VertexArray}, and reflection has to <em>link</em> those
+	 * classes, not merely find them. Linking pulls in their signatures, which reference
+	 * {@code net.minecraft.*} types that the published mappings jar does not carry - it is compiled
+	 * against an intermediate namespace and only becomes {@code net.minecraft.*} after Loom remaps
+	 * it. The attempt therefore fails with {@code NoClassDefFoundError:
+	 * org/mtr/mapping/mapper/OptimizedModel} even though the class file is present.</p>
+	 *
+	 * <p>{@code NativeObjEquivalenceTest} runs in the Gradle test source set, which does have the
+	 * remapped classes, and is where this is asserted. Reporting the state here instead of failing
+	 * on it keeps this suite honest about what it can and cannot establish.</p>
+	 */
+	private static void smokeTestDrawPathAccess() {
+		try {
+			final boolean available = NativeModelAccess.isAvailable();
+			System.out.println("  note: native draw path access " + (available ? "is" : "is not")
+					+ " available here"
+					+ (available ? "" : " (" + NativeModelAccess.getFailureReason() + ")"));
+		} catch (Throwable throwable) {
+			System.out.println("  note: draw path access cannot be evaluated in this environment: "
+					+ throwable.getClass().getSimpleName());
+		}
+	}
+
 	private static void smokeTestDrawList() {
 		final NativeDrawList list = NativeDrawList.create(false, 256);
 		check(list != null, "a native draw list is created");

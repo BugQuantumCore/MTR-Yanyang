@@ -223,7 +223,19 @@ Write-Host ''
 Write-Host "Running the JNI smoke test against $library"
 # NativeObjPipeline falls back to the library path for the plain library name, and this
 # JVM property is the standard way to extend it.
-& $java "-Djava.library.path=$LibraryDirectory" -cp "$OutputDirectory$([IO.Path]::PathSeparator)$classpath" `
+#
+# slf4j-api is added explicitly rather than relied on from the type-check classpath. The mod's
+# Init class declares its logger as a static field, so any code that touches Init - including the
+# failure path of NativeModelAccess.isAvailable, which logs why the draw path was disabled -
+# forces that class to initialise and fails with NoClassDefFoundError if the binding is absent.
+$smokeClasspath = "$OutputDirectory$([IO.Path]::PathSeparator)$classpath"
+$slf4jJar = Find-Jar -GroupPath 'org.slf4j\slf4j-api' -NamePattern 'slf4j-api-*.jar' -PreferredVersion $null -NativesOnly:$false
+if ($slf4jJar) {
+    $smokeClasspath = "$smokeClasspath$([IO.Path]::PathSeparator)$slf4jJar"
+} else {
+    Write-Host 'note: slf4j-api was not found; the smoke test may fail if it touches Init'
+}
+& $java "-Djava.library.path=$LibraryDirectory" -cp $smokeClasspath `
     org.mtr.mod.resource.nativeobj.NativeObjSmokeTest
 $smokeExit = $LASTEXITCODE
 
