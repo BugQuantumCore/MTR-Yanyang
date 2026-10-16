@@ -26,13 +26,15 @@
 #include "wrobj/wrobj_model.hpp"
 
 #include <algorithm>
-#include <cstdlib>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {

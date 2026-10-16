@@ -25,6 +25,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace wrobj {
 namespace {

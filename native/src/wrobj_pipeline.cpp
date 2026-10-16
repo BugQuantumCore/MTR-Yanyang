@@ -14,7 +14,12 @@
 #include "wrobj/wrobj_model.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace wrobj {
 
