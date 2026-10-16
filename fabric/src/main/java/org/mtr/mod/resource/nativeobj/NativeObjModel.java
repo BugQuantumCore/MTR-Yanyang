@@ -12,13 +12,13 @@ import javax.annotation.Nullable;
  * operations MTR performs on it:</p>
  *
  * <ul>
- *   <li>{@link #copy()} — {@code ObjModel.copy()}, used by {@code ModelPropertiesPart}'s
+ *   <li>{@link #copy()} - {@code ObjModel.copy()}, used by {@code ModelPropertiesPart}'s
  *       per-part isolation fix so one part's placements cannot leak into another part's
  *       condition bucket.</li>
- *   <li>{@link #addTransformation} — {@code ObjModel.addTransformation}, called once per
+ *   <li>{@link #addTransformation} - {@code ObjModel.addTransformation}, called once per
  *       vehicle part position and therefore the hottest entry point in the model
  *       pipeline.</li>
- *   <li>{@link #getMinX()} and friends — the bounding box, which MTR turns into the part's
+ *   <li>{@link #getMinX()} and friends - the bounding box, which MTR turns into the part's
  *       collision and interaction box, so it has to track the {@code ObjectResource}-level
  *       transforms exactly as the Java path does.</li>
  * </ul>
@@ -32,7 +32,7 @@ import javax.annotation.Nullable;
  * long as the {@code CachedResource} that produced this model, matching the Java path, where
  * {@code OptimizedModel.ObjModel} keeps its {@code rawMeshes} alive for the same span. The mod
  * has no model-unload hook to attach a release to, so this is a known boundary rather than an
- * oversight — see the "Known divergences" section of {@code native/README.md}.</p>
+ * oversight - see the "Known divergences" section of {@code native/README.md}.</p>
  */
 public final class NativeObjModel implements AutoCloseable {
 
@@ -320,7 +320,7 @@ public final class NativeObjModel implements AutoCloseable {
 	 * <p>The native parser reports the texture string and shader type it derived, in the same
 	 * order the table was built, so the pair is enough to recover the key index. The pair
 	 * rather than the string alone, because two material groups can share a texture and still
-	 * be distinct materials — {@code MaterialProperties} compares the shader type too.</p>
+	 * be distinct materials - {@code MaterialProperties} compares the shader type too.</p>
 	 *
 	 * <p>A key is resolved once per build, over a table of at most a few dozen entries, so a
 	 * linear scan costs less than maintaining a map.</p>

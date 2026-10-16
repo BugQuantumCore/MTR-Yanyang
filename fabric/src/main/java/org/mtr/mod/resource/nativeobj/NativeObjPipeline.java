@@ -233,7 +233,7 @@ public final class NativeObjPipeline {
 	 *
 	 * <p>Each vehicle part needs its own builder. The reference implementation deep-copies
 	 * the model per part, and sharing a builder would accumulate every part's geometry into
-	 * one buffer — the cross-condition rendering bug this branch already had to fix.</p>
+	 * one buffer - the cross-condition rendering bug this branch already had to fix.</p>
 	 *
 	 * @param materialGroupTextures false to take the loader's "no materials" branch, where
 	 *                              the material group name doubles as the texture string

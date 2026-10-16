@@ -5,7 +5,7 @@ package org.mtr.mod.resource.nativeobj;
  *
  * <p>Mirrors {@code WrObjResultDraw} in native/include/wrobj/wrobj.hpp. A bucket becomes
  * one {@code VertexArray} on the Java side, and the whole set of buckets is what
- * {@code OptimizedModel.fromObjModels} would have produced from the Java pipeline — in the
+ * {@code OptimizedModel.fromObjModels} would have produced from the Java pipeline - in the
  * same order, because both derive it from the same ordered merge.</p>
  */
 public final class NativeObjDraw {

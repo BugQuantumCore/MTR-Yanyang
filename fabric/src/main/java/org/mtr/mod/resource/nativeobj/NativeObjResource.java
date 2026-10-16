@@ -31,7 +31,7 @@ import java.util.List;
  *
  * <p>Every method returns null instead of throwing when anything is missing. A model that the
  * native parser cannot handle, a library that failed to load, a resource pack that broke its
- * MTL — all of them leave the caller to use the original Java pipeline, which is still
+ * MTL - all of them leave the caller to use the original Java pipeline, which is still
  * present and untouched.</p>
  */
 public final class NativeObjResource {
@@ -224,8 +224,11 @@ public final class NativeObjResource {
 	 *
 	 * <p>Deliberately a plain scan rather than a parser: the native side parses the document
 	 * properly, and this only needs to locate a file name.</p>
+	 *
+	 * <p>Public because {@code ModelResourceLoader} is in a different package and needs the
+	 * same answer to resolve the MTL that the native builder will use.</p>
 	 */
-	static String findLastMtlLib(String objHeader) {
+	public static String findLastMtlLib(String objHeader) {
 		String result = "";
 		for (final String rawLine : objHeader.split("\r\n|\r|\n")) {
 			final String line = rawLine.trim();

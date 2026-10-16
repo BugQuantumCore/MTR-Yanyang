@@ -56,8 +56,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>For each case in {@code native/tests/golden/manifest.txt} the test does two things:</p>
  *
  * <ol>
- *   <li>runs the reference pipeline — the real {@code ObjReader}, {@code ObjSplitting},
- *       {@code ObjUtils.convertToRenderable}, {@code RawMesh} and {@code RawModel} — and packs
+ *   <li>runs the reference pipeline - the real {@code ObjReader}, {@code ObjSplitting},
+ *       {@code ObjUtils.convertToRenderable}, {@code RawMesh} and {@code RawModel} - and packs
  *       the result exactly as {@code RawMesh.upload} does;</li>
  *   <li>runs the same case through {@link NativeObjModel} and packs the result the same way.</li>
  * </ol>

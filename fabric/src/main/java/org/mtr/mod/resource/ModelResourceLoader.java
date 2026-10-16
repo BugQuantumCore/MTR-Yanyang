@@ -217,7 +217,7 @@ public final class ModelResourceLoader {
 
 		// One entry per model group, so a multi-group OBJ behaves exactly as it does on the Java
 		// path: MTR addresses parts by group name.
-		final String[] groupNames = getModelGroupNames(objContent, mtlContent);
+		final String[] groupNames = getModelGroupNames(objContent);
 		if (groupNames.length == 0) {
 			// No `g` statement at all: the whole document is the implicit "default" group, which
 			// is the same single-entry map ObjSplitting.splitByGroups produces.
@@ -239,7 +239,7 @@ public final class ModelResourceLoader {
 	 * geometry came from C++ or from javagl. The rules mirror {@code ObjReader}: a single
 	 * {@code g}/{@code o} state machine, so an {@code o} after a {@code g} is ignored.</p>
 	 */
-	private static String[] getModelGroupNames(String objContent, @Nullable String mtlContent) {
+	private static String[] getModelGroupNames(String objContent) {
 		final java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
 		String groupingKeyword = null;
 		for (final String rawLine : objContent.split("\r\n|\r|\n")) {
@@ -272,7 +272,6 @@ public final class ModelResourceLoader {
 		// ObjSplitting skips groups with no faces, but a group the document declared and never
 		// populated would leave the tree map missing rather than lying about its contents, so
 		// the names are returned as declared and the empty ones simply never get looked up.
-		(void) mtlContent;
 		return names.toArray(new String[0]);
 	}
 

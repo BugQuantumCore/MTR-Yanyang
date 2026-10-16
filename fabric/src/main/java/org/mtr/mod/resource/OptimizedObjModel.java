@@ -13,7 +13,7 @@ import org.mtr.mod.resource.nativeobj.NativeObjModel;
  *
  * <p>The per-part copy matters beyond convenience. {@code ObjModel.addTransformation}
  * appends placed copies into the instance's own accumulated model, so sharing one instance
- * across parts accumulates every part's placements and renders every variant at once — the
+ * across parts accumulates every part's placements and renders every variant at once - the
  * cross-condition rendering bug this branch already fixed once in
  * {@code ModelPropertiesPart}. Both implementations must therefore return a genuinely
  * independent copy.</p>

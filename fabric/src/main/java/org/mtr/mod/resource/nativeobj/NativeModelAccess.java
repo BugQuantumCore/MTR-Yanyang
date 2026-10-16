@@ -25,12 +25,12 @@ import java.util.List;
  * replacement draw loop has to read:</p>
  *
  * <ul>
- *   <li>{@code OptimizedModel.uploadedParts} — the vertex arrays a model consists of. Without
+ *   <li>{@code OptimizedModel.uploadedParts} - the vertex arrays a model consists of. Without
  *       it there is nothing to register or draw.</li>
- *   <li>{@code VertexArray.materialProperties} — the per-bucket identity that decides which
+ *   <li>{@code VertexArray.materialProperties} - the per-bucket identity that decides which
  *       shader and texture to bind, and therefore the grouping.</li>
  *   <li>{@code OptimizedRenderer.shaderManager} and its
- *       {@code setupShaderBatchState}/{@code cleanupShaderBatchState} — the shader, texture
+ *       {@code setupShaderBatchState}/{@code cleanupShaderBatchState} - the shader, texture
  *       and blend state for a material. Re-implementing that would mean duplicating shader
  *       loading and render-layer behaviour that needs a live client to get right.</li>
  * </ul>

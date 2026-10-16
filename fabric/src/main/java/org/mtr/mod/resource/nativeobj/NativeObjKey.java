@@ -5,9 +5,9 @@ package org.mtr.mod.resource.nativeobj;
  *
  * <p>Mirrors {@code WrObjKeyInfo} in native/include/wrobj/wrobj.hpp and exists so the Java
  * side can resolve texture identity before any geometry is built. The field values are the
- * reference loader's own decisions — shader type from {@code legacyMapping}, the texture
+ * reference loader's own decisions - shader type from {@code legacyMapping}, the texture
  * string from the three-way {@code materials.isEmpty()} / material-missing / {@code map_Kd}
- * rule — so nothing here is recomputed on the Java side.</p>
+ * rule - so nothing here is recomputed on the Java side.</p>
  */
 public final class NativeObjKey {
 

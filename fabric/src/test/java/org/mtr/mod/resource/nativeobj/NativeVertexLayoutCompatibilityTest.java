@@ -32,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>{@code OptimizedModel.DEFAULT_MAPPING} is private, so {@link NativeObjModelBuilder}
  * rebuilds the same {@code VertexAttributeMapping} from the same declarations. That is safe
  * only while the two agree: if the mapping's source choices ever change, the native buffer
- * would keep its own order and the GPU would read the wrong bytes — position interpreted as
- * UV, a normal read out of the padding — which renders as garbage rather than as an error.</p>
+ * would keep its own order and the GPU would read the wrong bytes - position interpreted as
+ * UV, a normal read out of the padding - which renders as garbage rather than as an error.</p>
  *
  * <h2>How the reference layout is obtained</h2>
  *

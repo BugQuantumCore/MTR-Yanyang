@@ -54,7 +54,7 @@ public final class NativeObjModelBuilder {
 	 * The vertex attribute layout the OBJ path uses.
 	 *
 	 * <p>Declared as position, UV and normal in the vertex buffer with colour, overlay,
-	 * lightmap and model matrix coming from the global state — the same choices
+	 * lightmap and model matrix coming from the global state - the same choices
 	 * {@code OptimizedModel}'s static mapping makes.</p>
 	 */
 	private static final VertexAttributeMapping DEFAULT_MAPPING = new VertexAttributeMapping.Builder()

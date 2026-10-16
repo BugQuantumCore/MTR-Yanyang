@@ -76,21 +76,28 @@ tasks.register("copyNativeModelPipeline", Copy) {
 	description = "Stages native/packaged/ into the jar under native/<os>-<arch>/."
 	group = "build"
 
+	// Gradle validates a declared input directory eagerly, so a source that may legitimately
+	// be absent has to be tolerated by the copy itself rather than by onlyIf. An empty
+	// directory produces an empty copy, which is the "no native library" case the mod handles
+	// by falling back to its Java pipeline.
 	onlyIf { packagedNatives.isDirectory() }
 
-	from(packagedNatives) {
-		into "native"
+	// Fingerprinted after the skip check so a project without the directory does not fail
+	// configuration validation. inputs.dir does not accept .optional() from Groovy, which is
+	// what made the first version of this task fail with "an input file was expected to be
+	// present but it doesn't exist".
+	if (packagedNatives.isDirectory()) {
+		inputs.dir(packagedNatives)
 	}
-	into layout.buildDirectory.dir("generated/nativeResources")
+
+	from(packagedNatives)
+	into layout.buildDirectory.dir("generated/nativeResources/native")
 }
 
 sourceSets.main.resources.srcDir(layout.buildDirectory.dir("generated/nativeResources"))
 
 tasks.named("processResources") {
 	dependsOn("copyNativeModelPipeline")
-	// The staged directory is not a declared input of the resources source set, so without
-	// this a rebuilt library would not invalidate the task.
-	inputs.dir(packagedNatives).optional()
 }
 
 if (project.hasProperty("serverOptimizationTest")) {
