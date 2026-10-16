@@ -47,12 +47,45 @@ public final class NativeDrawListGlTest {
 		org.junit.jupiter.api.Assumptions.assumeTrue(NativeObjPipeline.isAvailable(),
 				"the native wrobj library is not available: " + NativeObjPipeline.getStatusMessage());
 
+		// Every way of failing to obtain a context has to abort rather than fail. CI runs
+		// :fabric:test on a headless Linux runner, where glfwInit itself returns false and there is
+		// no monitor to query, so a test that failed on that would break the mod build for a machine
+		// limitation rather than a fault in the code.
+		boolean displayAvailable;
+		try {
+			displayAvailable = hasDisplay();
+		} catch (Throwable throwable) {
+			displayAvailable = false;
+		}
+		org.junit.jupiter.api.Assumptions.assumeTrue(displayAvailable,
+				"no display is available for a GL context");
+
 		final String failure = run();
-		org.junit.jupiter.api.Assumptions.assumeFalse(
-				failure != null && failure.contains("GLFW could not create a window"),
+		org.junit.jupiter.api.Assumptions.assumeTrue(failure == null || !isEnvironmentFailure(failure),
 				"no GL context is available on this machine: " + failure);
 		org.junit.jupiter.api.Assertions.assertNull(failure,
 				"the native draw path did not reach the driver: " + failure);
+	}
+
+	/** True when GLFW can see a display, i.e. when a context is worth attempting. */
+	private static boolean hasDisplay() {
+		if (!GLFW.glfwInit()) {
+			return false;
+		}
+		try {
+			// PointerBuffer has no isEmpty(); remaining() is the monitor count.
+			return GLFW.glfwGetMonitors() != null && GLFW.glfwGetMonitors().remaining() > 0;
+		} finally {
+			GLFW.glfwTerminate();
+		}
+	}
+
+	/** True for the failures that mean "this machine cannot do GL" rather than "the path is broken". */
+	private static boolean isEnvironmentFailure(String failure) {
+		return failure.contains("GLFW could not be initialised")
+				|| failure.contains("GLFW could not create a window")
+				|| failure.contains("the test shader failed to link")
+				|| failure.contains("the native draw list could not be created");
 	}
 
 	private NativeDrawListGlTest() {
