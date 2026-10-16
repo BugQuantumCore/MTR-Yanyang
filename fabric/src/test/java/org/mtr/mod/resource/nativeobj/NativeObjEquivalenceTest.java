@@ -144,22 +144,24 @@ public class NativeObjEquivalenceTest {
 
 		assertEquals(reference.draws.size(), nativeBuffers.draws.size(),
 				label + ": draw bucket count");
-		for (int i = 0; i < Math.min(reference.draws.size(), nativeBuffers.draws.size()); i++) {
-			assertEquals(reference.draws.get(i).toString(), nativeBuffers.draws.get(i).toString(),
-					label + ": bucket " + i);
-		}
 
+		// The vertex-buffer measurement runs before the per-bucket comparison, not after.
+		//
+		// The per-bucket assertion fails fast, and while it was ahead of this the measurement
+		// never ran for the one case that fails, which left its vertex data uncharacterised while
+		// the other nine cases were all reporting zero difference. Measuring first means a failure
+		// anywhere below still leaves the magnitude on record.
 		assertEquals(reference.vertexData.length, nativeBuffers.vertexData.length,
 				label + ": vertex buffer size");
 		assertEquals(reference.indexData.length, nativeBuffers.indexData.length,
 				label + ": index buffer size");
-
-		// How far apart the two buffers actually are, before anything is concluded from the first
-		// difference. A byte-for-byte comparison reports only that something differs, and one
-		// vertex one unit apart and every vertex far apart are entirely different problems; the
-		// magnitude has to be known before the difference can be interpreted.
 		final Divergence divergence = reportDivergence(label, reference.vertexData,
 				nativeBuffers.vertexData);
+
+		for (int i = 0; i < Math.min(reference.draws.size(), nativeBuffers.draws.size()); i++) {
+			assertEquals(reference.draws.get(i).toString(), nativeBuffers.draws.get(i).toString(),
+					label + ": bucket " + i);
+		}
 
 		// The buffers are compared within a tolerance rather than bit for bit, because the two
 		// sides reach the same value by different routes: the reference evaluates the Java
