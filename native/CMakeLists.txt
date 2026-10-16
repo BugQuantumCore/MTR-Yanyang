@@ -56,7 +56,13 @@ target_include_directories(wrobj_core
 
 set_target_properties(wrobj_core PROPERTIES
         CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN ON)
+        VISIBILITY_INLINES_HIDDEN ON
+        # Both artefacts land directly in the build root whatever the generator. The CI
+        # upload step and the packaging step look for them by name, and a per-configuration
+        # subdirectory would otherwise change the path between generators.
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # A stable alias so dependents do not need to know the target was renamed to keep
 # the JNI import library clear of it.
@@ -86,6 +92,21 @@ endif()
 
 find_package(JNI QUIET)
 
+# The Android NDK does not register with CMake's JNI find module, but it ships the headers
+# in its sysroot. Without this the cross build would silently produce no shared library,
+# which the packaging step would then report as a missing artefact.
+if(ANDROID AND NOT JNI_FOUND)
+    set(_wrobj_android_jni_include
+            "${ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/include")
+    if(EXISTS "${_wrobj_android_jni_include}/jni.h")
+        set(JNI_FOUND TRUE)
+        set(JNI_INCLUDE_DIRS "${_wrobj_android_jni_include}")
+        message(STATUS "wrobj: using the NDK's JNI headers at ${_wrobj_android_jni_include}")
+    else()
+        message(STATUS "wrobj: the NDK's JNI headers were not found at ${_wrobj_android_jni_include}")
+    endif()
+endif()
+
 if(JNI_FOUND)
     add_library(wrobj SHARED
             jni/wrobj_jni.cpp
@@ -95,16 +116,40 @@ if(JNI_FOUND)
             ${JNI_INCLUDE_DIRS}
             ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+    if(ANDROID)
+        # Android has no libstdc++ shared object to link against: the platform ships only
+        # the C runtime, so the C++ runtime has to be inside the library or the loader will
+        # refuse it with an unresolved symbol. This is the standard recipe for an NDK shared
+        # library and it is also why the tests are not built for Android by default.
+        target_link_options(wrobj PRIVATE
+                "-Wl,-z,max-page-size=16384"
+                "-static-libstdc++")
+        # The GL calls still go through the host - see wrgl_emit.hpp - so nothing here links
+        # GLES. The launcher's JVM already has a binding, and on a translation layer such as
+        # gl4ES that binding is what routes to the driver.
+        target_compile_definitions(wrobj PRIVATE WROBJ_ANDROID=1)
+    endif()
+
     if(MSVC)
         target_compile_options(wrobj PRIVATE /W4 /permissive- /utf-8 /fp:precise)
         target_compile_definitions(wrobj PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
     else()
         target_compile_options(wrobj PRIVATE -Wall -Wextra)
+        if(NOT ANDROID)
+            # Not needed on Android, where the C++ runtime is static, and a plain -lm is
+            # required on Linux for the sqrt and cos the model pipeline uses.
+            target_link_libraries(wrobj PRIVATE m)
+        endif()
     endif()
 
     set_target_properties(wrobj PROPERTIES
             PREFIX ""
-            OUTPUT_NAME "wrobj")
+            OUTPUT_NAME "wrobj"
+            # Single-config generators ignore these, multi-config ones need them; setting
+            # both keeps the library at native/build/<name> on every platform.
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
     message(STATUS "wrobj: JNI bridge enabled")
 else()

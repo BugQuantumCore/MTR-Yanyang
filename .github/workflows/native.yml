@@ -95,13 +95,27 @@ jobs:
             "$binary"
           done
 
+      - name: Verify the library was produced
+        # Fail here with the actual directory contents rather than at the upload step with a
+        # path that did not match. Both CMake and CMakeLists.txt pin the output directory to
+        # the build root, so this is a strict check.
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "--- build root ---"
+          ls -la native/build
+          if [ ! -f "native/build/${{ matrix.library }}" ]; then
+            echo "expected native/build/${{ matrix.library }} was not produced" >&2
+            find native/build -name '*wrobj*' -print >&2
+            exit 1
+          fi
+          echo "found native/build/${{ matrix.library }}"
+
       - name: Upload the library
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            native/build/**/${{ matrix.library }}
-            native/build/${{ matrix.library }}
+          path: native/build/${{ matrix.library }}
           if-no-files-found: error
           retention-days: 30
 
