@@ -245,6 +245,48 @@ void testTriangulationFan() {
     checkEqual(renderable.faces[1].v[2], int32_t(3), "second triangle third index");
 }
 
+/**
+ * Pins the exact-comparison semantics that decide the vertex count.
+ *
+ * <p>The equivalence harness found model-scale-negative keeping 12 vertices on the Java side
+ * against 8 natively, with the two sides agreeing on every triangle. The vertices that
+ * separated them shared position and UV and a normal of z = -1, differing only in the last bit
+ * of the normal's x and y - one side computed 0x...277 and the other 0x...278 for sin(pi)
+ * residue left by a 180 degree rotation. Java compares vertices exactly and keeps both; a port
+ * that treated them as equal would collapse them.</p>
+ *
+ * <p>So this test asserts both directions of that rule: a difference in the last bit of a
+ * normal keeps vertices apart, and an exact duplicate still collapses. The second half matters
+ * as much as the first, because widening equality until nothing collapses would pass the first
+ * assertion while breaking deduplication.</p>
+ */
+void testDistinctKeepsLastBitNormalDifference() {
+    std::cout << "distinct: a last-bit normal difference keeps vertices apart\n";
+
+    wrobj::RawMesh mesh;
+    wrobj::Vertex a;
+    a.position = wrobj::Vec3f(0.0F, 0.0F, 0.0F);
+    a.normal = wrobj::Vec3f(-8.742277E-8F, -8.742276E-8F, -1.0F);
+    a.u = 0.0F;
+    a.v = 0.0F;
+
+    wrobj::Vertex b = a;
+    // The neighbouring float, i.e. one ULP away, and the two must not compare equal.
+    b.normal = wrobj::Vec3f(-8.742278E-8F, -8.742278E-8F, -1.0F);
+    check(floatBits(a.normal.x) != floatBits(b.normal.x),
+            "the two normals really are different floats");
+
+    wrobj::Vertex exactCopy = a;
+    mesh.vertices = {a, b, exactCopy};
+    mesh.faces.push_back(wrobj::Face{{0, 1, 2}});
+    mesh.distinct();
+
+    checkEqual(mesh.vertices.size(), size_t(2), "the last-bit variant survives, the exact copy does not");
+    checkEqual(mesh.faces[0].vertices[0], int32_t(0), "first index unchanged");
+    checkEqual(mesh.faces[0].vertices[1], int32_t(1), "the variant keeps its own index");
+    checkEqual(mesh.faces[0].vertices[2], int32_t(0), "the exact copy maps back to the first");
+}
+
 void testDistinctScope() {
     std::cout << "distinct: position, normal and UV participate; colour does not\n";
 
@@ -1140,6 +1182,7 @@ int main(int argc, char** argv) {
     testGroupKeywordState();
     testMaterialGroups();
     testTriangulationFan();
+    testDistinctKeepsLastBitNormalDifference();
     testDistinctScope();
     testDuplicateFacesCollapse();
     testGenerateNormals();
