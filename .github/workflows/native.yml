@@ -46,17 +46,17 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             platform: linux-x64
-            library: libwrobj.so
+            library: wrobj.so
             artifact: wrobj-linux-x64
           - name: macos-x64
             os: macos-13
             platform: macos-x64
-            library: libwrobj.dylib
+            library: wrobj.dylib
             artifact: wrobj-macos-x64
           - name: macos-arm64
             os: macos-14
             platform: macos-arm64
-            library: libwrobj.dylib
+            library: wrobj.dylib
             artifact: wrobj-macos-arm64
 
     steps:
@@ -240,13 +240,13 @@ jobs:
 
       - name: Check what was produced
         shell: bash
-        run: find native/build-android -name 'libwrobj.so' -print
+        run: find native/build-android -name 'wrobj.so' -print
 
       - name: Upload the library
         uses: actions/upload-artifact@v4
         with:
           name: wrobj-android-arm64
-          path: native/build-android/**/libwrobj.so
+          path: native/build-android/**/wrobj.so
           if-no-files-found: error
           retention-days: 30
 
@@ -277,10 +277,10 @@ jobs:
             mkdir -p "native/packaged/${platform}"
           done
           cp natives/wrobj-windows-x64/wrobj.dll             "native/packaged/windows-x64/"  2>/dev/null || true
-          cp natives/wrobj-linux-x64/libwrobj.so             "native/packaged/linux-x64/"    2>/dev/null || true
-          cp natives/wrobj-macos-x64/libwrobj.dylib          "native/packaged/macos-x64/"    2>/dev/null || true
-          cp natives/wrobj-macos-arm64/libwrobj.dylib        "native/packaged/macos-arm64/"  2>/dev/null || true
-          cp natives/wrobj-android-arm64/libwrobj.so         "native/packaged/android-arm64/" 2>/dev/null || true
+          cp natives/wrobj-linux-x64/wrobj.so             "native/packaged/linux-x64/"    2>/dev/null || true
+          cp natives/wrobj-macos-x64/wrobj.dylib          "native/packaged/macos-x64/"    2>/dev/null || true
+          cp natives/wrobj-macos-arm64/wrobj.dylib        "native/packaged/macos-arm64/"  2>/dev/null || true
+          cp natives/wrobj-android-arm64/wrobj.so         "native/packaged/android-arm64/" 2>/dev/null || true
           echo "--- staged ---"
           find native/packaged -type f -print -exec ls -l {} \;
 
@@ -366,7 +366,7 @@ jobs:
           set -euo pipefail
           jar_file=$(find build/release -name '*.jar' ! -name '*sources*' | head -n 1)
           echo "checking $jar_file"
-          unzip -l "$jar_file" | grep -E 'native/.*(wrobj\.dll|libwrobj\.(so|dylib))' || {
+          unzip -l "$jar_file" | grep -E 'native/.*wrobj\.(dll|so|dylib)' || {
             echo "the native libraries are not in the jar" >&2
             exit 1
           }

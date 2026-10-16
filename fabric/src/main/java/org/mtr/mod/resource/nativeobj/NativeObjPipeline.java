@@ -201,10 +201,15 @@ public final class NativeObjPipeline {
 		if (os.contains("win")) {
 			return LIBRARY_NAME + ".dll";
 		}
+		// No "lib" prefix: CMakeLists sets PREFIX "" on the wrobj target so the shared library is
+		// wrobj.so and wrobj.dylib rather than the platform default names. Requiring the prefix here
+		// would make the mod look for a file the build never produces, and the mod would fall back
+		// to the Java pipeline on Linux and macOS with no error. The jar layout, the CI artefact
+		// name and this lookup all have to agree, and the build is what defines the name.
 		if (os.contains("mac")) {
-			return "lib" + LIBRARY_NAME + ".dylib";
+			return LIBRARY_NAME + ".dylib";
 		}
-		return "lib" + LIBRARY_NAME + ".so";
+		return LIBRARY_NAME + ".so";
 	}
 
 	private static String platformDirectory() {
