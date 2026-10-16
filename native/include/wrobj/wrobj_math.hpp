@@ -26,6 +26,50 @@
 
 namespace wrobj {
 
+/// The two JOML helpers the cardinal rotations are built from.
+///
+/// Both operate entirely in float, which is what makes them differ in the last bit from the
+/// Rodrigues form. Options.FASTMATH is off by default in this JOML build, so cosFromSin is the
+/// internal form and not a sin(angle + PI/2).
+inline float jomlCosFromSin(float sin, float angle) {
+    const float cos = std::sqrt(1.0F - sin * sin);
+    const float pi = static_cast<float>(M_PI);
+    const float twoPi = static_cast<float>(M_PI) * 2.0F;
+    float a = angle + pi / 2.0F;
+    float b = a - static_cast<float>(static_cast<int>(a / twoPi)) * twoPi;
+    if (b < 0.0F) {
+        b += twoPi;
+    }
+    return b >= pi ? -cos : cos;
+}
+
+inline void jomlRotateX(Vec3f& v, float angle) {
+    const float sin = std::sin(angle);
+    const float cos = jomlCosFromSin(sin, angle);
+    const float y = v.y * cos - v.z * sin;
+    const float z = v.y * sin + v.z * cos;
+    v.y = y;
+    v.z = z;
+}
+
+inline void jomlRotateY(Vec3f& v, float angle) {
+    const float sin = std::sin(angle);
+    const float cos = jomlCosFromSin(sin, angle);
+    const float x = v.x * cos + v.z * sin;
+    const float z = -v.x * sin + v.z * cos;
+    v.x = x;
+    v.z = z;
+}
+
+inline void jomlRotateZ(Vec3f& v, float angle) {
+    const float sin = std::sin(angle);
+    const float cos = jomlCosFromSin(sin, angle);
+    const float x = v.x * cos - v.y * sin;
+    const float y = v.x * sin + v.y * cos;
+    v.x = x;
+    v.y = y;
+}
+
 /// JOML's own degrees-to-radians factor, as used by Math.toRadians.
 ///
 /// Spelled the same way JOML spells it rather than as a truncated literal, because the value
@@ -58,12 +102,38 @@ struct Mat4f {
 
 /// JOML Vector3f.rotateAxis(angle, axisX, axisY, axisZ).
 ///
-/// Reproduces the double-precision body of JOML:
-///   float cs = (float) Math.cos(angle);
-///   float sn = (float) Math.sin(angle);
-///   ... all products computed in double from the float cos/sin ...
-///   this.x = (float) (x * (cs + x * x * omc) + y * (-sn * z + ...) ...);
+/// JOML does NOT run the Rodrigues formula for every axis. It checks first whether the axis is a
+/// unit cardinal vector and, if so, delegates to rotateX/rotateY/rotateZ, each of which uses a
+/// half-angle formulation:
+///
+///   float hangle = angle * 0.5F;
+///   float sinAngle = Math.sin(hangle);
+///   float cosAngle = Math.cosFromSin(sinAngle, hangle);
+///   float m00 = cosAngle + cosAngle;
+///   float m01 = y * sinAngle + y * sinAngle;
+///   ...
+///
+/// and multiplies those constructed matrix entries. That is mathematically the same rotation as
+/// the Rodrigues form but not bit-identical, and the difference is large enough to change how
+/// many vertices survive RawMesh.distinct(): the equivalence harness kept 24 vertices on the Java
+/// side against 16 here, with the buffers diverging from the very first vertex, for a single 45
+/// degree Y rotation. The general path is used only for a non-cardinal axis, which is why every
+/// case without a rotation passed and the ones with one did not.
 inline void rotateAxis(Vec3f& v, float angle, float axisX, float axisY, float axisZ) {
+    // The cardinal fast paths, in JOML's order and with JOML's absEqualsOne test.
+    if (axisY == 0.0F && axisZ == 0.0F && (axisX == 1.0F || axisX == -1.0F)) {
+        jomlRotateX(v, axisX * angle);
+        return;
+    }
+    if (axisX == 0.0F && axisZ == 0.0F && (axisY == 1.0F || axisY == -1.0F)) {
+        jomlRotateY(v, axisY * angle);
+        return;
+    }
+    if (axisX == 0.0F && axisY == 0.0F && (axisZ == 1.0F || axisZ == -1.0F)) {
+        jomlRotateZ(v, axisZ * angle);
+        return;
+    }
+
     const double x = static_cast<double>(v.x);
     const double y = static_cast<double>(v.y);
     const double z = static_cast<double>(v.z);
