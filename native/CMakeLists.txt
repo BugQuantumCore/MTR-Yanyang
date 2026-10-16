@@ -35,23 +35,20 @@ endif()
 # and macOS, and on the GitHub Windows runners the default is a multi-config generator,
 # which appends a per-configuration directory to the output path. The CI upload step and
 # fabric/build.gradle both look the library up by name, so an implicit subdirectory turns a
-# successful build into "the artefact was not produced" - which is exactly how the first
-# version of this workflow failed on all four desktop platforms at once.
+# successful build into "the artefact was not produced".
 #
-# Setting the per-configuration properties as well as the plain ones covers both generator
-# families, and the CI step verifies the file exists rather than trusting a glob.
-set(WROBJ_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
-set(WROBJ_CONFIGS Release RelWithDebInfo MinSizeRel Debug)
-
-set(WROBJ_OUTPUT_PROPERTIES
-        ARCHIVE_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}"
-        LIBRARY_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY "${WROBJ_OUTPUT_DIR}")
-foreach(_config IN LISTS WROBJ_CONFIGS)
-    list(APPEND WROBJ_OUTPUT_PROPERTIES
-            ARCHIVE_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}"
-            LIBRARY_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}"
-            RUNTIME_OUTPUT_DIRECTORY_${_config} "${WROBJ_OUTPUT_DIR}")
+# These are set as variables rather than with set_target_properties on purpose: CMake
+# initialises each target's output directory properties from these variables *after* the
+# target is created, so setting the variable before the targets is what actually takes
+# effect, and setting them afterwards for every configuration is what covers the
+# multi-config generators.
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+foreach(_config IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set("CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${_config}" "${CMAKE_BINARY_DIR}")
+    set("CMAKE_LIBRARY_OUTPUT_DIRECTORY_${_config}" "${CMAKE_BINARY_DIR}")
+    set("CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_config}" "${CMAKE_BINARY_DIR}")
 endforeach()
 
 # The internal headers are private; only include/wrobj/wrobj.hpp is public.
@@ -82,7 +79,6 @@ target_include_directories(wrobj_core
 set_target_properties(wrobj_core PROPERTIES
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
-set_target_properties(wrobj_core PROPERTIES ${WROBJ_OUTPUT_PROPERTIES})
 
 # A stable alias so dependents do not need to know the target was renamed to keep
 # the JNI import library clear of it.
@@ -165,7 +161,6 @@ if(JNI_FOUND)
     set_target_properties(wrobj PROPERTIES
             PREFIX ""
             OUTPUT_NAME "wrobj")
-    set_target_properties(wrobj PROPERTIES ${WROBJ_OUTPUT_PROPERTIES})
 
     message(STATUS "wrobj: JNI bridge enabled")
 else()
