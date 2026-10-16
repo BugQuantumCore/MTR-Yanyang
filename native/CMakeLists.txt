@@ -113,22 +113,60 @@ endif()
 
 find_package(JNI QUIET)
 
-if(NOT JNI_FOUND AND DEFINED ENV{JAVA_HOME} AND NOT "$ENV{JAVA_HOME}" STREQUAL "")
-    set(_wrobj_jni_candidates
-            "$ENV{JAVA_HOME}/include"
-            "$ENV{JAVA_HOME}/include/darwin"
-            "$ENV{JAVA_HOME}/include/linux"
-            "$ENV{JAVA_HOME}/include/win32")
+# When FindJNI comes up empty, the JDK is located by other means and its headers probed
+# directly.
+#
+# Three independent sources are tried, because the failure this guards against is silent: a
+# configure that finds no JDK still builds the static core and the tests, so both suites pass
+# and the only symptom is a missing shared library - which is exactly how the Linux and macOS
+# CI jobs failed while Windows passed.
+#
+#   1. JAVA_HOME, which is what a developer machine and actions/setup-java set.
+#   2. CMake's own Java module, whose detection is separate from FindJNI's and which reports
+#      the JDK root through Java_JAVA_EXECUTABLE even when FindJNI failed.
+#   3. The conventional installation roots, as a last resort for a machine that sets neither.
+if(NOT JNI_FOUND)
+    set(_wrobj_jdk_roots "")
+    if(DEFINED ENV{JAVA_HOME} AND NOT "$ENV{JAVA_HOME}" STREQUAL "")
+        list(APPEND _wrobj_jdk_roots "$ENV{JAVA_HOME}")
+    endif()
+
+    find_package(Java QUIET)
+    if(Java_JAVA_EXECUTABLE)
+        # <jdk>/bin/java -> <jdk>
+        get_filename_component(_wrobj_java_bin "${Java_JAVA_EXECUTABLE}" DIRECTORY)
+        get_filename_component(_wrobj_java_home "${_wrobj_java_bin}" DIRECTORY)
+        list(APPEND _wrobj_jdk_roots "${_wrobj_java_home}")
+    endif()
+
+    file(GLOB _wrobj_jvm_globbed /usr/lib/jvm/* /usr/local/opt/openjdk* /opt/homebrew/opt/openjdk*)
+    list(APPEND _wrobj_jdk_roots ${_wrobj_jvm_globbed})
+
     set(_wrobj_jni_dirs "")
-    foreach(_dir IN LISTS _wrobj_jni_candidates)
-        if(EXISTS "${_dir}/jni.h" AND EXISTS "${_dir}/jni_md.h")
-            list(APPEND _wrobj_jni_dirs "${_dir}")
+    foreach(_root IN LISTS _wrobj_jdk_roots)
+        foreach(_sub IN ITEMS "include" "include/darwin" "include/linux" "include/win32")
+            if(EXISTS "${_root}/${_sub}/jni.h" AND EXISTS "${_root}/${_sub}/jni_md.h")
+                list(APPEND _wrobj_jni_dirs "${_root}/${_sub}")
+            endif()
+        endforeach()
+        # A JDK bundle on macOS keeps jni_md.h one level below include, under darwin, which the
+        # per-subdirectory probe above already covers; this catches the flat layout too.
+        if(EXISTS "${_root}/include/jni.h" AND DIRECTORY "${_root}/include")
+            file(GLOB _wrobj_jni_md "${_root}/include/*/jni_md.h")
+            foreach(_md IN LISTS _wrobj_jni_md)
+                get_filename_component(_md_dir "${_md}" DIRECTORY)
+                list(APPEND _wrobj_jni_dirs "${_root}/include" "${_md_dir}")
+            endforeach()
         endif()
     endforeach()
+
     if(_wrobj_jni_dirs)
+        list(REMOVE_DUPLICATES _wrobj_jni_dirs)
         set(JNI_FOUND TRUE)
         set(JNI_INCLUDE_DIRS "${_wrobj_jni_dirs}")
-        message(STATUS "wrobj: located the JNI headers under JAVA_HOME: ${_wrobj_jni_dirs}")
+        message(STATUS "wrobj: located the JNI headers directly: ${_wrobj_jni_dirs}")
+    else()
+        message(STATUS "wrobj: no JNI headers found; searched roots: ${_wrobj_jdk_roots}")
     endif()
 endif()
 
