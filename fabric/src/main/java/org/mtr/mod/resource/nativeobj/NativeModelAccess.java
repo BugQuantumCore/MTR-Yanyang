@@ -138,8 +138,6 @@ public final class NativeModelAccess {
 			indexBufferVertexCountGetter = indexLookup.findGetter(
 					IndexBuffer.class, "vertexCount", int.class);
 
-			poseReader = resolvePoseReader();
-
 			// The renderer's shader manager is private and its methods are public, so the
 			// lookup only has to reach the field.
 			final Class<?> rendererClass = Class.forName("org.mtr.mapping.mapper.OptimizedRenderer");
@@ -196,16 +194,23 @@ public final class NativeModelAccess {
 			final MethodHandle getPositionMatrix = MethodHandles.publicLookup().findVirtual(
 					entryClass, "getPositionMatrix",
 					MethodType.methodType(org.joml.Matrix4f.class));
+			// Matrix4f.get(float[]) returns the same array it filled, not void and not the receiver.
 			final MethodHandle matrixGet = MethodHandles.publicLookup().findVirtual(
-					org.joml.Matrix4f.class, "get", MethodType.methodType(void.class, float[].class));
+					org.joml.Matrix4f.class, "get",
+					MethodType.methodType(float[].class, float[].class));
 
-			// Chain: holder -> matrixStack -> peek() -> getPositionMatrix() -> get(float[]).
-			MethodHandle composed = MethodHandles.filterReturnValue(matrixStackField, peek);
-			composed = MethodHandles.filterReturnValue(composed, getPositionMatrix);
-			composed = MethodHandles.filterReturnValue(composed, matrixGet);
-			// The result is (GraphicsHolder, float[]) -> void, but matrixGet returns the
-			// Matrix4f it was called on, so drop that to match.
-			return MethodHandles.dropReturn(composed);
+			// filterReturnValue(target, filter) passes target's return as filter's FIRST argument.
+			// The chain is holder -> matrixStack -> peek() -> getPositionMatrix(), whose result is
+			// the Matrix4f that get must be invoked on - so get becomes the *target* here, with the
+			// output array bound, and the chain's result feeds in as get's receiver.
+			MethodHandle chain = MethodHandles.filterReturnValue(matrixStackField, peek);
+			chain = MethodHandles.filterReturnValue(chain, getPositionMatrix);
+
+			final MethodHandle composed = MethodHandles.filterArguments(matrixGet, 0, chain);
+			// filterReturnValue rejects a target that returns void, so the array result is dropped
+			// and the type stated for the caller: (GraphicsHolder, float[]) -> void.
+			return composed.asType(MethodType.methodType(
+					void.class, GraphicsHolder.class, float[].class));
 		} catch (Throwable throwable) {
 			Init.LOGGER.warn("[wrgl] could not resolve the pose matrix reader: {}", throwable.toString());
 			return null;
