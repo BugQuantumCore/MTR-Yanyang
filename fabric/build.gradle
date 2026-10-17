@@ -100,6 +100,16 @@ tasks.named("processResources") {
 	dependsOn("copyNativeModelPipeline")
 }
 
+// The staged natives are a task output rather than a checkout directory, and they sit on the main
+// resources path so the jar carries them. Every jar task that packages main sources or resources
+// therefore reads a file another task produces, and Gradle rejects that as an implicit dependency
+// unless the ordering is declared. processResources alone was not enough: sourcesJar fails the same
+// way. It only happens when native/packaged/ exists, which is the native workflow's build-mod job
+// and never the plain mod build, so it went unnoticed until natives were staged.
+tasks.withType(Jar).configureEach {
+	dependsOn("copyNativeModelPipeline")
+}
+
 if (project.hasProperty("serverOptimizationTest")) {
 	loom {
 		mods {
