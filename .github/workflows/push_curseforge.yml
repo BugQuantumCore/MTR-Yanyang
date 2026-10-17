@@ -31,6 +31,14 @@ jobs:
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Resolve jar file path
+        id: resolve
+        if: steps.check.outputs.found == 'true'
+        run: |
+          FILE=$(ls release-artifacts/YYMTR-${{ matrix.loader }}.*+${{ matrix.mc-version }}_*.jar | head -n 1)
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "Resolved file: $FILE"
+
       - name: Map loader to CurseForge name
         id: loader
         if: steps.check.outputs.found == 'true'
@@ -51,6 +59,16 @@ jobs:
             nf)  echo "relations=neoforge:requiredDependency" >> $GITHUB_OUTPUT ;;
           esac
 
+      - name: Determine release type
+        id: rtype
+        if: steps.check.outputs.found == 'true'
+        run: |
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            echo "type=beta" >> $GITHUB_OUTPUT
+          else
+            echo "type=release" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish to CurseForge
         if: steps.check.outputs.found == 'true'
         uses: itsmeow/curseforge-upload@v3
@@ -58,9 +76,9 @@ jobs:
           token: ${{ secrets.CURSEFORGE_TOKEN }}
           project_id: "1705900"
           game_endpoint: "minecraft"
-          file_path: "release-artifacts/YYMTR-${{ matrix.loader }}.*+${{ matrix.mc-version }}_*.jar"
+          file_path: "${{ steps.resolve.outputs.file }}"
           game_versions: "Minecraft ${{ matrix.mc-version }},${{ steps.loader.outputs.name }}"
-          release_type: "release"
+          release_type: "${{ steps.rtype.outputs.type }}"
           display_name: "${{ github.event.release.name }} (${{ matrix.mc-version }} ${{ steps.loader.outputs.name }})"
           changelog: "${{ github.event.release.body }}"
           changelog_type: "markdown"
