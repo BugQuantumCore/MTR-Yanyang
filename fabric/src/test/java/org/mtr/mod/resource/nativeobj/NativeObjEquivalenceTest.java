@@ -745,6 +745,26 @@ public class NativeObjEquivalenceTest {
 		}
 
 		try {
+			// The model-level transform, then the schema-level one, in that order — the same order
+			// the reference applies them in at line 496. It used to be missing here entirely, which
+			// meant the two fixtures that specify one (model-scale-positive and
+			// model-scale-negative) compared a transformed reference against an untransformed
+			// native build and failed for a reason that had nothing to do with the C++ code.
+			//
+			// That is why exactly those two failed and the other eight passed: they are the only
+			// fixtures with a modelScale, modelTranslation or modelRotation. The native side was
+			// never wrong; it was never asked.
+			NativeObjPipeline.applyTransform(handle, 0,
+					testCase.modelTranslation[0], testCase.modelTranslation[1], testCase.modelTranslation[2]);
+			NativeObjPipeline.applyTransform(handle, 1,
+					testCase.modelRotation[0], testCase.modelRotation[1], testCase.modelRotation[2]);
+			NativeObjPipeline.applyTransform(handle, 2,
+					clampScale(testCase.modelScale[0]), clampScale(testCase.modelScale[1]),
+					clampScale(testCase.modelScale[2]));
+			NativeObjPipeline.applyTransform(handle, 3,
+					testCase.modelMirror[0] ? 1 : 0, testCase.modelMirror[1] ? 1 : 0,
+					testCase.modelMirror[2] ? 1 : 0);
+
 			NativeObjPipeline.applyTransform(handle, 0,
 					testCase.schemaTranslation[0], testCase.schemaTranslation[1], testCase.schemaTranslation[2]);
 			NativeObjPipeline.applyTransform(handle, 1,
@@ -844,7 +864,48 @@ public class NativeObjEquivalenceTest {
 	 * packed normal is three signed bytes scaled by 127, so a float comparison covers the
 	 * position and UV only; the normal bytes are counted as bytes.</p>
 	 */
+	/**
+	 * Compares two vertex buffers as multisets of 24 byte records.
+	 *
+	 * <p>A by-index comparison cannot distinguish "wrong value" from "right value at a different
+	 * position". {@code distinct()} assigns vertex indices in iteration order, so two sides that
+	 * agree on every vertex but disagree on ordering produce a full-component gap at every index
+	 * while being geometrically identical. Printing both verdicts separates the two cases, which
+	 * decide opposite things: a value difference is a bug, an ordering difference is the same
+	 * {@code HashSet} bucket-order behaviour already documented.</p>
+	 */
+	static boolean sameVertexMultiset(byte[] left, byte[] right) {
+		if (left.length != right.length || left.length % VERTEX_STRIDE != 0) {
+			return false;
+		}
+		final java.util.List<byte[]> a = splitVertices(left);
+		final java.util.List<byte[]> b = splitVertices(right);
+		a.sort(java.util.Arrays::compare);
+		b.sort(java.util.Arrays::compare);
+		for (int i = 0; i < a.size(); i++) {
+			if (java.util.Arrays.compare(a.get(i), b.get(i)) != 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static java.util.List<byte[]> splitVertices(byte[] buffer) {
+		final java.util.List<byte[]> records = new java.util.ArrayList<>(buffer.length / VERTEX_STRIDE);
+		for (int offset = 0; offset + VERTEX_STRIDE <= buffer.length; offset += VERTEX_STRIDE) {
+			records.add(java.util.Arrays.copyOfRange(buffer, offset, offset + VERTEX_STRIDE));
+		}
+		return records;
+	}
+
 	private static Divergence reportDivergence(String label, byte[] reference, byte[] nativeData) {
+		// Printed before any assertion and before the size branch, so the ordering question is
+		// answered even for a case that fails: a multiset match with a by-index mismatch means the
+		// vertices are the same and only the order differs, which is the documented HashSet bucket
+		// behaviour rather than a value bug.
+		System.out.println("### " + label + " vertex multiset equal: "
+				+ sameVertexMultiset(reference, nativeData)
+				+ " (sizes " + reference.length + " against " + nativeData.length + ")");
 		if (reference.length != nativeData.length) {
 			System.out.println("### " + label + " vertex buffer sizes differ: "
 					+ reference.length + " against " + nativeData.length);
