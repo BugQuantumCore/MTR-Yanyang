@@ -12,6 +12,9 @@ import javax.annotation.Nullable;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.List;
 
 /**
@@ -157,6 +160,14 @@ public final class NativeModelAccess {
 					ShaderManager.class, "cleanupShaderBatchState", MethodType.methodType(void.class));
 
 			poseReader = resolvePoseReader();
+			if (poseReader == null) {
+				// The class's rule is all-or-nothing: a partial resolution would draw some models
+				// and silently skip others, which is worse than not engaging at all. The pose reader
+				// previously failed without disabling the path, so every queue() call dropped the
+				// model it was handed while the draw path still reported itself active.
+				failureReason = "the pose matrix reader could not be resolved";
+				return false;
+			}
 
 			return true;
 		} catch (Throwable throwable) {
@@ -169,6 +180,7 @@ public final class NativeModelAccess {
 			shaderManagerGetter = null;
 			setupShaderBatchState = null;
 			cleanupShaderBatchState = null;
+			poseReader = null;
 			return false;
 		}
 	}
@@ -180,6 +192,26 @@ public final class NativeModelAccess {
 	 * that needs a field on one class, a method on a Minecraft class and a method on a JOML
 	 * class chained together. Composing it here keeps the per-part path to one invocation.</p>
 	 *
+	 * <h2>Why nothing is looked up by its Minecraft name</h2>
+	 *
+	 * <p>The Minecraft half of this chain is renamed between environments. The loom development
+	 * runtime runs the yarn names, a production client runs the intermediary names, so the field
+	 * holds {@code net.minecraft.client.util.math.MatrixStack} in one and {@code class_4587} in
+	 * the other. The previous version spelled the yarn names into {@code Class.forName} calls,
+	 * which threw {@code ClassNotFoundException} on every production client: the pose reader
+	 * resolved to null, {@code queue()} then silently dropped every model it was handed, and the
+	 * draw path still reported itself active - which is how an entire release shipped with OBJ
+	 * models invisible in production while every development-environment test stayed green.</p>
+	 *
+	 * <p>The classes are therefore taken from the field's own declared type, and the two
+	 * Minecraft methods are found by shape rather than by name: the entry class is the nested
+	 * class of the stack that has a no-argument method returning a JOML {@code Matrix4f}, that
+	 * method is {@code getPositionMatrix}, and {@code peek} is the one no-argument method on the
+	 * stack returning the entry class. JOML is a real library and is never remapped, so it
+	 * anchors the chain. The development and production names both resolve through the same
+	 * code path, and a shape the finder cannot identify disables the draw path rather than
+	 * guessing.</p>
+	 *
 	 * @return the reader, or null when any link is unavailable
 	 */
 	@Nullable
@@ -187,38 +219,132 @@ public final class NativeModelAccess {
 		try {
 			final MethodHandles.Lookup holderLookup = MethodHandles.privateLookupIn(
 					GraphicsHolder.class, MethodHandles.lookup());
-			final Class<?> matrixStackClass = Class.forName("net.minecraft.client.util.math.MatrixStack");
-			final MethodHandle matrixStackField = holderLookup.findGetter(
-					GraphicsHolder.class, "matrixStack", matrixStackClass);
 
-			final MethodHandle peek = MethodHandles.publicLookup().findVirtual(
-					matrixStackClass, "peek",
-					MethodType.methodType(Class.forName("net.minecraft.client.util.math.MatrixStack$Entry")));
-			final Class<?> entryClass = Class.forName("net.minecraft.client.util.math.MatrixStack$Entry");
-			final MethodHandle getPositionMatrix = MethodHandles.publicLookup().findVirtual(
-					entryClass, "getPositionMatrix",
-					MethodType.methodType(org.joml.Matrix4f.class));
-			// Matrix4f.get(float[]) returns the same array it filled, not void and not the receiver.
-			final MethodHandle matrixGet = MethodHandles.publicLookup().findVirtual(
-					org.joml.Matrix4f.class, "get",
-					MethodType.methodType(float[].class, float[].class));
+			// The field name is MTR's own (org.mtr.mapping is never remapped), and the field's
+			// declared type is the MatrixStack class this runtime actually uses, whichever name
+			// the mappings gave it.
+			final Field matrixStackField = GraphicsHolder.class.getDeclaredField("matrixStack");
+			final Class<?> matrixStackClass = matrixStackField.getType();
+			final MethodHandle matrixStackFieldGetter = holderLookup.unreflectGetter(matrixStackField);
 
-			// filterReturnValue(target, filter) passes target's return as filter's FIRST argument.
-			// The chain is holder -> matrixStack -> peek() -> getPositionMatrix(), whose result is
-			// the Matrix4f that get must be invoked on - so get becomes the *target* here, with the
-			// output array bound, and the chain's result feeds in as get's receiver.
-			MethodHandle chain = MethodHandles.filterReturnValue(matrixStackField, peek);
-			chain = MethodHandles.filterReturnValue(chain, getPositionMatrix);
+			final MethodHandle matrixChain = resolveMatrixChain(matrixStackClass);
+			if (matrixChain == null) {
+				throw new IllegalStateException(
+						"no peek()/getPositionMatrix() chain on " + matrixStackClass.getName());
+			}
 
-			final MethodHandle composed = MethodHandles.filterArguments(matrixGet, 0, chain);
-			// filterReturnValue rejects a target that returns void, so the array result is dropped
-			// and the type stated for the caller: (GraphicsHolder, float[]) -> void.
+			// filterArguments replaces the chain's stack argument with the field read, so the
+			// composed reader is (GraphicsHolder, float[]) -> void.
+			final MethodHandle composed = MethodHandles.filterArguments(matrixChain, 0, matrixStackFieldGetter);
 			return composed.asType(MethodType.methodType(
 					void.class, GraphicsHolder.class, float[].class));
 		} catch (Throwable throwable) {
 			Init.LOGGER.warn("[wrgl] could not resolve the pose matrix reader: {}", throwable.toString());
 			return null;
 		}
+	}
+
+	/**
+	 * Composes {@code (stack, float[]) -> void} for {@code stack.peek().getPositionMatrix().get(float[])},
+	 * found structurally so it resolves under any mapping.
+	 *
+	 * <p>Package-private so the resolution logic is directly testable against synthetic classes
+	 * with meaningless names, which is the case the yarn-name lookups failed on: a test can prove
+	 * the finder still works when every involved name has been changed.</p>
+	 *
+	 * @param matrixStackClass the class the stack field holds, however this runtime names it
+	 * @return the chain, or null when the shape is not recognised
+	 */
+	@Nullable
+	static MethodHandle resolveMatrixChain(Class<?> matrixStackClass) {
+		try {
+			final Class<?> entryClass = findEntryClass(matrixStackClass);
+			if (entryClass == null) {
+				return null;
+			}
+			final MethodHandle peek = findOnlyNoArgMethod(matrixStackClass, entryClass);
+			if (peek == null) {
+				return null;
+			}
+			final MethodHandle getPositionMatrix = findOnlyNoArgMethod(entryClass, org.joml.Matrix4f.class);
+			if (getPositionMatrix == null) {
+				return null;
+			}
+			// Matrix4f.get(float[]) returns the same array it filled, not void and not the receiver.
+			final MethodHandle matrixGet = MethodHandles.publicLookup().findVirtual(
+					org.joml.Matrix4f.class, "get",
+					MethodType.methodType(float[].class, float[].class));
+
+			// filterReturnValue(target, filter) passes target's return as filter's FIRST argument.
+			// The chain is peek() -> getPositionMatrix(), whose result is the Matrix4f that get must
+			// be invoked on - so get becomes the *target* here, with the output array bound, and the
+			// chain's result feeds in as get's receiver.
+			final MethodHandle chain = MethodHandles.filterReturnValue(peek, getPositionMatrix);
+			final MethodHandle composed = MethodHandles.filterArguments(matrixGet, 0, chain);
+			// filterReturnValue rejects a target that returns void, so the array result is dropped
+			// and the type stated for the caller: (stack, float[]) -> void.
+			return composed.asType(MethodType.methodType(
+					void.class, matrixStackClass, float[].class));
+		} catch (Throwable throwable) {
+			return null;
+		}
+	}
+
+	/**
+	 * The nested class of the stack that carries the position matrix, found structurally.
+	 *
+	 * <p>The real stack declares exactly one nested class (yarn {@code MatrixStack.Entry}) and
+	 * that class has exactly one no-argument method returning {@code org.joml.Matrix4f}. A stack
+	 * with no nested class of that shape cannot be read, and the caller disables the native
+	 * draw path rather than guessing.</p>
+	 */
+	@Nullable
+	private static Class<?> findEntryClass(Class<?> matrixStackClass) {
+		for (final Class<?> nested : matrixStackClass.getDeclaredClasses()) {
+			if (findOnlyNoArgMethod(nested, org.joml.Matrix4f.class) != null) {
+				return nested;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The one public no-argument instance method on the class that returns the given type.
+	 *
+	 * <p>Matched on shape rather than on a name, because the name is remapped between the
+	 * development and production runtimes. A class with no such method resolves to null; a class
+	 * with more than one resolves to null as well, because two candidates would mean a guess,
+	 * and the caller would rather disable the native draw path than draw with a wrong link.</p>
+	 */
+	@Nullable
+	private static MethodHandle findOnlyNoArgMethod(Class<?> declaringClass, Class<?> returnType) {
+		MethodHandle found = null;
+		int foundCount = 0;
+		for (final Method method : declaringClass.getDeclaredMethods()) {
+			final int modifiers = method.getModifiers();
+			if (method.getParameterCount() != 0
+					|| method.getReturnType() != returnType
+					|| (modifiers & Modifier.PUBLIC) == 0
+					|| (modifiers & Modifier.STATIC) != 0
+					|| method.isSynthetic()
+					|| method.isBridge()) {
+				continue;
+			}
+			try {
+				found = MethodHandles.publicLookup().unreflect(method);
+			} catch (IllegalAccessException throwable) {
+				return null;
+			}
+			foundCount++;
+		}
+		if (foundCount == 1) {
+			return found;
+		}
+		if (foundCount > 1) {
+			Init.LOGGER.warn("[wrgl] {} has {} no-argument methods returning {}; refusing to guess one",
+					declaringClass.getName(), foundCount, returnType.getName());
+		}
+		return null;
 	}
 
 	// -----------------------------------------------------------------------
