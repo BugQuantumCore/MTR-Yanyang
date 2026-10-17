@@ -890,6 +890,38 @@ public class NativeObjEquivalenceTest {
 		return true;
 	}
 
+	/**
+	 * Prints which component of a vertex differs when the multisets do not match.
+	 *
+	 * <p>A 24 byte vertex is position, uv and a packed normal. Reporting the decoded first few
+	 * differences distinguishes a transform problem (positions differ) from a normal-generation
+	 * problem (only normals differ), which need different fixes.</p>
+	 */
+	private static void describeFirstDifferences(String label, byte[] left, byte[] right) {
+		final java.util.List<byte[]> a = splitVertices(left);
+		final java.util.List<byte[]> b = splitVertices(right);
+		a.sort(java.util.Arrays::compare);
+		b.sort(java.util.Arrays::compare);
+		int shown = 0;
+		for (int i = 0; i < Math.min(a.size(), b.size()) && shown < 4; i++) {
+			if (java.util.Arrays.compare(a.get(i), b.get(i)) != 0) {
+				System.out.println("### " + label + " differs [" + i + "] ref " + describeVertex(a.get(i))
+						+ "  native " + describeVertex(b.get(i)));
+				shown++;
+			}
+		}
+	}
+
+	private static String describeVertex(byte[] v) {
+		final float[] f = new float[6];
+		for (int i = 0; i < 5; i++) {
+			f[i] = Float.intBitsToFloat(readInt(v, i * 4));
+		}
+		return String.format(java.util.Locale.ROOT,
+				"pos=(%.9g,%.9g,%.9g) uv=(%.9g,%.9g) normal=%d,%d,%d,%d",
+				f[0], f[1], f[2], f[3], f[4], v[20], v[21], v[22], v[23]);
+	}
+
 	private static java.util.List<byte[]> splitVertices(byte[] buffer) {
 		final java.util.List<byte[]> records = new java.util.ArrayList<>(buffer.length / VERTEX_STRIDE);
 		for (int offset = 0; offset + VERTEX_STRIDE <= buffer.length; offset += VERTEX_STRIDE) {
@@ -903,6 +935,7 @@ public class NativeObjEquivalenceTest {
 		// answered even for a case that fails: a multiset match with a by-index mismatch means the
 		// vertices are the same and only the order differs, which is the documented HashSet bucket
 		// behaviour rather than a value bug.
+		if (!sameVertexMultiset(reference, nativeData)) { describeFirstDifferences(label, reference, nativeData); }
 		System.out.println("### " + label + " vertex multiset equal: "
 				+ sameVertexMultiset(reference, nativeData)
 				+ " (sizes " + reference.length + " against " + nativeData.length + ")");
