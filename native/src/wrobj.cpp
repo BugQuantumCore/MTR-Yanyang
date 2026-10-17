@@ -759,14 +759,29 @@ extern "C" WrObjResult* wr_obj_builder_build(WrObjBuilder* builder) {
     // ObjModel.fromObjModels: generateNormals then distinct, per accumulated
     // material bucket. RawMesh.upload calls distinct() once more; it is a no-op
     // here because the mesh was just de-duplicated.
-    builder->accumulated.generateNormals();
-    builder->accumulated.distinct();
+    //
+    // generateNormals and distinct rewrite the mesh in place, so they run over a
+    // snapshot of the accumulated model rather than over the builder's own state.
+    // That is what makes a builder re-buildable, and it has to be: MTR builds the
+    // same wrapper list several times - the doors-open model, the doors-closed
+    // model, and the per-position door models - and each build must see the same
+    // accumulated state. The Java path has the same property, because
+    // OptimizedModel.fromObjModels reads the ObjModels' rawModels without
+    // consuming them. Running the stages in place made a second build throw on
+    // the Java side, which took every vehicle's doors-closed model down with it.
+    wrobj::RawModel snapshot;
+    snapshot.meshes.reserve(builder->accumulated.meshes.size());
+    for (const wrobj::RawMesh& mesh : builder->accumulated.meshes) {
+        snapshot.meshes.push_back(mesh);
+    }
+    snapshot.generateNormals();
+    snapshot.distinct();
     std::vector<uint8_t> vertexBytes;
     std::vector<uint32_t> indexBytes;
     std::vector<WrObjResultDraw> draws;
 
-    for (size_t bucket = 0; bucket < builder->accumulated.meshes.size(); bucket++) {
-        const RawMesh& mesh = builder->accumulated.meshes[bucket];
+    for (size_t bucket = 0; bucket < snapshot.meshes.size(); bucket++) {
+        const RawMesh& mesh = snapshot.meshes[bucket];
         if (mesh.faces.empty() || mesh.vertices.empty()) {
             continue;
         }
@@ -824,7 +839,7 @@ extern "C" WrObjResult* wr_obj_builder_build(WrObjBuilder* builder) {
         std::memcpy(result->drawData, draws.data(), draws.size() * sizeof(WrObjResultDraw));
     }
 
-    for (const RawMesh& mesh : builder->accumulated.meshes) {
+    for (const RawMesh& mesh : snapshot.meshes) {
         result->totalVertexCount += static_cast<int64_t>(mesh.vertices.size());
         result->totalFaceCount += static_cast<int64_t>(mesh.faces.size());
     }

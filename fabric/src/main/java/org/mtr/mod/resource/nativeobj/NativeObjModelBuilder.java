@@ -106,28 +106,32 @@ public final class NativeObjModelBuilder {
 	 * Stages one placed copy of the model.
 	 *
 	 * <p>Mirrors {@code ModelPropertiesPart.addObjModelPosition}, which calls
-	 * {@code ObjModel.addTransformation(renderStage.shaderType, x, y, z, flipped)}.</p>
+	 * {@code ObjModel.addTransformation(renderStage.shaderType, x, y, z, flipped)}. Placements may
+	 * also be added after a build: the per-position door models are built while more placements are
+	 * still being staged, and every later build picks the new placements up, exactly as another
+	 * {@code OptimizedModel.fromObjModels} call would on the Java path.</p>
 	 */
 	public void addPlacement(int shaderTypeOrdinal, double x, double y, double z, boolean flipped) {
-		if (built) {
-			throw new IllegalStateException("a native model builder cannot be reused after it was built");
-		}
 		model.addPlacement(shaderTypeOrdinal, x, y, z, flipped);
 		placementCount++;
 	}
 
 	/**
-	 * Runs normal generation, de-duplication and packing, then uploads every bucket and
-	 * clears the staging state.
+	 * Runs normal generation, de-duplication and packing, then uploads every bucket.
 	 *
-	 * <p>Returns null when the model produced no geometry, which is the same outcome the Java
-	 * path has for a model whose every face was dropped.</p>
+	 * <p>Repeatable, like the Java path's {@code OptimizedModel.fromObjModels}: MTR builds the same
+	 * wrapper list several times - the doors-open model, the doors-closed model, and the
+	 * per-position door models - and each call must upload a fresh set of GPU buffers from the
+	 * state accumulated so far without consuming it. The native side now matches that by
+	 * snapshotting the accumulated model inside {@code wr_obj_builder_build}, so this method may
+	 * be called any number of times, and a placement added between two builds appears only in the
+	 * later one.</p>
+	 *
+	 * <p>Returns null when the model produced no geometry, which is the same outcome the Java path
+	 * has for a model whose every face was dropped.</p>
 	 */
 	@Nullable
 	public OptimizedModelWrapper build() {
-		if (built) {
-			throw new IllegalStateException("a native model builder cannot be reused after it was built");
-		}
 		built = true;
 
 		final long handle = model.ensureHandleForBuild();
@@ -264,7 +268,7 @@ public final class NativeObjModelBuilder {
 		pendingResult = null;
 	}
 
-	/** True once {@link #build()} has run. */
+	/** True once at least one {@link #build()} has run. Informational only; builds are repeatable. */
 	public boolean isBuilt() {
 		return built;
 	}

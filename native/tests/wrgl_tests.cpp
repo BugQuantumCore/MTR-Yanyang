@@ -422,8 +422,12 @@ void testColourIsUnpackedLikeTheReference() {
     }
 }
 
-/// The overlay and lightmap are written as the two halves of the packed value, high half
-/// first, matching VertexAttributeState.
+/// The overlay and lightmap are written as the two halves of the packed value. The
+/// reference stores both through exchangeLightmapUVBits - (value >> 16) | ((short)
+/// value << 16) - and VertexAttributeState.apply then writes the exchanged value's
+/// high half first, which composed is the original value's LOW half first. The
+/// overlay default is symmetric under the exchange, so only the lightmap's half
+/// order is observable in practice, but both are written the reference's way.
 void testOverlayAndLightmapHalves() {
     std::printf("draw list: the overlay and lightmap halves are extracted like the reference\n");
 
@@ -455,12 +459,12 @@ void testOverlayAndLightmapHalves() {
         }
         if (call.a == wrobj::GL_ATTR_UV_OVERLAY) {
             sawOverlay = true;
-            checkFloat(call.f[0], 10.0F, "the overlay's high half is the first component");
-            checkFloat(call.f[1], 11.0F, "the overlay's low half is the second");
+            checkFloat(call.f[0], 11.0F, "the overlay's low half is the first component, after the reference's bit exchange");
+            checkFloat(call.f[1], 10.0F, "the overlay's high half is the second");
         } else if (call.a == wrobj::GL_ATTR_UV_LIGHTMAP) {
             sawLightmap = true;
-            checkFloat(call.f[0], 240.0F, "the lightmap's high half is the first component");
-            checkFloat(call.f[1], 128.0F, "the lightmap's low half is the second");
+            checkFloat(call.f[0], 128.0F, "the lightmap's low half is the first component, after the reference's bit exchange");
+            checkFloat(call.f[1], 240.0F, "the lightmap's high half is the second");
         }
     }
     check(sawOverlay, "the overlay was written");

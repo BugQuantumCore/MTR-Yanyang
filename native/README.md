@@ -147,6 +147,13 @@ variant together and renders forward and flipped seats on top of each other.
 `WrObjBuilder` is the same thing. One builder per model instance, created by
 `NativeObjModel.copy()`, and the native tests pin that two builders stay isolated.
 
+`build` itself is a read of the builder's accumulated state rather than a consuming step,
+matching `OptimizedModel.fromObjModels`. MTR builds one wrapper list several times - the
+doors-open model, the doors-closed model, and the per-position door models - so
+`wr_obj_builder_build` snapshots the accumulated model before running `generateNormals`
+and `distinct`, and `NativeObjModelBuilder.build` may be called any number of times. The
+native test suite pins that with a repeated-build case.
+
 ### Why an ABI integer is checked
 
 A library that agrees on method names but not on semantics produces subtly wrong
@@ -419,6 +426,17 @@ Documented rather than hidden, because each one is a deliberate decision:
    cause is not identified. Every other fixture passes byte for byte. This is recorded
    rather than worked around: the comparator reports the difference on every run instead
    of tolerating it.
+
+7. **The native draw path does not apply the material's own vertex attribute state.**
+   `RenderCall.draw` on the reference path applies the queued pose state first and then
+   `materialProperties.vertexAttributeState`, so the material's `Kd` colour and the
+   full-bright lightmap (`0xF000F0`) that the BRIGHT shader types carry win over the
+   queued colour and light. The native wrapper flushes only the queued globals, so a
+   `Kd`-coloured material renders white and BRIGHT parts are lit by the vehicle light
+   instead of full brightness. The queue colour is `ARGB_WHITE` and the lightmap halves
+   match the reference's `exchangeLightmapUVBits` order, but the material override is
+   not reproduced. Recorded here rather than fixed: it changes no geometry, and
+   reproducing it needs the colour reachable from the wrapper's material runs.
 
 ---
 

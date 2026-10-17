@@ -828,6 +828,64 @@ void testBuildIsDeterministic() {
     check(first == second, "same buffer contents");
 }
 
+/// wr_obj_builder_build is a read of the accumulated state, not a consuming step:
+/// the doors-open and doors-closed models are built from one shared wrapper list,
+/// and the per-position door models are built while placements are still being
+/// added. Building twice must produce byte-identical output, and a placement
+/// added between two builds must appear in the later build only.
+void testBuildIsRepeatable() {
+    std::cout << "api: a builder builds repeatably without consuming its state\n";
+
+    const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl _\nf 1 2 3\n";
+    const int32_t handles[1] = {0};
+    const int32_t colorSet[1] = {0};
+
+    WrObjBuilder* builder = wr_obj_builder_create(obj.data(), static_cast<int32_t>(obj.size()),
+            nullptr, 0, handles, colorSet, 1, 0, 0);
+    check(builder != nullptr, "builder creates");
+    if (builder == nullptr) {
+        return;
+    }
+
+    wr_obj_builder_add_transform(builder, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+
+    std::vector<uint8_t> first;
+    std::vector<uint32_t> firstIndices;
+    WrObjResult* result = wr_obj_builder_build(builder);
+    check(result != nullptr, "the first build succeeds");
+    if (result != nullptr) {
+        checkEqual(result->vertexDataLength, int32_t(3 * WROBJ_VERTEX_STRIDE), "the first build holds one placement");
+        const auto* bytes = static_cast<const uint8_t*>(result->vertexData);
+        first.assign(bytes, bytes + result->vertexDataLength);
+        const auto* indices = static_cast<const uint32_t*>(result->indexData);
+        firstIndices.assign(indices, indices + result->indexDataLength / 4);
+        wr_obj_result_free(result);
+    }
+
+    result = wr_obj_builder_build(builder);
+    check(result != nullptr, "the second build succeeds");
+    if (result != nullptr) {
+        checkEqual(result->vertexDataLength, int32_t(3 * WROBJ_VERTEX_STRIDE), "the second build holds the same placement");
+        const auto* bytes = static_cast<const uint8_t*>(result->vertexData);
+        check(std::vector<uint8_t>(bytes, bytes + result->vertexDataLength) == first,
+                "the second build is byte-identical to the first");
+        const auto* indices = static_cast<const uint32_t*>(result->indexData);
+        check(std::vector<uint32_t>(indices, indices + result->indexDataLength / 4) == firstIndices,
+                "the second build's indices are byte-identical");
+        wr_obj_result_free(result);
+    }
+
+    wr_obj_builder_add_transform(builder, WROBJ_SHADER_CUTOUT, 5.0, 0.0, 0.0, 0);
+    result = wr_obj_builder_build(builder);
+    check(result != nullptr, "the build after a new placement succeeds");
+    if (result != nullptr) {
+        checkEqual(result->vertexDataLength, int32_t(6 * WROBJ_VERTEX_STRIDE), "the third build holds both placements");
+        wr_obj_result_free(result);
+    }
+
+    wr_obj_builder_free(builder);
+}
+
 /**
  * Pins the rule that decided a real divergence: no `usemtl` means no material groups.
  *
@@ -1200,6 +1258,7 @@ int main(int argc, char** argv) {
     testColorPackingMatchesJvm();
     testEndToEndGeometry();
     testBuildIsDeterministic();
+    testBuildIsRepeatable();
     testNoUsemtlYieldsNoKeys();
     testSeparateBuildersDoNotShare();
 

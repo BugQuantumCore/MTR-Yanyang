@@ -188,21 +188,24 @@ void DrawList::applyGlobals(const DrawGlobals& globals) {
                 static_cast<float>((packed >> 8) & 0xFFU) / 255.0F,
                 static_cast<float>(packed & 0xFFU) / 255.0F);
     }
-    // The reference applies the overlay and the lightmap as a pair of shorts extracted
-    // from the packed value, high half first, and the lightmap only when the incoming
-    // value is non-null. A null lightmap means "leave whatever the shader had", which the
-    // cache expresses by not touching the slot.
+    // The reference stores the overlay and the lightmap through
+    // Utilities.exchangeLightmapUVBits - (value >> 16) | ((short) value << 16) - and
+    // VertexAttributeState.apply() then writes the exchanged value's high half first and
+    // its low half second, which composed is the original packed value's LOW half first.
+    // The overlay default is (10 << 16) | 10, symmetric under the exchange, so only the
+    // lightmap's half order is observable in practice; both are written the reference's
+    // way here.
     if (globals.hasOverlay) {
         const uint32_t packed = static_cast<uint32_t>(globals.overlay);
         cache_.setInt2(gl_, GL_ATTR_UV_OVERLAY,
-                static_cast<int16_t>(packed >> 16),
-                static_cast<int16_t>(packed));
+                static_cast<int16_t>(packed),
+                static_cast<int16_t>(packed >> 16));
     }
     if (globals.hasLightmap) {
         const uint32_t packed = static_cast<uint32_t>(globals.lightmap);
         cache_.setInt2(gl_, GL_ATTR_UV_LIGHTMAP,
-                static_cast<int16_t>(packed >> 16),
-                static_cast<int16_t>(packed));
+                static_cast<int16_t>(packed),
+                static_cast<int16_t>(packed >> 16));
     }
 }
 
