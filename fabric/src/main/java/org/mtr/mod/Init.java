@@ -29,7 +29,6 @@ import org.mtr.mixin.PlayerTeleportationStateAccessor;
 import org.mtr.mod.config.Config;
 import org.mtr.mod.data.ArrivalsCacheServer;
 import org.mtr.mod.data.RailActionModule;
-import org.mtr.mod.data.ServerRailPaths;
 import org.mtr.mod.generated.lang.TranslationProvider;
 import org.mtr.mod.packet.*;
 import org.mtr.mod.servlet.MinecraftOperationProcessor;
@@ -180,7 +179,6 @@ public final class Init implements Utilities {
 			});
 
 			Config.init(minecraftServer.getRunDirectory());
-			ServerRailPaths.start(Config.getServer().getUseThreadedSimulation());
 			final int defaultPort = Config.getServer().getWebserverPort();
 			serverPort = defaultPort <= 0 ? -1 : findFreePort(defaultPort);
 			main = new Main(minecraftServer.getSavePath(WorldSavePath.getRootMapped()).resolve("mtr"), serverPort, Config.getServer().getUseThreadedSimulation(), Config.getServer().getUseThreadedFileLoading(), webserverSetup, WORLD_ID_LIST.toArray(new String[0]));
@@ -221,7 +219,6 @@ public final class Init implements Utilities {
 		});
 
 		REGISTRY.eventRegistry.registerServerStopping(minecraftServer -> {
-			ServerRailPaths.stop();
 			if (main != null) {
 				main.stop();
 			}
@@ -239,12 +236,7 @@ public final class Init implements Utilities {
 
 			if (main != null) {
 				if (!Config.getServer().getUseThreadedSimulation()) {
-					ServerRailPaths.beginTick();
-					try {
-						main.manualTick();
-					} finally {
-						ServerRailPaths.endTick();
-					}
+					main.manualTick();
 				}
 
 				final long currentMillis = System.currentTimeMillis();

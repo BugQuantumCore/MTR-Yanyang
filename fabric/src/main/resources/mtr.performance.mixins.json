@@ -4,8 +4,13 @@
 	"package": "org.mtr.mod.mixin",
 	"compatibilityLevel": "JAVA_8",
 	"mixins": [
-		"DataPathEpochMixin",
-		"SidingPathFinderMixin"
+		"DataRailVisibilityMixin",
+		"RailTickMixin",
+		"SimulatorRailVisibilityMixin",
+		"RailReservationMixin",
+		"RailSignalSchemaMixin",
+		"VehicleOccupancyMixin",
+		"SimulatorVehicleOccupancyMixin"
 	],
 	"client": [
 		"OcclusionSafepointMixin",
