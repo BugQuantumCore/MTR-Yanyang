@@ -123,12 +123,13 @@ public final class NativePoseReaderResolutionTest {
 
 		final float[] out = new float[16];
 		chain.invoke(new class_7777(), out);
-		// Matrix4f.get(float[]) stores column-major: arr[0]=m00, arr[1]=m10, arr[3]=m30, arr[15]=m33,
-		// for the row-major constructor values 0..15 above.
-		Assertions.assertEquals(0.0f, out[0], 1.0E-6f, "arr[0] should be m00");
-		Assertions.assertEquals(4.0f, out[1], 1.0E-6f, "arr[1] should be m10");
-		Assertions.assertEquals(12.0f, out[3], 1.0E-6f, "arr[3] should be m30");
-		Assertions.assertEquals(15.0f, out[15], 1.0E-6f, "arr[15] should be m33");
+		// JOML's Matrix4f.get(float[]) writes the elements in the constructor's own order
+		// (arr[0]=m00, arr[1]=m01, arr[4]=m10, arr[15]=m33), and the constructor above passes
+		// 0..15 in exactly that order, so every element of out must equal its index. Asserting
+			// all sixteen pins the convention unambiguously, which one or two spot checks would not.
+		for (int i = 0; i < out.length; i++) {
+			Assertions.assertEquals((float) i, out[i], 1.0E-6f, "arr[" + i + "]");
+		}
 	}
 
 	@Test
