@@ -43,21 +43,48 @@ jobs:
             platform: windows-x64
             library: wrobj.dll
             artifact: wrobj-windows-x64
+            tests: 'ON'
+            extra: ''
           - name: linux-x64
             os: ubuntu-latest
             platform: linux-x64
             library: wrobj.so
             artifact: wrobj-linux-x64
-          - name: macos-x64
-            os: macos-13
-            platform: macos-x64
-            library: wrobj.dylib
-            artifact: wrobj-macos-x64
+            tests: 'ON'
+            extra: ''
           - name: macos-arm64
             os: macos-14
             platform: macos-arm64
             library: wrobj.dylib
             artifact: wrobj-macos-arm64
+            tests: 'ON'
+            extra: ''
+          # macOS x64 is deliberately not built. The arm64 build covers Apple Silicon, and an
+          # Intel Mac has no native library in the jar and falls back to the Java pipeline,
+          # which is the same graceful path every unsupported platform takes.
+          #
+          # iOS and iPadOS are one build. Apple compiles iPad apps against the iOS platform,
+          # so there is no iPadOS SDK and no separate Mach-O platform identifier; the same
+          # iphoneos arm64 binary loads on both. Both rows exist so that a device the mod's
+          # detection labels either way still finds a library.
+          #
+          # Tests are OFF here: the suites are executables and a cross-compiled arm64 iOS
+          # executable cannot run on the build machine. What this checks is that the library
+          # compiles and links for the device, which is the part never exercised before.
+          - name: ios-arm64
+            os: macos-14
+            platform: ios-arm64
+            library: wrobj.dylib
+            artifact: wrobj-ios-arm64
+            tests: 'OFF'
+            extra: '-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_OSX_SYSROOT=iphoneos'
+          - name: ipados-arm64
+            os: macos-14
+            platform: ipados-arm64
+            library: wrobj.dylib
+            artifact: wrobj-ipados-arm64
+            tests: 'OFF'
+            extra: '-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DCMAKE_OSX_SYSROOT=iphoneos'
 
     steps:
       - name: Checkout
@@ -79,7 +106,8 @@ jobs:
           set -o pipefail
           cmake -S native -B native/build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DWROBJ_BUILD_TESTS=ON 2>&1 | tee native-configure.log
+            -DWROBJ_BUILD_TESTS=${{ matrix.tests }} \
+            ${{ matrix.extra }} 2>&1 | tee native-configure.log
           grep -E "wrobj:|JNI" native-configure.log || true
 
       - name: Collect the diagnostic
@@ -273,13 +301,17 @@ jobs:
         # that is missing simply falls back to the Java pipeline on that platform.
         run: |
           set -euo pipefail
-          for platform in windows-x64 linux-x64 macos-x64 macos-arm64 android-arm64; do
+          for platform in windows-x64 linux-x64 macos-arm64 ios-arm64 ipados-arm64 android-arm64; do
             mkdir -p "native/packaged/${platform}"
           done
           cp natives/wrobj-windows-x64/wrobj.dll             "native/packaged/windows-x64/"  2>/dev/null || true
           cp natives/wrobj-linux-x64/wrobj.so             "native/packaged/linux-x64/"    2>/dev/null || true
-          cp natives/wrobj-macos-x64/wrobj.dylib          "native/packaged/macos-x64/"    2>/dev/null || true
           cp natives/wrobj-macos-arm64/wrobj.dylib        "native/packaged/macos-arm64/"  2>/dev/null || true
+          # iOS and iPadOS ship the same iphoneos binary under both names, so a device the mod
+          # labels either way finds it. Apple compiles iPad apps against the iOS platform, so
+          # there is one build and two directories, not two binaries.
+          cp natives/wrobj-ios-arm64/wrobj.dylib          "native/packaged/ios-arm64/"    2>/dev/null || true
+          cp natives/wrobj-ios-arm64/wrobj.dylib          "native/packaged/ipados-arm64/" 2>/dev/null || true
           cp natives/wrobj-android-arm64/wrobj.so         "native/packaged/android-arm64/" 2>/dev/null || true
           echo "--- staged ---"
           find native/packaged -type f -print -exec ls -l {} \;

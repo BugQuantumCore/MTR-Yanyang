@@ -432,7 +432,10 @@ actually been built and run, as opposed to what is intended to work:
 |---|---|---|---|
 | Windows x64 | yes, locally and on CI | 151 + 71 native, 4 JVM | the reference platform for this work |
 | Linux x64 | **yes** | 151 + 71 native | Ubuntu 24.04, gcc 13, libstdc++ 13, WSL2 |
-| macOS x64 / arm64 | **not confirmed** | — | two macOS-only defects found by inspection and fixed (library naming, `-ffp-contract`); clang builds clean on Linux as a proxy but macOS itself has not been compiled |
+| macOS arm64 | **not confirmed** | — | two macOS-only defects found and fixed (`-ffp-contract`, `Darwin` matching a `win` test); clang builds clean on Linux as a proxy |
+| macOS x64 | **deliberately not built** | — | an Intel Mac has no library in the jar and falls back to the Java pipeline |
+| iOS arm64 | **build target added** | — | `iphoneos`, 13.0 minimum; CI job added, has not been scheduled |
+| iPadOS arm64 | **build target added** | — | same binary as iOS; see below |
 | Android arm64 | **cross build verified** | — | NDK r26d, clang 17.0.2, `arm64-v8a`; aarch64 `wrobj.so` with a static C++ runtime. Not run on a device |
 
 "Not confirmed" means the code is written and committed but has never been compiled on the
@@ -510,6 +513,79 @@ One thing to be aware of on Android: the library is loaded from the mod jar by
 `NativeObjPipeline`, which extracts it and calls `System.load`. That path works wherever
 the jar's code source is a readable file, which is the normal case. It does not depend on
 the platform beyond the file name, which is `libwrobj.so` there as on Linux.
+
+---
+
+## Apple mobile: iOS and iPadOS
+
+### One build, two directories
+
+Apple compiles iPad apps against the iOS platform. There is no iPadOS SDK, and the Mach-O
+platform identifier of an iPad app is the same `iOS` as an iPhone app. A single `iphoneos`
+arm64 binary therefore loads on both, and that is what is built. The jar carries it under
+`ios-arm64/` and `ipados-arm64/` so that a device the mod labels either way finds it; the
+bytes are identical.
+
+### Why os.name cannot be trusted
+
+The mod has to choose a directory from inside the JVM, and the obvious approach is wrong:
+
+```java
+// WRONG - an iPhone is classified as a Mac
+final String os = System.getProperty("os.name").toLowerCase();
+if (os.contains("mac")) { ... }
+```
+
+iOS and iPadOS are Darwin. A JVM on them commonly reports `os.name` as `Mac OS X`, so
+`contains("mac")` is true on an iPhone, the mod asks for `macos-arm64`, finds nothing
+because the jar carries `ios-arm64`, and silently falls back to the Java pipeline. Nothing
+in that failure points at the platform check.
+
+There is a second trap in the same expression. Testing for Windows with `contains("win")`
+is also wrong, because **`Darwin` contains the letters `win`**: a JVM reporting `Darwin`
+was classified as Windows and asked for `wrobj.dll`. That bug existed in this code and was
+found by the test below rather than by a user.
+
+Detection therefore uses, in order:
+
+1. An explicit override - `-Dmtr.wrobj.platform=ios-arm64` or `MTR_WROBJ_PLATFORM` - for a
+   launcher that knows better than any heuristic.
+2. `windows`, spelled out, before anything else.
+3. Apple mobile, decided **before** macOS and never from `os.name`: a home directory under
+   `/var/mobile` or `/Containers/Data/Application`, `/var/mobile` existing on disk, or UIKit
+   being installed while Finder is not.
+4. macOS, matching `mac` or `darwin`.
+5. Everything else is Linux.
+
+iOS and iPadOS cannot be told apart from Java - same `os.name`, same architecture, no
+exposed user-interface idiom - so the loader takes a *list* of directories, most likely
+first, and tries each. A wrong guess between the two is therefore impossible to observe:
+both names resolve to the same binary.
+
+`NativePlatformResolutionTest` covers all of this with twelve cases, including the two
+trap cases above. It runs on any platform, which matters because the devices that decide
+the logic are exactly the ones that cannot be tested here.
+
+### Loading
+
+`NativeObjPipeline` extracts the library from the jar into `java.io.tmpdir` and calls
+`System.load` with the absolute path, because there is no system library directory a mod
+may write to. The `.dylib` is built with `INSTALL_NAME_DIR "@rpath"` so that its install
+name does not point at a build directory that exists only on the build machine.
+
+Two things to be aware of on a real device:
+
+- **The extracted library must be signed.** iOS refuses to `dlopen` an unsigned Mach-O.
+  This is a launcher responsibility, the same as any other JNI library on the platform.
+- **The sandbox has no `/usr/lib/libwrobj.dylib`.** Nothing here tries to install to one;
+  the extraction path is the only one used.
+
+### What is not verified
+
+The iOS and iPadOS jobs have been added to the workflow and have not been scheduled, so
+neither has been compiled. What is verified is the decision logic, on any platform, and
+that the CMake target configures for a `CMAKE_SYSTEM_NAME=iOS` toolchain without special
+cases beyond the ones listed here. Neither has been loaded on a device.
 
 ---
 

@@ -29,6 +29,35 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# ---------------------------------------------------------------------------
+# Apple mobile
+# ---------------------------------------------------------------------------
+#
+# iOS and iPadOS are one target. CMAKE_SYSTEM_NAME is "iOS" for both, because Apple compiles iPad
+# apps against the iOS platform: there is no iPadOS SDK and no separate platform identifier in the
+# Mach-O, so a single iphoneos arm64 binary is what an iPhone and an iPad both load. The two
+# directories in the jar exist so that a device labelled either way finds the library, not because
+# the bytes differ.
+#
+# Configure with:
+#   cmake -S native -B native/build-ios \
+#     -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+#     -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+#     -DCMAKE_OSX_SYSROOT=iphoneos \
+#     -DCMAKE_TOOLCHAIN_FILE=$NDK/... (not used - this is the Apple toolchain)
+#
+# CMAKE_SYSTEM_NAME=iOS needs CMake 3.14 or newer, which is why ios-cmake-style toolchains are not
+# required here. The framework is the platform's own.
+set(WROBJ_APPLE_MOBILE FALSE)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(WROBJ_APPLE_MOBILE TRUE)
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")
+    endif()
+    set(WROBJ_APPLE_MOBILE_MIN "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    message(STATUS "wrobj: building for iOS/iPadOS, minimum ${WROBJ_APPLE_MOBILE_MIN}")
+endif()
+
 # Both artefacts land directly in the build root whatever the generator.
 #
 # This matters more than it looks. CMake chooses a generator per platform: Ninja on Linux
@@ -252,6 +281,23 @@ if(JNI_FOUND)
         target_compile_definitions(wrobj PRIVATE WROBJ_ANDROID=1)
     endif()
 
+    if(WROBJ_APPLE_MOBILE)
+        # iOS and iPadOS. CMAKE_SYSTEM_NAME is iOS for both: Apple compiles iPad apps against the
+        # iOS platform, so one iphoneos binary is what an iPhone and an iPad both load. There is no
+        # separate iPadOS SDK and no separate platform identifier in the Mach-O.
+        #
+        # The load path matters here more than on desktop. A mod cannot be a system library, so the
+        # .dylib is extracted from the jar into the app container and opened by absolute path. It
+        # therefore needs an install name that does not point at a build directory, or the loader
+        # resolves the library against a path that exists only on the build machine.
+        set_target_properties(wrobj PROPERTIES
+                INSTALL_NAME_DIR "@rpath"
+                BUILD_WITH_INSTALL_RPATH OFF)
+        # iPhone and iPad in one binary. 1,2 is the device family; leaving it at the default (1)
+        # would still run on an iPad but would be described as iPhone-only in the Mach-O.
+        target_compile_options(wrobj PRIVATE "-mios-version-min=${WROBJ_APPLE_MOBILE_MIN}")
+    endif()
+
     if(MSVC)
         target_compile_options(wrobj PRIVATE /W4 /permissive- /utf-8 /fp:precise)
         target_compile_definitions(wrobj PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -261,10 +307,9 @@ if(JNI_FOUND)
         # but it moves floats across the boundary and there is no reason for the two translation
         # sets to disagree about contraction.
         target_compile_options(wrobj PRIVATE -ffp-contract=off)
-        if(NOT ANDROID)
-            # Not needed on Android, where the C++ runtime is static, and a plain -lm is
-            # required on Linux for the sqrt and cos the model pipeline uses. macOS needs no
-            # flag: these are part of its C library.
+        if(NOT ANDROID AND NOT APPLE)
+            # -lm is required on Linux for the sqrt and cos the model pipeline uses. Neither macOS
+            # nor iOS needs it: libm is part of libSystem and there is no separate archive to link.
             target_link_libraries(wrobj PRIVATE m)
         endif()
     endif()

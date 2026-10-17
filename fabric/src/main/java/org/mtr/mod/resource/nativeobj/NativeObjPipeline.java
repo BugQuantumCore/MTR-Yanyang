@@ -146,21 +146,30 @@ public final class NativeObjPipeline {
 	 * cannot influence the path, which matters because the file is executed.</p>
 	 */
 	private static boolean loadFromJar(Path jarPath) {
-		final String entryName = "native/" + platformDirectory() + "/" + libraryFileName();
 		try (final var jar = new java.util.jar.JarFile(jarPath.toFile())) {
-			final var entry = jar.getEntry(entryName);
-			if (entry == null) {
-				return false;
-			}
-			final Path directory = Paths.get(System.getProperty("java.io.tmpdir"), "mtr-wrobj");
-			Files.createDirectories(directory);
-			final Path target = directory.resolve(entry.getSize() + "-" + libraryFileName());
-			if (!Files.isRegularFile(target) || Files.size(target) != entry.getSize()) {
-				try (final var input = jar.getInputStream(entry)) {
-					Files.copy(input, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			// Every candidate is tried, not just the detected one. A device the heuristics label as
+			// the other Apple mobile family still finds the library, which is what makes the
+			// iOS/iPadOS distinction not matter.
+			for (final String directory : candidatePlatformDirectories(platformDirectory())) {
+				final String fileName = resolveLibraryFileName(directory);
+				final String entryName = "native/" + directory + "/" + fileName;
+				final var entry = jar.getEntry(entryName);
+				if (entry == null) {
+					continue;
+				}
+				final Path directoryPath = Paths.get(System.getProperty("java.io.tmpdir"), "mtr-wrobj");
+				Files.createDirectories(directoryPath);
+				final Path target = directoryPath.resolve(entry.getSize() + "-" + fileName);
+				if (!Files.isRegularFile(target) || Files.size(target) != entry.getSize()) {
+					try (final var input = jar.getInputStream(entry)) {
+						Files.copy(input, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+					}
+				}
+				if (loadFromPath(target)) {
+					return true;
 				}
 			}
-			return loadFromPath(target);
+			return false;
 		} catch (Throwable throwable) {
 			return false;
 		}
@@ -188,36 +197,175 @@ public final class NativeObjPipeline {
 	/** Candidate paths in a source checkout, so a local native build is picked up. */
 	private static Iterable<Path> developmentCandidates() {
 		final String workingDirectory = System.getProperty("user.dir", ".");
-		return java.util.List.of(
-				Paths.get(workingDirectory, "native", "build-windows", libraryFileName()),
-				Paths.get(workingDirectory, "native", "build", libraryFileName()),
-				Paths.get(workingDirectory, "..", "native", "build-windows", libraryFileName()).normalize(),
-				Paths.get(workingDirectory, "..", "native", "build", libraryFileName()).normalize()
-		);
+		final String fileName = resolveLibraryFileName(platformDirectory());
+		// build-windows and build are kept for the layouts that already exist, and the per-platform
+		// build-<directory> names cover an iOS or Linux build tree in a checkout.
+		final java.util.List<Path> paths = new java.util.ArrayList<>(6);
+		for (final String directory : candidatePlatformDirectories(platformDirectory())) {
+			final String name = resolveLibraryFileName(directory);
+			paths.add(Paths.get(workingDirectory, "native", "build-" + directory, name));
+			paths.add(Paths.get(workingDirectory, "..", "native", "build-" + directory, name).normalize());
+		}
+		paths.add(Paths.get(workingDirectory, "native", "build-windows", fileName));
+		paths.add(Paths.get(workingDirectory, "native", "build", fileName));
+		paths.add(Paths.get(workingDirectory, "..", "native", "build-windows", fileName).normalize());
+		paths.add(Paths.get(workingDirectory, "..", "native", "build", fileName).normalize());
+		return paths;
 	}
 
-	private static String libraryFileName() {
-		final String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-		if (os.contains("win")) {
+	/**
+	 * Resolves the jar directory holding this JVM's library from observable facts alone.
+	 *
+	 * <p>Deliberately a pure function: the platform cases that matter most here are the ones this
+	 * machine cannot run - an iPhone, an iPad, an Intel Mac - so they are encoded as inputs and
+	 * covered by tests rather than left to be discovered on a device.</p>
+	 *
+	 * <p>The order of the checks is the whole point. {@code os.name} is <em>not</em> a reliable way
+	 * to tell iOS from macOS: iOS and iPadOS are Darwin, and a JVM on them commonly reports
+	 * {@code "Mac OS X"}. Reading {@code os.name} first therefore classifies an iPhone as a Mac and
+	 * asks for {@code macos-arm64}, which is the wrong directory, and the result is a silent
+	 * fallback to the Java pipeline. Apple mobile is decided from the sandbox layout and the
+	 * presence of UIKit before macOS is considered at all.</p>
+	 *
+	 * @param osName        {@code os.name}, which lies about iOS
+	 * @param osArch        {@code os.arch}
+	 * @param userHome      {@code user.home}, which is inside the app sandbox on iOS
+	 * @param appleSandbox  whether the iOS/iPadOS sandbox signals were seen on disk
+	 * @param uikitPresent  whether UIKit is installed and Finder is not, i.e. a mobile layout
+	 * @return a directory name of the form {@code <os>-<arch>}
+	 */
+	static String resolvePlatformDirectory(
+			String osName, String osArch, String userHome, boolean appleSandbox, boolean uikitPresent) {
+		final String os = osName == null ? "" : osName.toLowerCase(java.util.Locale.ROOT);
+		final String arch = osArch == null ? "" : osArch.toLowerCase(java.util.Locale.ROOT);
+		final String home = userHome == null ? "" : userHome;
+		final String archName = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "x64";
+
+		// "windows", not "win": Darwin contains the letters w-i-n, so a JVM on macOS reporting
+		// os.name as "Darwin" matched a contains("win") test and was classified as Windows - which
+		// then asked for wrobj.dll. Every os.name Windows actually reports contains "windows".
+		if (os.contains("windows")) {
+			return "windows-" + archName;
+		}
+
+		// Before macOS, and not from os.name. iOS and iPadOS share one build: Apple compiles iPad
+		// apps against the iOS platform, so a single iphoneos binary is what both families load.
+		// The canonical directory is ios-; candidatePlatformDirectories adds the ipados- sibling.
+		if (appleSandbox || uikitPresent
+				|| home.startsWith("/var/mobile")
+				|| home.contains("/Containers/Data/Application")) {
+			return "ios-" + archName;
+		}
+
+		if (os.contains("mac") || os.contains("darwin")) {
+			return "macos-" + archName;
+		}
+
+		return "linux-" + archName;
+	}
+
+	/**
+	 * The directories to try, most likely first.
+	 *
+	 * <p>A list rather than a single name because a device the detection labels wrongly can still
+	 * find a compatible build. iOS and iPadOS cannot be told apart from Java - both are Darwin,
+	 * both report the same architecture, and neither exposes the user-interface idiom - so a
+	 * single guess would be a coin toss on a real iPad. Since the two families share one binary,
+	 * staging it under both names and trying both removes the guess instead of gambling on it.</p>
+	 */
+	static java.util.List<String> candidatePlatformDirectories(String primary) {
+		final java.util.List<String> directories = new java.util.ArrayList<>(2);
+		directories.add(primary);
+		if (primary.startsWith("ios-")) {
+			directories.add("ipados-" + primary.substring("ios-".length()));
+		} else if (primary.startsWith("ipados-")) {
+			directories.add("ios-" + primary.substring("ipados-".length()));
+		}
+		return directories;
+	}
+
+	/** The file name CMake produces for a directory, given {@code PREFIX ""}. */
+	static String resolveLibraryFileName(String platformDirectory) {
+		if (platformDirectory.startsWith("windows")) {
 			return LIBRARY_NAME + ".dll";
 		}
-		// No "lib" prefix: CMakeLists sets PREFIX "" on the wrobj target so the shared library is
-		// wrobj.so and wrobj.dylib rather than the platform default names. Requiring the prefix here
-		// would make the mod look for a file the build never produces, and the mod would fall back
-		// to the Java pipeline on Linux and macOS with no error. The jar layout, the CI artefact
-		// name and this lookup all have to agree, and the build is what defines the name.
-		if (os.contains("mac")) {
+		// No "lib" prefix: CMakeLists sets PREFIX "" on the wrobj target, so the artefacts are
+		// wrobj.so and wrobj.dylib. Requiring the prefix would make the mod look for a file the
+		// build never produces and fall back silently.
+		if (platformDirectory.startsWith("macos")
+				|| platformDirectory.startsWith("ios")
+				|| platformDirectory.startsWith("ipados")) {
 			return LIBRARY_NAME + ".dylib";
 		}
 		return LIBRARY_NAME + ".so";
 	}
 
+	/**
+	 * An explicit override, for a launcher that knows better than the heuristics.
+	 *
+	 * <p>Set {@code -Dmtr.wrobj.platform=ios-arm64} or the {@code MTR_WROBJ_PLATFORM} environment
+	 * variable. Without this, a launcher running on an unusual configuration has no way to correct
+	 * the detection, and the only symptom is the Java pipeline being used instead.</p>
+	 */
+	private static String platformOverride() {
+		final String property = System.getProperty("mtr.wrobj.platform", "").trim();
+		if (!property.isEmpty()) {
+			return property;
+		}
+		final String environment = System.getenv("MTR_WROBJ_PLATFORM");
+		return environment == null ? "" : environment.trim();
+	}
+
 	private static String platformDirectory() {
-		final String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-		final String arch = System.getProperty("os.arch", "").toLowerCase(java.util.Locale.ROOT);
-		final String osName = os.contains("win") ? "windows" : os.contains("mac") ? "macos" : "linux";
-		final String archName = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "x64";
-		return osName + "-" + archName;
+		final String override = platformOverride();
+		if (!override.isEmpty()) {
+			return override;
+		}
+		return resolvePlatformDirectory(
+				System.getProperty("os.name"),
+				System.getProperty("os.arch"),
+				firstNonEmpty(System.getProperty("user.home"), System.getenv("HOME")),
+				hasAppleMobileSandbox(),
+				hasMobileFrameworksWithoutFinder());
+	}
+
+	/**
+	 * True when the filesystem looks like an iOS app sandbox.
+	 *
+	 * <p>{@code user.home} is checked by the caller; this looks at the disk, because a launcher can
+	 * set the property to anything while it cannot invent {@code /var/mobile} on a Mac.</p>
+	 */
+	private static boolean hasAppleMobileSandbox() {
+		try {
+			return Files.isDirectory(Paths.get("/var/mobile"));
+		} catch (Throwable throwable) {
+			return false;
+		}
+	}
+
+	/**
+	 * True when UIKit is installed and Finder is not.
+	 *
+	 * <p>UIKit alone is not enough: Mac Catalyst installs it on macOS. The absence of Finder is
+	 * what separates a phone or tablet from a desktop.</p>
+	 */
+	private static boolean hasMobileFrameworksWithoutFinder() {
+		try {
+			final boolean mobile = Files.isDirectory(Paths.get("/System/Library/Frameworks/UIKit.framework"));
+			final boolean desktop = Files.isDirectory(
+					Paths.get("/System/Library/CoreServices/Finder.app"))
+					|| Files.isDirectory(Paths.get("/System/Applications/Finder.app"));
+			return mobile && !desktop;
+		} catch (Throwable throwable) {
+			return false;
+		}
+	}
+
+	private static String firstNonEmpty(String first, String second) {
+		if (first != null && !first.isEmpty()) {
+			return first;
+		}
+		return second == null ? "" : second;
 	}
 
 	// -----------------------------------------------------------------------
@@ -425,7 +573,7 @@ public final class NativeObjPipeline {
 
 	/** Exposed for diagnostics: the library file name on this platform. */
 	public static String getLibraryFileName() {
-		return libraryFileName();
+		return resolveLibraryFileName(platformDirectory());
 	}
 
 	/** Exposed for diagnostics: the packaged directory name on this platform. */

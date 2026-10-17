@@ -31,7 +31,8 @@ public class RunTests {
 		final LauncherDiscoveryRequest req = request().selectors(
 				selectClass("org.mtr.mod.resource.nativeobj.NativeObjEquivalenceTest"),
 				selectClass("org.mtr.mod.resource.nativeobj.NativeVertexLayoutCompatibilityTest"),
-				selectClass("org.mtr.mod.resource.nativeobj.NativeDrawListGlTest")).build();
+				selectClass("org.mtr.mod.resource.nativeobj.NativeDrawListGlTest"),
+				selectClass("org.mtr.mod.resource.nativeobj.NativePlatformResolutionTest")).build();
 		final Launcher launcher = LauncherFactory.create();
 		final SummaryGeneratingListener listener = new SummaryGeneratingListener();
 		launcher.execute(req, listener);
