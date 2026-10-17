@@ -63,10 +63,10 @@ public interface StoredModelResourceBase {
 			} else {
 				models = new ObjectObjectImmutablePair<>(null, null);
 			}
+			return models;
 		} finally {
 			CustomResourceLoader.OPTIMIZED_RENDERER_WRAPPER.finishReload();
 		}
-		return models;
 	}
 
 	default void render(StoredMatrixTransformations storedMatrixTransformations, int light) {
