@@ -80,3 +80,4 @@ native/**/*.obj.bak
 node_modules/
 website/dist/
 website/.angular/
+native/release/
