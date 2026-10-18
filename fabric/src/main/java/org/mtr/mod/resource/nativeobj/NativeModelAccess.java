@@ -18,8 +18,7 @@ import java.lang.reflect.Modifier;
 import java.util.List;
 
 /**
- * The few pieces of state the native draw path needs that the prebuilt backend keeps
- * private.
+ * The few pieces of state the flat draw path needs that the prebuilt backend keeps private.
  *
  * <h2>Why reflection is used at all</h2>
  *
@@ -32,14 +31,14 @@ import java.util.List;
  *       it there is nothing to register or draw.</li>
  *   <li>{@code VertexArray.materialProperties} - the per-bucket identity that decides which
  *       shader and texture to bind, and therefore the grouping.</li>
- *   <li>{@code OptimizedRenderer.shaderManager} and its
- *       {@code setupShaderBatchState}/{@code cleanupShaderBatchState} - the shader, texture
- *       and blend state for a material. Re-implementing that would mean duplicating shader
- *       loading and render-layer behaviour that needs a live client to get right.</li>
+ *   <li>{@code OptimizedRenderer.shaderManager} - the shader state the flat pass drives per
+ *       material through its public {@code setupShaderBatchState} and
+ *       {@code cleanupShaderBatchState}, which are called directly because they are public
+ *       API of the prebuilt jar.</li>
  * </ul>
  *
  * <p>Every handle is resolved once, on the first use, and a failure to resolve any of them
- * disables the native draw path entirely so the original one runs. That is deliberate: a
+ * disables the flat draw path entirely so the original one runs. That is deliberate: a
  * partial resolution would produce a renderer that draws some things and silently skips
  * others, which is worse than not engaging at all.</p>
  *
@@ -52,7 +51,7 @@ import java.util.List;
  */
 public final class NativeModelAccess {
 
-	/** Resolved once; null means the native draw path cannot be used. */
+	/** Resolved once; null means the flat draw path cannot be used. */
 	private static boolean resolved;
 
 	private static boolean available;
@@ -84,12 +83,6 @@ public final class NativeModelAccess {
 	@Nullable
 	private static MethodHandle shaderManagerGetter;
 
-	@Nullable
-	private static MethodHandle setupShaderBatchState;
-
-	@Nullable
-	private static MethodHandle cleanupShaderBatchState;
-
 	/** Why resolution failed, for the log. */
 	private static String failureReason = "";
 
@@ -102,13 +95,13 @@ public final class NativeModelAccess {
 			resolved = true;
 			available = resolve();
 			if (!available) {
-				Init.LOGGER.warn("[wrgl] the native draw path is disabled: {}", failureReason);
+				Init.LOGGER.warn("[wrgl] the flat draw path is disabled: {}", failureReason);
 			}
 		}
 		return available;
 	}
 
-	/** The reason the native draw path is unavailable, or an empty string. */
+	/** The reason the flat draw path is unavailable, or an empty string. */
 	public static synchronized String getFailureReason() {
 		return failureReason;
 	}
@@ -146,18 +139,13 @@ public final class NativeModelAccess {
 					IndexBuffer.class, "getVertexCount", MethodType.methodType(int.class));
 
 			// The renderer's shader manager is private and its methods are public, so the
-			// lookup only has to reach the field.
+			// lookup only has to reach the field. The flat pass calls the public methods
+			// directly, which the compile-time type check covers.
 			final Class<?> rendererClass = Class.forName("org.mtr.mapping.mapper.OptimizedRenderer");
 			final MethodHandles.Lookup rendererLookup = MethodHandles.privateLookupIn(
 					rendererClass, MethodHandles.lookup());
 			shaderManagerGetter = rendererLookup.findGetter(
 					rendererClass, "shaderManager", ShaderManager.class);
-
-			setupShaderBatchState = MethodHandles.publicLookup().findVirtual(
-					ShaderManager.class, "setupShaderBatchState",
-					MethodType.methodType(void.class, MaterialProperties.class));
-			cleanupShaderBatchState = MethodHandles.publicLookup().findVirtual(
-					ShaderManager.class, "cleanupShaderBatchState", MethodType.methodType(void.class));
 
 			poseReader = resolvePoseReader();
 			if (poseReader == null) {
@@ -178,8 +166,6 @@ public final class NativeModelAccess {
 			indexBufferGetter = null;
 			indexBufferVertexCountGetter = null;
 			shaderManagerGetter = null;
-			setupShaderBatchState = null;
-			cleanupShaderBatchState = null;
 			poseReader = null;
 			return false;
 		}
@@ -199,9 +185,10 @@ public final class NativeModelAccess {
 	 * holds {@code net.minecraft.client.util.math.MatrixStack} in one and {@code class_4587} in
 	 * the other. The previous version spelled the yarn names into {@code Class.forName} calls,
 	 * which threw {@code ClassNotFoundException} on every production client: the pose reader
-	 * resolved to null, {@code queue()} then silently dropped every model it was handed, and the
-	 * draw path still reported itself active - which is how an entire release shipped with OBJ
-	 * models invisible in production while every development-environment test stayed green.</p>
+	 * resolved to null, {@code queue()} then silently dropped every model it was handed, and
+	 * the draw path still reported itself active - which is how an entire release shipped with
+	 * OBJ models invisible in production while every development-environment test stayed
+	 * green.</p>
 	 *
 	 * <p>The classes are therefore taken from the field's own declared type, and the two
 	 * Minecraft methods are found by shape rather than by name: the entry class is the nested
@@ -295,7 +282,7 @@ public final class NativeModelAccess {
 	 *
 	 * <p>The real stack declares exactly one nested class (yarn {@code MatrixStack.Entry}) and
 	 * that class has exactly one no-argument method returning {@code org.joml.Matrix4f}. A stack
-	 * with no nested class of that shape cannot be read, and the caller disables the native
+	 * with no nested class of that shape cannot be read, and the caller disables the flat
 	 * draw path rather than guessing.</p>
 	 */
 	@Nullable
@@ -314,7 +301,7 @@ public final class NativeModelAccess {
 	 * <p>Matched on shape rather than on a name, because the name is remapped between the
 	 * development and production runtimes. A class with no such method resolves to null; a class
 	 * with more than one resolves to null as well, because two candidates would mean a guess,
-	 * and the caller would rather disable the native draw path than draw with a wrong link.</p>
+	 * and the caller would rather disable the flat draw path than draw with a wrong link.</p>
 	 */
 	@Nullable
 	private static MethodHandle findOnlyNoArgMethod(Class<?> declaringClass, Class<?> returnType) {
@@ -392,30 +379,6 @@ public final class NativeModelAccess {
 		}
 	}
 
-	/** Binds the shader, texture and blend state for a material. */
-	public static void setupShaderBatchState(@Nullable ShaderManager shaderManager, MaterialProperties materialProperties) {
-		if (shaderManager == null || setupShaderBatchState == null || materialProperties == null) {
-			return;
-		}
-		try {
-			setupShaderBatchState.invoke(shaderManager, materialProperties);
-		} catch (Throwable throwable) {
-			Init.LOGGER.warn("[wrgl] could not set up shader batch state: {}", throwable.toString());
-		}
-	}
-
-	/** Undoes whatever {@link #setupShaderBatchState} did. */
-	public static void cleanupShaderBatchState(@Nullable ShaderManager shaderManager) {
-		if (shaderManager == null || cleanupShaderBatchState == null) {
-			return;
-		}
-		try {
-			cleanupShaderBatchState.invoke(shaderManager);
-		} catch (Throwable throwable) {
-			Init.LOGGER.warn("[wrgl] could not clean up shader batch state: {}", throwable.toString());
-		}
-	}
-
 	/**
 	 * Reads a {@code GraphicsHolder}'s pose matrix into the given array.
 	 *
@@ -430,7 +393,7 @@ public final class NativeModelAccess {
 	 * {@code graphicsHolder.matrixStack.peek().getPositionMatrix()}, then JOML's
 	 * {@code Matrix4f.get(float[])}. JOML stores the matrix column-major, which is the order
 	 * the shader's four {@code vec4} attributes expect, so the array is passed straight to the
-	 * native side with no transpose.</p>
+	 * flat pass with no transpose.</p>
 	 *
 	 * @return true when the matrix was written
 	 */
@@ -454,7 +417,7 @@ public final class NativeModelAccess {
 	/**
 	 * The GL vertex array name behind a {@code VertexArray}.
 	 *
-	 * <p>MTR exposes no getter for it, and the native draw list needs the name rather than
+	 * <p>MTR exposes no getter for it, and the flat draw pass needs the name rather than
 	 * the object. Zero means the array was already closed, which the caller treats as "do not
 	 * register".</p>
 	 */

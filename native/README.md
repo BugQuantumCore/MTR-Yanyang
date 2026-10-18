@@ -335,9 +335,11 @@ Two things worth reading off that table:
 
 Being explicit about the limits of the change:
 
-- **The draw path is untouched.** `BatchManager` still makes one draw call per vertex
-  array and still applies six global vertex attributes per array. The rewrite is about
-  model loading and buffer preparation, not about draw submission.
+- **Draw submission is not native.** One draw call per vertex array remains the
+  floor, and the attribute work around it now lives in the flat Java draw pass rather
+  than here. The rewrite of *this* directory is about model loading and buffer
+  preparation; see "The draw path" below for how submission is handled and why a
+  native draw list lost that job.
 - **The shader and render-layer work is untouched.** It needs a live client.
 - **The first model load is still bounded by disk I/O and by the OBJ file size.** What
   changes is the cost *after* the bytes are in memory.
@@ -346,6 +348,38 @@ Being explicit about the limits of the change:
   goes away is the garbage, not the working set.
 
 ---
+
+## The draw path
+
+The first version of this rewrite also moved draw submission into the library: a
+`DrawList` (this directory's `wrgl` layer) registered vertex arrays once, queued
+draws as integers, and flushed once per material, emitting GL through a table of
+Java callbacks. The design is kept and tested - `native/tests/wrgl_tests.cpp` and
+the mod's `NativeDrawListGlTest` still drive it - but it is no longer the production
+draw path, and the reason is arithmetic rather than preference.
+
+GL cannot be linked directly here (`wrgl_emit.hpp` lists why), so every surviving GL
+call crossed the boundary twice: a `CallVoidMethod` upcall into `NativeGlHost`, then
+an LWJGL downcall into the driver. An upcall costs several times a downcall, so a
+draw cost two upcalls, a distinct pose four more, while the reference Java path paid
+one downcall each for the same work. On scenes with thousands of vehicle draws per
+frame the crossings cost more than the attribute cache saved, which surfaced as frame
+stutter.
+
+The production path is now `FlatDrawPass` on the Java side, which keeps every property
+the native list had - flat integer-referenced batches, per-frame storage that is
+allocated once and grown, change-detection on every attribute, grouping by material
+`equals` so each distinct material binds its shader once per frame - and reproduces
+`BatchManager.RenderCall.draw` exactly, including the parts the native list never
+had: the material's own `Kd` colour and BRIGHT full-bright lightmap applied after the
+queued state, the queued light per car rather than per run, the shader-pack fallback
+that routes the pose through the current shader's model view matrix, and the state
+tracker's capture and restore around the pass. `FlatDrawPassTest` pins the emitted
+call stream against a recorder.
+
+The division that remains: the native library owns the model build, where it removes
+the allocation cost of *preparing* the geometry, and Java owns the draw, where the GL
+binding already lives.
 
 ## Fallback and failure handling
 
@@ -427,16 +461,15 @@ Documented rather than hidden, because each one is a deliberate decision:
    rather than worked around: the comparator reports the difference on every run instead
    of tolerating it.
 
-7. **The native draw path does not apply the material's own vertex attribute state.**
-   `RenderCall.draw` on the reference path applies the queued pose state first and then
-   `materialProperties.vertexAttributeState`, so the material's `Kd` colour and the
-   full-bright lightmap (`0xF000F0`) that the BRIGHT shader types carry win over the
-   queued colour and light. The native wrapper flushes only the queued globals, so a
-   `Kd`-coloured material renders white and BRIGHT parts are lit by the vehicle light
-   instead of full brightness. The queue colour is `ARGB_WHITE` and the lightmap halves
-   match the reference's `exchangeLightmapUVBits` order, but the material override is
-   not reproduced. Recorded here rather than fixed: it changes no geometry, and
-   reproducing it needs the colour reachable from the wrapper's material runs.
+7. **Resolved: the material's own vertex attribute state is now applied.** The draw
+   path once flushed only the queued globals, so a `Kd`-coloured material rendered
+   white and BRIGHT parts were lit by the vehicle's sampled light instead of
+   full brightness - which was the "severely grey vehicles" report. The flat Java draw
+   pass (`FlatDrawPass`) reproduces `RenderCall.draw`'s two-step application - queued
+   state first, then `materialProperties.vertexAttributeState`, which wins - and also
+   applies the queued light per car, which the old flush collapsed to the first item's
+   value inside a material run. See "The draw path" below for why that pass is Java
+   rather than native.
 
 ---
 
@@ -521,10 +554,11 @@ Three things make it different from the desktop targets:
   layer at link time.
 
 **gl4ES.** The float-attribute fallback exists for translation layers that do not
-implement integer vertex attributes. `GlStateTracker.isGl4ES()` decides it, and
-`OptimizedRendererWrapper` passes that decision to `NativeDrawList.create`, which sets the
-`useFloatAttributeFallback` flag on the GL table. That swaps the two `glVertexAttribI2i`
-calls for `glVertexAttrib2f`. The branch is covered by the recording-stub suite in
+implement integer vertex attributes. `GlStateTracker.isGl4ES()` decides it; the flat
+draw pass reads that answer per frame, after the state capture that sets it, and the
+native draw list takes it as the `useFloatAttributeFallback` flag at registration.
+Either way the two `glVertexAttribI2i` calls become `glVertexAttrib2f`. The branch is
+covered by `FlatDrawPassTest` and by the recording-stub suite in
 `native/tests/wrgl_tests.cpp` in both settings; it has never run against a real gl4ES.
 
 One thing to be aware of on Android: the library is loaded from the mod jar by
