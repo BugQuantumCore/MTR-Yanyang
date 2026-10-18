@@ -210,6 +210,10 @@ final class FlatDrawPassTest {
 		pass.render(true, new RecordingBinder(), sink);
 
 		assertEquals(List.of(
+				// The array binds first, exactly like RenderCall.draw, because current
+				// generic vertex attribute values can be vertex array object state on a
+				// driver: anything written before the bind could land in the wrong VAO.
+				new Call("bindVertexArray", 10),
 				new Call("attribI2i", 3, 10, 10),
 				// The material's lightmap is written high half first, which is the order the
 				// reference's two-argument VertexAttributeState uses. Both halves of the
@@ -221,7 +225,6 @@ final class FlatDrawPassTest {
 				new Call("attrib4f", 7, 0F, 1F, 0F, 0F),
 				new Call("attrib4f", 8, 0F, 0F, 1F, 0F),
 				new Call("attrib4f", 9, 0F, 0F, 0F, 1F),
-				new Call("bindVertexArray", 10),
 				new Call("drawElements", 6),
 				// The second car: same colour, same light, same pose, same array - everything
 				// except the draw itself is suppressed.
@@ -297,9 +300,15 @@ final class FlatDrawPassTest {
 		final RecordingSink sink = new RecordingSink();
 		pass.render(true, new RecordingBinder(), sink);
 
-		// The identity pose is written as four column vec4s, the repeat costs nothing, and the
-		// translated pose is written again - with its fourth column carrying the translation.
+		// Each array switch re-establishes the pose, because the bind can restore the
+		// array's own current attribute values; within one array, repeats are suppressed. The
+		// identity pose is written as four column vec4s, the second array repeats it, and the
+		// third item - back on the first array - writes the translated pose.
 		assertEquals(List.of(
+				new Call("attrib4f", 6, 1F, 0F, 0F, 0F),
+				new Call("attrib4f", 7, 0F, 1F, 0F, 0F),
+				new Call("attrib4f", 8, 0F, 0F, 1F, 0F),
+				new Call("attrib4f", 9, 0F, 0F, 0F, 1F),
 				new Call("attrib4f", 6, 1F, 0F, 0F, 0F),
 				new Call("attrib4f", 7, 0F, 1F, 0F, 0F),
 				new Call("attrib4f", 8, 0F, 0F, 1F, 0F),

@@ -389,6 +389,28 @@ that routes the pose through the current shader's model view matrix, and the sta
 tracker's capture and restore around the pass. `FlatDrawPassTest` pins the emitted
 call stream against a recorder.
 
+### The bind order, and why it is not negotiable
+
+`RenderCall.draw` binds the vertex array before it applies any attribute state, and
+the pass now does the same. Current generic vertex attribute values - the ones the
+entity shaders read for colour, lightmap, overlay and the model matrix, because the
+OBJ vertex format disables those arrays - are ambiguous driver territory. Mesa keeps
+them as context state, where the order does not matter. A driver is free to treat
+them as vertex array object state instead: then a value written before a bind lands
+in whatever array was bound, and the bind itself restores the newly bound array's
+own stale values. The pass's earlier write-then-bind order with cross-array change
+detection worked on Mesa and washed every model out on such a driver, because the
+colour never followed the bind. Writing every attribute while the target array is
+bound, and re-establishing the overlay and the material lightmap after each switch,
+is correct under both readings and is the order the reference has used all along.
+
+An end-to-end harness verified the equivalence: both paths rendered the same model
+through the real prebuilt mapping jar, the real vanilla `rendertype_entity_cutout`
+shader sources patched by the real `PatchingResourceProvider`, and a real core-profile
+context, and the framebuffers compared pixel-identical - including per-car lightmap
+values, Kd colours, all four shader types, and the overlay's inverted mix semantics
+(the "no overlay" texel is opaque, not transparent).
+
 The division that remains: the native library owns the model build, where it removes
 the allocation cost of *preparing* the geometry, and Java owns the draw, where the GL
 binding already lives.

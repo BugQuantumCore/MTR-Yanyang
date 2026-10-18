@@ -38,6 +38,13 @@ import java.util.Arrays;
  * equivalent, because no draw happens between the reference's two applications - only the
  * values in force at {@code glDrawElements} are observable.</p>
  *
+ * <p>The writes also follow the reference's order around the vertex array: bind first, then
+ * write, then draw. Current generic vertex attribute values are ambiguous driver territory -
+ * Mesa keeps them as context state, but a driver that treats them as vertex array object
+ * state would let a pre-bind write land in the wrong VAO and let the bind restore the VAO's
+ * own stale values, which reads as a permanent wash or blackout on the model. Writing every
+ * attribute while the target VAO is bound is correct under both readings.</p>
+ *
  * <p>The queued light is per car, sampled at each car's world position, so it is applied per
  * item with change detection rather than once per pass. The previous native flush applied it
  * once per material run, which dimmed every car in a run to the first car's light.</p>
@@ -427,6 +434,16 @@ public final class FlatDrawPass {
 	 * <p>The change-detection caches reset per run rather than per frame: the reference
 	 * re-applies its state unconditionally and so never depends on a value surviving a
 	 * shader bind, and resetting here costs at most a handful of writes per run.</p>
+	 *
+	 * <p>Every attribute write happens AFTER the vertex array is bound, which is the order
+	 * {@code RenderCall.draw} uses: bind, apply the queued state, apply the material state,
+	 * draw. That order matters because current generic vertex attribute values are ambiguous
+	 * driver territory: Mesa keeps them as context state, but a driver is free to treat them
+	 * as vertex array object state, where writing them before a bind lands in the wrong VAO
+	 * and the newly bound VAO restores its own stale values instead. Writing only while the
+	 * target VAO is bound is correct under both readings, and costs nothing measurable: the
+	 * overlay and the material lightmap re-establish once per array switch, and the per-item
+	 * colour, light and pose caches are simply invalidated by the switch.</p>
 	 */
 	private void drawRun(int bucket, int start, int end, boolean customShader, boolean floatFallback, GlSink sink) {
 		hasLastPose = false;
@@ -439,20 +456,32 @@ public final class FlatDrawPass {
 		final boolean hasMaterialLight = bucketHasLight[bucket];
 		final int materialLight = bucketLight[bucket];
 
-		// The queued state always carries the default overlay, and the material's own state
-		// never carries one, so this is once per run.
-		writeOverlay(floatFallback, sink);
-
-		// The material's lightmap, when it has one, replaces every item's queued light: the
-		// reference applies the material state after the queued state, so the BRIGHT full
-		// bright value wins. Applying it once here holds for the whole run.
-		if (hasMaterialLight) {
-			writeMaterialLightmap(materialLight, floatFallback, sink);
-			lastLight = materialLight;
-			lastLightValid = true;
-		}
-
 		for (int i = start; i < end; i++) {
+			// Every car of one model shares the same vertex arrays, so a run frequently holds
+			// long stretches of one array; re-binding the array already in place is a no-op.
+			if (!lastVaoValid || lastVao != sortedVao[i]) {
+				sink.bindVertexArray(sortedVao[i]);
+				lastVao = sortedVao[i];
+				lastVaoValid = true;
+				callsIssued++;
+
+				// The bind may have restored this array's own current attribute values, so
+				// everything the pass writes has to be re-established after it - the same
+				// re-application RenderCall.draw performs per array.
+				writeOverlay(floatFallback, sink);
+				if (hasMaterialLight) {
+					writeMaterialLightmap(materialLight, floatFallback, sink);
+					lastLight = materialLight;
+					lastLightValid = true;
+				} else {
+					lastLightValid = false;
+				}
+				lastColorValid = false;
+				hasLastPose = false;
+			} else {
+				callsSkipped++;
+			}
+
 			final int effectiveColor = hasMaterialColor ? materialColor : sortedColor[i];
 			if (!lastColorValid || lastColor != effectiveColor) {
 				writeColor(effectiveColor, sink);
@@ -485,17 +514,6 @@ public final class FlatDrawPass {
 				// view matrix, exactly as the reference's VertexAttributeState.apply does.
 				sink.setModelViewMatrix(sortedPose, i << 4);
 				callsIssued++;
-			}
-
-			// Every car of one model shares the same vertex arrays, so a run frequently holds
-			// long stretches of one array; re-binding the array already in place is a no-op.
-			if (!lastVaoValid || lastVao != sortedVao[i]) {
-				sink.bindVertexArray(sortedVao[i]);
-				lastVao = sortedVao[i];
-				lastVaoValid = true;
-				callsIssued++;
-			} else {
-				callsSkipped++;
 			}
 
 			sink.drawElements(sortedIndexCount[i]);

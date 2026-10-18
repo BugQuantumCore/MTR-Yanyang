@@ -98,6 +98,9 @@ public final class OptimizedRendererWrapper implements IGui {
 	/** The pose currently being queued, reused so a frame allocates nothing. */
 	private final float[] poseScratch = new float[16];
 
+	/** The light of the most recent queue call, sampled into the periodic statistics line. */
+	private int lastQueuedLight = -1;
+
 	/** The translucent flag for the in-flight render, handed to the persistent runnable. */
 	private boolean pendingRenderTranslucent;
 
@@ -218,21 +221,56 @@ public final class OptimizedRendererWrapper implements IGui {
 		return drawPass == null ? "flat draw pass: not active" : drawPass.describeStatistics();
 	}
 
+	/** The shader generation the backend's shaders were last reloaded for. */
+	private long reloadedGeneration = -1;
+
+	/** Set by {@link #finishReload}; consumed by the next frame's first {@link #queue}. */
+	private boolean reloadPending;
+
+	/** How many distinct materials the audit has logged; the audit stops after a few. */
+	private int auditedMaterials;
+
 	public void beginReload() {
-		if (optimizedRenderer != null) {
-			optimizedRenderer.beginReload();
+		// The GL state protection must bracket every upload, but the shader programs only
+		// need reloading when a resource reload actually invalidated them: reloading them
+		// per model resource compile-checks three programs on every one of the thousands of
+		// per-load calls, which stalls the loading screen and every lazy mid-game load.
+		GlStateTracker.capture();
+		if (shaderGeneration != reloadedGeneration) {
+			reloadedGeneration = shaderGeneration;
+			if (optimizedRenderer != null) {
+				// The backend's own beginReload reloads the shaders and captures
+				// again; the nested capture is a no-op, matching its flat design.
+				optimizedRenderer.beginReload();
+			}
 		}
 	}
 
 	public void finishReload() {
-		if (optimizedRenderer != null) {
+		if (reloadedGeneration == shaderGeneration && optimizedRenderer != null) {
 			optimizedRenderer.finishReload();
+		} else {
+			GlStateTracker.restore();
 		}
-		// The registrations belong to the previous generation of models, whose GL objects have
-		// been deleted and whose materials are new objects. Dropping both caches resets the
-		// buckets and keeps stale ids out of the queue.
+		// The registrations belong to a previous generation of models when a resource reload
+		// replaced them, and a closed VertexArray's GL name can be reused by a new upload.
+		// Dropping the caches cannot happen here, though: a lazy resource load can run in
+		// the middle of a frame, after models have already been queued, and resetting the
+		// bucket registry then would silently drop every already-queued item of the frame
+		// (bucket ids beyond the reset count) - a one-frame flicker per load. Deferring the
+		// reset to the next frame's first queue instead makes it free of dropped frames.
+		reloadPending = true;
+	}
+
+	/** Applies a pending reload reset, at a point where nothing is queued. */
+	private void applyPendingReload() {
+		if (!reloadPending) {
+			return;
+		}
+		reloadPending = false;
 		batchesByModel.clear();
 		materialBuckets.clear();
+		auditedMaterials = 0;
 		if (drawPass != null) {
 			drawPass.reset();
 		}
@@ -265,6 +303,10 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
+		// A resource reload finished since the last frame: drop the registrations at this
+		// point, where nothing is queued, so the frame that follows registers fresh ids.
+		applyPendingReload();
+
 		final ModelBatches batches = batchesFor(optimizedModel.optimizedModel);
 		if (batches.count == 0) {
 			return;
@@ -280,6 +322,7 @@ public final class OptimizedRendererWrapper implements IGui {
 		for (int i = 0; i < batches.count; i++) {
 			drawPass.queue(batches.buckets[i], batches.vaos[i], batches.indexCounts[i], light, ARGB_WHITE, poseScratch, 0);
 		}
+		lastQueuedLight = light;
 	}
 
 	/**
@@ -319,8 +362,31 @@ public final class OptimizedRendererWrapper implements IGui {
 		flushesSinceReport++;
 		if (flushesSinceReport >= 1200) {
 			flushesSinceReport = 0;
-			Init.LOGGER.info("[wrgl] {}", drawPass.describeStatistics());
+			Init.LOGGER.info("[wrgl] {}; last queued light 0x{}",
+					drawPass.describeStatistics(), Integer.toHexString(lastQueuedLight));
 		}
+	}
+
+	/**
+	 * Logs one line per distinct material, for the first few materials of a session.
+	 *
+	 * <p>The line carries every input that can dim a model: the shader type (which decides
+	 * the BRIGHT full-bright override), the texture identifier, the material's Kd colour and
+	 * the lightmap the BRIGHT types force. A gray-model report can be read straight from
+	 * these lines: a washed-out Kd, a wrong texture or a missing BRIGHT override all show
+	 * up here without needing a debugger.</p>
+	 */
+	private void auditMaterial(MaterialProperties material, int bucket) {
+		if (auditedMaterials >= 12) {
+			return;
+		}
+		auditedMaterials++;
+		Init.LOGGER.info("[wrgl] material audit #{}: bucket={} shader={} texture={} kd-color={} bright-lightmap={}",
+				auditedMaterials, bucket, material.shaderType, material.getTexture(),
+				material.vertexAttributeState.color == null ? "none"
+						: String.format("0x%08X", material.vertexAttributeState.color),
+				material.vertexAttributeState.lightmapUV == null ? "none"
+						: String.format("0x%08X", material.vertexAttributeState.lightmapUV));
 	}
 
 	/**
@@ -399,6 +465,7 @@ public final class OptimizedRendererWrapper implements IGui {
 		}
 		final int bucket = drawPass.registerBucket(material);
 		materialBuckets.put(material, bucket);
+		auditMaterial(material, bucket);
 		return bucket;
 	}
 
