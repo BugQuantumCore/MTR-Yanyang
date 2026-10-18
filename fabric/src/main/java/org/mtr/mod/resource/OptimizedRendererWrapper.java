@@ -76,6 +76,10 @@ public final class OptimizedRendererWrapper implements IGui {
 	@Nullable
 	private final FlatDrawPass drawPass;
 
+	/** The prebuilt backend's shader manager, used for the readiness gate like the reference. */
+	@Nullable
+	private final ShaderManager shaderManager;
+
 	/** Sets up and tears down a material's shader state, through the shader manager. */
 	@Nullable
 	private final FlatDrawPass.MaterialBinder materialBinder;
@@ -97,8 +101,9 @@ public final class OptimizedRendererWrapper implements IGui {
 	private boolean pendingRenderTranslucent;
 
 	/**
-	 * Draws the flat pass inside the renderer's protected state. Allocated once, in the
-	 * constructor, because it closes over the final fields the constructor assigns.
+	 * Draws the flat pass. Allocated once, in the constructor, because it closes over the
+	 * final fields the constructor assigns. {@link #render} brackets the run in
+	 * {@code GlStateTracker} capture and restore, matching the reference.
 	 */
 	private final Runnable protectedRender;
 
@@ -115,19 +120,21 @@ public final class OptimizedRendererWrapper implements IGui {
 		FlatDrawPass pass = null;
 		FlatDrawPass.MaterialBinder binder = null;
 		FlatDrawPass.GlSink sink = null;
+		ShaderManager manager = null;
 		if (renderer != null && NativeModelAccess.isAvailable()) {
-			final ShaderManager manager = NativeModelAccess.getShaderManager(renderer);
+			manager = NativeModelAccess.getShaderManager(renderer);
 			if (manager != null) {
+				final ShaderManager boundManager = manager;
 				pass = new FlatDrawPass();
 				binder = new FlatDrawPass.MaterialBinder() {
 					@Override
 					public void setup(MaterialProperties material) {
-						manager.setupShaderBatchState(material);
+						boundManager.setupShaderBatchState(material);
 					}
 
 					@Override
 					public void cleanup() {
-						manager.cleanupShaderBatchState();
+						boundManager.cleanupShaderBatchState();
 					}
 				};
 				sink = new FlatDrawPass.GlSink() {
@@ -185,6 +192,7 @@ public final class OptimizedRendererWrapper implements IGui {
 			}
 		}
 		this.drawPass = pass;
+		this.shaderManager = manager;
 		this.materialBinder = binder;
 		this.glSink = sink;
 		this.protectedRender = () -> drawPass.render(pendingRenderTranslucent, materialBinder, glSink);
@@ -271,10 +279,11 @@ public final class OptimizedRendererWrapper implements IGui {
 	/**
 	 * Draws everything queued and empties the queue.
 	 *
-	 * <p>The pass runs inside the renderer's own protected state, which is what the
-	 * reference's {@code OptimizedRenderer.render} does through
-	 * {@code runWithProtectedState}; the previous native path omitted it and left the
-	 * shader, blend and vertex array state dirty behind it.</p>
+	 * <p>The pass runs inside {@code GlStateTracker} capture and restore, which is exactly
+	 * how the prebuilt backend's own {@code OptimizedRenderer.render} brackets its draw
+	 * calls; the previous native path omitted it and left the shader, blend and vertex
+	 * array state dirty behind it. The shader readiness gate matches the reference too:
+	 * when the shaders are not ready the reference draws nothing.</p>
 	 */
 	public void render(boolean renderTranslucent) {
 		if (optimizedRenderer == null) {
@@ -286,12 +295,17 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
-		if (drawPass.queuedCount() == 0) {
+		if (drawPass.queuedCount() == 0 || !shaderManager.isReady()) {
 			return;
 		}
 
 		pendingRenderTranslucent = renderTranslucent;
-		optimizedRenderer.runWithProtectedState(protectedRender);
+		GlStateTracker.capture();
+		try {
+			protectedRender.run();
+		} finally {
+			GlStateTracker.restore();
+		}
 
 		flushesSinceReport++;
 		if (flushesSinceReport >= 1200) {
