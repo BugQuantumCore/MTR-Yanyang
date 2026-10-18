@@ -309,14 +309,70 @@ JNIEXPORT jobjectArray JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipe
     return result;
 }
 
-JNIEXPORT jlong JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_nativeCreateBuilder(
+JNIEXPORT jobjectArray JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_nativeLoadGroups(
         JNIEnv* env,
         jclass,
+        jbyteArray objContent
+) {
+    if (!gInitialised) {
+        throwIllegalState(env, "the wrobj bridge was not initialised");
+        return nullptr;
+    }
+
+    jbyte* objElements = nullptr;
+    jsize objLength = 0;
+    const char* objData = byteArrayData(env, objContent, &objElements, &objLength);
+
+    WrObjGroupList* groups = wr_obj_groups_load(objData, objLength);
+
+    releaseByteArray(env, objContent, objElements);
+
+    if (groups == nullptr) {
+        return nullptr;
+    }
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass == nullptr) {
+        wr_obj_groups_free(groups);
+        return nullptr;
+    }
+
+    jobjectArray result = env->NewObjectArray(groups->count, stringClass, nullptr);
+    env->DeleteLocalRef(stringClass);
+    if (result == nullptr) {
+        wr_obj_groups_free(groups);
+        return nullptr;
+    }
+
+    for (int32_t i = 0; i < groups->count; i++) {
+        jstring name = env->NewStringUTF(groups->entries[i].name == nullptr ? "" : groups->entries[i].name);
+        if (name == nullptr) {
+            wr_obj_groups_free(groups);
+            return nullptr;
+        }
+        env->SetObjectArrayElement(result, i, name);
+        env->DeleteLocalRef(name);
+    }
+
+    wr_obj_groups_free(groups);
+    return result;
+}
+
+namespace {
+
+/// Shared body of the builder creation entry points.
+///
+/// `groupName` is null for the whole-document builder, or a UTF string naming the
+/// geometry group to restrict the source meshes to - the per-group ObjModel the
+/// reference path hands to ModelPropertiesPart.
+jlong createBuilderImpl(
+        JNIEnv* env,
         jbyteArray objContent,
         jbyteArray mtlContent,
         jboolean materialGroupTextures,
         jboolean flipTextureV,
-        jobject textureResolver
+        jobject textureResolver,
+        jstring groupName
 ) {
     if (!gInitialised) {
         throwIllegalState(env, "the wrobj bridge was not initialised");
@@ -336,12 +392,30 @@ JNIEXPORT jlong JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_na
         return 0;
     }
 
+    const char* groupChars = nullptr;
+    if (groupName != nullptr) {
+        groupChars = env->GetStringUTFChars(groupName, nullptr);
+        if (groupChars == nullptr) {
+            releaseByteArray(env, mtlContent, mtlElements);
+            releaseByteArray(env, objContent, objElements);
+            return 0;
+        }
+    }
+    const int32_t groupLength = groupChars == nullptr
+            ? 0
+            : static_cast<int32_t>(env->GetStringUTFLength(groupName));
+
     // Keys are discovered first so the host can resolve texture identity per key;
     // the builder needs the resolved handles up front because add_transform merges
-    // by MaterialProperties, exactly as RawModel.append does.
+    // by MaterialProperties, exactly as RawModel.append does. The key list is the
+    // whole document's regardless of the group filter, so the host's one handle
+    // array per document indexes the same keys for every per-group builder.
     WrObjKeyList* keys = wr_obj_keys_load(objData, objLength, mtlData, mtlLength,
             flipTextureV ? 1 : 0);
     if (keys == nullptr) {
+        if (groupChars != nullptr) {
+            env->ReleaseStringUTFChars(groupName, groupChars);
+        }
         releaseByteArray(env, mtlContent, mtlElements);
         releaseByteArray(env, objContent, objElements);
         return 0;
@@ -352,22 +426,58 @@ JNIEXPORT jlong JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_na
     const bool resolved = resolveTextures(env, keys, textureResolver, handles, colorSet);
     if (!resolved) {
         wr_obj_keys_free(keys);
+        if (groupChars != nullptr) {
+            env->ReleaseStringUTFChars(groupName, groupChars);
+        }
         releaseByteArray(env, mtlContent, mtlElements);
         releaseByteArray(env, objContent, objElements);
         return 0;
     }
 
-    WrObjBuilder* builder = wr_obj_builder_create(
+    WrObjBuilder* builder = wr_obj_builder_create_group(
             objData, objLength, mtlData, mtlLength,
             handles.data(), colorSet.data(), keys->count,
             materialGroupTextures ? 1 : 0,
-            flipTextureV ? 1 : 0);
+            flipTextureV ? 1 : 0,
+            groupChars, groupLength);
 
     wr_obj_keys_free(keys);
+    if (groupChars != nullptr) {
+        env->ReleaseStringUTFChars(groupName, groupChars);
+    }
     releaseByteArray(env, mtlContent, mtlElements);
     releaseByteArray(env, objContent, objElements);
 
     return reinterpret_cast<jlong>(builder);
+}
+
+} // namespace
+
+JNIEXPORT jlong JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_nativeCreateBuilder(
+        JNIEnv* env,
+        jclass,
+        jbyteArray objContent,
+        jbyteArray mtlContent,
+        jboolean materialGroupTextures,
+        jboolean flipTextureV,
+        jobject textureResolver
+) {
+    return createBuilderImpl(env, objContent, mtlContent, materialGroupTextures,
+            flipTextureV, textureResolver, nullptr);
+}
+
+JNIEXPORT jlong JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_nativeCreateBuilderGroup(
+        JNIEnv* env,
+        jclass,
+        jbyteArray objContent,
+        jbyteArray mtlContent,
+        jboolean materialGroupTextures,
+        jboolean flipTextureV,
+        jobject textureResolver,
+        jstring groupName
+) {
+    return createBuilderImpl(env, objContent, mtlContent, materialGroupTextures,
+            flipTextureV, textureResolver, groupName);
 }
 
 JNIEXPORT void JNICALL Java_org_mtr_mod_resource_nativeobj_NativeObjPipeline_nativeFreeBuilder(

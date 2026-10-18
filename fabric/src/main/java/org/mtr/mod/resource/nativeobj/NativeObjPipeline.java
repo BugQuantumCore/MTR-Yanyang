@@ -29,8 +29,15 @@ import java.nio.file.Paths;
  */
 public final class NativeObjPipeline {
 
-	/** Must match {@code WROBJ_ABI_VERSION} in native/include/wrobj/wrobj.hpp. */
-	public static final int EXPECTED_ABI = 1;
+	/**
+	 * Must match {@code WROBJ_ABI_VERSION} in native/include/wrobj/wrobj.hpp.
+	 *
+	 * <p>Version 2 added per-group model views ({@code wr_obj_groups_load} and
+	 * {@code wr_obj_builder_create_group}) and moved the model-level texture flip onto the
+	 * source meshes, so a library older than the Java side is rejected rather than loading
+	 * every group's placements into one whole-document builder.</p>
+	 */
+	public static final int EXPECTED_ABI = 2;
 
 	private static final String LIBRARY_NAME = "wrobj";
 
@@ -382,6 +389,20 @@ public final class NativeObjPipeline {
 	public static native NativeObjKey[] nativeLoadKeys(byte[] objContent, byte[] mtlContent, boolean flipTextureV);
 
 	/**
+	 * The document's geometry group names, or null when the document is unreadable.
+	 *
+	 * <p>This is {@code ObjSplitting.splitByGroups}'s key set, computed by the native parser:
+	 * every group with at least one face, in first-activation order, including the implicit
+	 * {@code default} group that holds faces written before the first {@code g} statement.
+	 * The Java side builds one model per group from this list, exactly as the reference loader
+	 * does, which is why it comes from the parser rather than from a text scan of {@code g}
+	 * lines - a scan cannot see the implicit group and would leave parts of the model
+	 * unaddressable.</p>
+	 */
+	@Nullable
+	public static native String[] nativeLoadGroups(byte[] objContent);
+
+	/**
 	 * Creates a builder for one model instance.
 	 *
 	 * <p>Each vehicle part needs its own builder. The reference implementation deep-copies
@@ -395,6 +416,24 @@ public final class NativeObjPipeline {
 	 */
 	public static native long nativeCreateBuilder(byte[] objContent, byte[] mtlContent,
 			boolean materialGroupTextures, boolean flipTextureV, NativeTextureResolver textureResolver);
+
+	/**
+	 * Creates a builder for one geometry group's model, or for the whole document when
+	 * {@code groupName} is null.
+	 *
+	 * <p>MTR loads an OBJ with {@code splitModel=true}, so {@code ObjSplitting.splitByGroups}
+	 * hands the reference path one ObjModel per {@code g} group, and a vehicle part's
+	 * {@code addTransformation} places that group's meshes alone. This is the native
+	 * counterpart: the builder's source meshes are only the named group's, so its placements
+	 * can never leak another group's geometry - the whole-document placement bug that made
+	 * trains render as overlapping, tint-stacked copies.</p>
+	 *
+	 * <p>The key table is still the whole document's, so the host's handle array from
+	 * {@link #loadKeys} indexes the same keys for every per-group builder.</p>
+	 */
+	public static native long nativeCreateBuilderGroup(byte[] objContent, byte[] mtlContent,
+			boolean materialGroupTextures, boolean flipTextureV, NativeTextureResolver textureResolver,
+			@Nullable String groupName);
 
 	/** Releases a builder. Safe to call with 0. */
 	public static native void nativeFreeBuilder(long handle);
@@ -468,6 +507,53 @@ public final class NativeObjPipeline {
 					textureResolver == null ? NativeTextureResolver.unresolved() : textureResolver);
 		} catch (Throwable throwable) {
 			Init.LOGGER.warn("[wrobj] could not build a native model: {}", throwable.toString());
+			return 0L;
+		}
+	}
+
+	/**
+	 * The document's geometry group names, or null when the pipeline is unavailable or the
+	 * document is unreadable.
+	 *
+	 * <p>An empty list is a legitimate answer: a document whose every group has no faces has
+	 * no per-group models, which is the same empty map the reference loader produces.</p>
+	 */
+	@Nullable
+	public static String[] loadGroups(byte[] objContent) {
+		if (!isAvailable() || objContent == null || objContent.length == 0) {
+			return null;
+		}
+		try {
+			return nativeLoadGroups(objContent);
+		} catch (Throwable throwable) {
+			Init.LOGGER.warn("[wrobj] could not read the groups of an OBJ document: {}",
+					throwable.toString());
+			return null;
+		}
+	}
+
+	/**
+	 * Creates a builder for one geometry group, or for the whole document when
+	 * {@code groupName} is null.
+	 *
+	 * <p>See {@link #nativeCreateBuilderGroup} for what the group filter means. A group the
+	 * document does not declare creates a valid builder with no source meshes, so asking for
+	 * it is not an error - the reference path treats a part naming a missing group as finding
+	 * no model.</p>
+	 */
+	public static long createBuilderGroup(byte[] objContent, @Nullable byte[] mtlContent,
+			boolean materialGroupTextures, boolean flipTextureV, @Nullable NativeTextureResolver textureResolver,
+			@Nullable String groupName) {
+		if (!isAvailable() || objContent == null || objContent.length == 0) {
+			return 0L;
+		}
+		try {
+			return nativeCreateBuilderGroup(objContent, mtlContent, materialGroupTextures, flipTextureV,
+					textureResolver == null ? NativeTextureResolver.unresolved() : textureResolver,
+					groupName);
+		} catch (Throwable throwable) {
+			Init.LOGGER.warn("[wrobj] could not build a native model for group {}: {}", groupName,
+					throwable.toString());
 			return 0L;
 		}
 	}

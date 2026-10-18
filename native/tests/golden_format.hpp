@@ -6,7 +6,13 @@
 // A golden file is a self-describing binary dump of one model instance build:
 //
 //   magic          "WROBJGLD"      8 bytes
-//   version        int32           3 (little endian throughout)
+//   version        int32           4 (little endian throughout)
+//
+// Version 4 added the key's hasColor flag. The colour field alone cannot tell an
+// authoritative white from the non-authoritative kind: the reference fills white
+// in for the no-Kd and no-MTL branches, while the native bridge reports those as
+// hasColor=false with a zero draw colour, so the flag is what the runner feeds
+// back as the key's colour-set state.
 //   keyCount       int32
 //   drawCount      int32
 //   vertexBytes    int64
@@ -16,6 +22,8 @@
 //   keys           keyCount records:
 //                    shaderType  int32
 //                    color       int32
+//                    hasColor    int32           1 when an MTL Kd made the colour
+//                                                authoritative, 0 otherwise
 //                    textureLen  int32, textureUtf8 textureLen bytes
 //   draws          drawCount records:
 //                    shaderType  int32
@@ -43,6 +51,9 @@ namespace golden {
 struct Key {
     int32_t shaderType = 0;
     int32_t color = 0;
+    /// 1 when an MTL Kd made the colour authoritative. Mirrors the native
+    /// KeyEntry.hasColor, which is what the host reports per key.
+    int32_t hasColor = 0;
     std::string texture;
 };
 

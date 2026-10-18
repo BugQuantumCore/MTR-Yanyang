@@ -26,6 +26,7 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 	private final WidgetShorterSlider sliderTrainOscillationMultiplier;
 	private final ButtonWidgetExtension buttonDefaultRail3D;
 	private final ButtonWidgetExtension buttonUseMTRFont;
+	private final ButtonWidgetExtension buttonUseNativeObjRendering;
 	private final ButtonWidgetExtension buttonDisableShadowsForShaders;
 	private final ButtonWidgetExtension buttonSupportPatreon;
 
@@ -63,6 +64,12 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 			client.toggleUseMTRFont();
 			setButtonText(button, client.getUseMTRFont());
 		});
+		// Turning this off moves OBJ models back to the original Java loader on the next
+		// resource reload, and the draw path back to the original renderer immediately.
+		buttonUseNativeObjRendering = new ButtonWidgetExtension(0, 0, 0, BUTTON_HEIGHT, TextHelper.literal(""), button -> {
+			client.toggleUseNativeObjRendering();
+			setButtonText(button, client.getUseNativeObjRendering());
+		});
 		buttonDisableShadowsForShaders = new ButtonWidgetExtension(0, 0, 0, BUTTON_HEIGHT, TextHelper.literal(""), button -> {
 			client.toggleDisableShadowsForShaders();
 			setButtonText(button, client.getDisableShadowsForShaders());
@@ -84,6 +91,7 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 		IDrawing.setPositionAndWidth(sliderTrainOscillationMultiplier, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * (i++) + SQUARE_SIZE, BUTTON_WIDTH - TEXT_PADDING - GraphicsHolder.getTextWidth("100%"));
 		IDrawing.setPositionAndWidth(buttonDefaultRail3D, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * (i++) + SQUARE_SIZE, BUTTON_WIDTH);
 		IDrawing.setPositionAndWidth(buttonUseMTRFont, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * (i++) + SQUARE_SIZE, BUTTON_WIDTH);
+		IDrawing.setPositionAndWidth(buttonUseNativeObjRendering, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * (i++) + SQUARE_SIZE, BUTTON_WIDTH);
 		IDrawing.setPositionAndWidth(buttonDisableShadowsForShaders, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * (i++) + SQUARE_SIZE, BUTTON_WIDTH);
 		IDrawing.setPositionAndWidth(buttonSupportPatreon, width - SQUARE_SIZE - BUTTON_WIDTH, startY + BUTTON_HEIGHT * i + SQUARE_SIZE, BUTTON_WIDTH);
 		setButtonText(new ButtonWidget(buttonShowAnnouncementMessages), client.getChatAnnouncements());
@@ -91,6 +99,7 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 		setButtonText(new ButtonWidget(buttonHideTranslucentParts), client.getHideTranslucentParts());
 		setButtonText(new ButtonWidget(buttonDefaultRail3D), client.getDefaultRail3D());
 		setButtonText(new ButtonWidget(buttonUseMTRFont), client.getUseMTRFont());
+		setButtonText(new ButtonWidget(buttonUseNativeObjRendering), client.getUseNativeObjRendering());
 		setButtonText(new ButtonWidget(buttonDisableShadowsForShaders), client.getDisableShadowsForShaders());
 		buttonLanguageOptions.setMessage2(client.getLanguageDisplay().translationKey.getText());
 		sliderDynamicTextureResolution.setHeight(BUTTON_HEIGHT);
@@ -108,6 +117,7 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 		addChild(new ClickableWidget(sliderTrainOscillationMultiplier));
 		addChild(new ClickableWidget(buttonDefaultRail3D));
 		addChild(new ClickableWidget(buttonUseMTRFont));
+		addChild(new ClickableWidget(buttonUseNativeObjRendering));
 		addChild(new ClickableWidget(buttonDisableShadowsForShaders));
 		addChild(new ClickableWidget(buttonSupportPatreon));
 	}
@@ -129,6 +139,7 @@ public class ConfigScreen extends MTRScreenBase implements IGui {
 			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_VEHICLE_OSCILLATION_MULTIPLIER.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, ARGB_WHITE, false, GraphicsHolder.getDefaultLight());
 			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_DEFAULT_RAIL_3D.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, ARGB_WHITE, false, GraphicsHolder.getDefaultLight());
 			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_USE_MTR_FONT.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, ARGB_WHITE, false, GraphicsHolder.getDefaultLight());
+			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_USE_NATIVE_OBJ_RENDERING.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, ARGB_WHITE, false, GraphicsHolder.getDefaultLight());
 			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_DISABLE_SHADOWS_FOR_SHADERS.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, ARGB_WHITE, false, GraphicsHolder.getDefaultLight());
 			graphicsHolder.drawText(TranslationProvider.OPTIONS_MTR_SUPPORT_PATREON.getMutableText(), SQUARE_SIZE, BUTTON_HEIGHT * (i++) + yStart1, 0xFFFFFF66, false, GraphicsHolder.getDefaultLight());
 

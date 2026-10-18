@@ -4,9 +4,11 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectAVLTreeMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectObjectImmutablePair;
 import org.mtr.mapping.holder.Identifier;
 import org.mtr.mapping.mapper.OptimizedModel;
 import org.mtr.mod.Init;
+import org.mtr.mod.config.Config;
 import org.mtr.mod.resource.nativeobj.NativeObjModel;
 import org.mtr.mod.resource.nativeobj.NativeObjModelAdapter;
 import org.mtr.mod.resource.nativeobj.NativeObjResource;
@@ -93,7 +95,9 @@ public final class ModelResourceLoader {
 			boolean flipTextureV,
 			ResourceProvider resourceProvider
 	) {
-		if (NativeObjResource.isAvailable()) {
+		// The config gate is read here, at model load, so turning the setting off and reloading
+		// resources is enough to move every model back to the original Java loader.
+		if (NativeObjResource.isAvailable() && Config.getClient().getUseNativeObjRendering()) {
 			final LoadedModels nativeModels = loadModelNative(modelResource, textureId, flipTextureV, resourceProvider);
 			if (nativeModels != null) {
 				return nativeModels;
@@ -209,71 +213,24 @@ public final class ModelResourceLoader {
 			boolean flipTextureV,
 			Object2ObjectAVLTreeMap<String, OptimizedObjModel> models
 	) {
-		final NativeObjModel nativeModel = NativeObjResource.buildFromContent(
-				objContent, mtlContent, modelResource, textureId, flipTextureV);
-		if (nativeModel == null) {
+		final ObjectArrayList<ObjectObjectImmutablePair<String, NativeObjModel>> built =
+				NativeObjResource.buildGroupedModels(objContent, mtlContent, modelResource, textureId, flipTextureV);
+		if (built == null) {
 			return null;
 		}
 
 		// One entry per model group, so a multi-group OBJ behaves exactly as it does on the Java
-		// path: MTR addresses parts by group name.
-		final String[] groupNames = getModelGroupNames(objContent);
-		if (groupNames.length == 0) {
-			// No `g` statement at all: the whole document is the implicit "default" group, which
-			// is the same single-entry map ObjSplitting.splitByGroups produces.
-			models.put("", new NativeObjModelAdapter(nativeModel));
-		} else {
-			for (final String groupName : groupNames) {
-				models.put(groupName, new NativeObjModelAdapter(nativeModel));
-			}
+		// path: MTR addresses parts by group name. Every entry is its own model over its own
+		// group's meshes, which is what a part's addTransformation places; sharing one model
+		// across the names would place the whole document at every part position and stack every
+		// copy of the translucent groups into a gray haze.
+		for (final ObjectObjectImmutablePair<String, NativeObjModel> entry : built) {
+			models.put(entry.left(), new NativeObjModelAdapter(entry.right()));
 		}
 
 		return new LoadedModels(models, Backend.NATIVE);
 	}
 
-	/**
-	 * The group names a document declares, in first-activation order.
-	 *
-	 * <p>Derived from the document text rather than from the native side, because the group
-	 * split is what MTR addresses parts by and the same names have to appear whether the
-	 * geometry came from C++ or from javagl. The rules mirror {@code ObjReader}: a single
-	 * {@code g}/{@code o} state machine, so an {@code o} after a {@code g} is ignored.</p>
-	 */
-	private static String[] getModelGroupNames(String objContent) {
-		final java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-		String groupingKeyword = null;
-		for (final String rawLine : objContent.split("\r\n|\r|\n")) {
-			final String line = rawLine.trim();
-			if (line.length() < 2) {
-				continue;
-			}
-			final char first = Character.toLowerCase(line.charAt(0));
-			if (first != 'g' && first != 'o') {
-				continue;
-			}
-			if (line.charAt(1) != ' ' && line.charAt(1) != '\t') {
-				continue;
-			}
-			final String keyword = String.valueOf(first);
-			if (groupingKeyword != null && !groupingKeyword.equals(keyword)) {
-				// ObjReader keeps one keyword: a different one is ignored until it appears again.
-				continue;
-			}
-			groupingKeyword = keyword;
-			final String remainder = line.substring(1).trim();
-			if (remainder.isEmpty()) {
-				names.add("default");
-			} else {
-				for (final String name : remainder.split("\\s+")) {
-					names.add(name);
-				}
-			}
-		}
-		// ObjSplitting skips groups with no faces, but a group the document declared and never
-		// populated would leave the tree map missing rather than lying about its contents, so
-		// the names are returned as declared and the empty ones simply never get looked up.
-		return names.toArray(new String[0]);
-	}
 
 	public static ObjectArrayList<String> getModelParts(String name, String content) {
 		if (name.endsWith(".mqo")) {

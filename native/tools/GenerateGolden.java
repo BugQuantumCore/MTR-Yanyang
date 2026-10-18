@@ -68,7 +68,6 @@ import org.mtr.mapping.render.vertex.Vertex;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -85,7 +84,13 @@ import java.util.function.Function;
 
 public final class GenerateGolden {
 
-	private static final int MAGIC_VERSION = 3;
+	/**
+	 * Version 4 added the key's {@code hasColor} flag, which distinguishes an authoritative
+	 * white from the non-authoritative kind. The colour field alone cannot: the reference
+	 * fills white in for the no-Kd and no-MTL branches while the native bridge reports those
+	 * as hasColor=false with a zero draw colour.
+	 */
+	private static final int MAGIC_VERSION = 4;
 
 	// -----------------------------------------------------------------------
 	// Material identity
@@ -319,6 +324,12 @@ public final class GenerateGolden {
 		String name = "";
 		Path objPath;
 		Path mtlPath;
+		/**
+		 * The geometry group this case drives, or null for the whole document. A group
+		 * case models one ModelPropertiesPart: the reference ObjModel for that group
+		 * receives the placements, and no other group's meshes are placed at all.
+		 */
+		String group;
 		boolean flipTextureV;
 		boolean materialGroupTextures = true;
 		/** Model-resource level transform, applied to the ObjModel before the vehicle level one. */
@@ -341,14 +352,31 @@ public final class GenerateGolden {
 		final boolean flipTextureV;
 		final String texture;
 		final int color;
+		/**
+		 * True only when an MTL supplied a Kd for this key, which is exactly the native
+		 * KeyEntry.hasColor. The reference fills a white Integer in for the no-Kd and no-MTL
+		 * branches; the native bridge reports the same case as hasColor=false with a zero
+		 * colour. The two agree in meaning and not in bits, so the flag is what the golden
+		 * records and the colour normalises to 0 when it is false.
+		 */
+		final boolean colorAuthoritative;
+		/**
+		 * The key's texture exactly as wr_obj_keys_load reports it: the raw material group
+		 * name or map_Kd after slash and case folding only. The resolved {@link #texture} is a
+		 * Java-side concern (the host resolves it before the builder sees a handle), so the
+		 * golden key table compares the raw string.
+		 */
+		final String rawTexture;
 
 		CaseRecord(String key, OptimizedModel.ShaderType shaderType, boolean flipTextureV,
-				String texture, int color) {
+				String texture, String rawTexture, int color, boolean colorAuthoritative) {
 			this.key = key;
 			this.shaderType = shaderType;
 			this.flipTextureV = flipTextureV;
 			this.texture = texture;
+			this.rawTexture = rawTexture;
 			this.color = color;
+			this.colorAuthoritative = colorAuthoritative;
 		}
 	}
 
@@ -420,6 +448,9 @@ public final class GenerateGolden {
 					break;
 				case "mtl":
 					current.mtlPath = value.isEmpty() ? null : Paths.get(value);
+					break;
+				case "group":
+					current.group = value;
 					break;
 				case "flipTextureV":
 					current.flipTextureV = "1".equals(value);
@@ -497,6 +528,8 @@ public final class GenerateGolden {
 	/** Result of loading one OBJ group, mirroring ObjModelLoader.loadModel. */
 	private static final class GroupResult {
 
+		/** The splitByGroups key this result was loaded from. */
+		String name = "";
 		final Map<String, CaseRecord> records = new LinkedHashMap<>();
 		final List<Mesh> meshes = new ArrayList<>();
 		final float[] bounds = {
@@ -543,9 +576,12 @@ public final class GenerateGolden {
 
 		// --- ObjSplitting.splitByGroups -> ObjModelLoader.loadModel -----------
 		final List<GroupResult> groups = new ArrayList<>();
-		ObjSplitting.splitByGroups(sourceObj).forEach((groupName, groupObj) ->
-				groups.add(loadGroup(groupObj, materials, textureResolver,
-						testCase.materialGroupTextures, testCase.flipTextureV)));
+		ObjSplitting.splitByGroups(sourceObj).forEach((groupName, groupObj) -> {
+			final GroupResult loaded = loadGroup(groupObj, materials, textureResolver,
+					testCase.materialGroupTextures, testCase.flipTextureV);
+			loaded.name = groupName;
+			groups.add(loaded);
+		});
 
 		// --- ObjModel.ObjModel.loadModel: rotate X 180, then measure bounds ----
 		// The rotation is a RawMesh operation and the bounds are accumulated after
@@ -553,6 +589,12 @@ public final class GenerateGolden {
 		for (final GroupResult group : groups) {
 			for (final Mesh mesh : group.meshes) {
 				mesh.raw.applyRotation(new org.mtr.mapping.holder.Vector3f(1.0F, 0.0F, 0.0F), 180.0F);
+				// ObjModel's constructor mirrors V when the model asked for a whole-model
+				// flip. Applied after the per-key flips, the two compose - and cancel when
+				// both are set - exactly as the reference does.
+				if (testCase.flipTextureV) {
+					mesh.raw.applyUVMirror(false, true);
+				}
 			}
 			for (final Mesh mesh : group.meshes) {
 				for (final Vertex vertex : mesh.raw.vertices) {
@@ -579,11 +621,17 @@ public final class GenerateGolden {
 				testCase.schemaScale, testCase.schemaMirror);
 
 		// --- ObjModel.addTransformation per placement -------------------------
+		// A group case places only the named group's meshes, which is what
+		// ModelPropertiesPart does: it looks its part name up in the splitByGroups
+		// map and calls addTransformation on that group's ObjModel alone.
 		final Model model = new Model();
 		for (final Transform transform : testCase.transforms) {
 			final OptimizedModel.ShaderType shaderType =
 					OptimizedModel.ShaderType.values()[transform.shaderType];
 			for (final GroupResult group : groups) {
+				if (testCase.group != null && !testCase.group.equals(group.name)) {
+					continue;
+				}
 				for (final Mesh mesh : group.meshes) {
 					final Mesh placed = mesh.copyWithShader(shaderType);
 					placed.raw.applyTranslation(
@@ -599,6 +647,19 @@ public final class GenerateGolden {
 
 		final List<Mesh> finished = model.finish();
 
+		// --- Key table: material group keys in OBJ order ----------------------
+		// Built before packing so the draw loop can consult a key's colour authority,
+		// and in the same place the native side builds its own table: first-use order
+		// over the document's material groups. Only keys that produced geometry are
+		// kept, matching ObjSplitting skipping empty groups.
+		final Map<String, CaseRecord> keyTable = new LinkedHashMap<>();
+		for (final GroupResult group : groups) {
+			for (final Map.Entry<String, CaseRecord> entry : group.records.entrySet()) {
+				keyTable.putIfAbsent(entry.getKey(), entry.getValue());
+			}
+		}
+		final List<String> keyTextures = new ArrayList<>(keyTable.keySet());
+
 		// --- Pack exactly like RawMesh.upload ---------------------------------
 		final ByteArrayOutputStream vertexBytes = new ByteArrayOutputStream();
 		final ByteArrayOutputStream indexBytes = new ByteArrayOutputStream();
@@ -611,8 +672,14 @@ public final class GenerateGolden {
 				continue;
 			}
 
-			final int color = mesh.material.properties.vertexAttributeState.color == null
-					? 0xFFFFFFFF : mesh.material.properties.vertexAttributeState.color;
+			// The native draw reports 0 for a non-authoritative colour, so the golden records
+			// the same convention: 0 means the renderer takes the colour from the queued state.
+			// Authority comes from the key's record - only an MTL-supplied Kd makes a colour
+			// authoritative - which is the distinction the key table's hasColor flag carries.
+			final CaseRecord record = keyTable.get(mesh.material.texture);
+			final Integer colorBoxed = mesh.material.properties.vertexAttributeState.color;
+			final int color = colorBoxed != null && record != null && record.colorAuthoritative
+					? colorBoxed : 0;
 			draws.add(new int[]{
 					mesh.material.properties.shaderType.ordinal(),
 					color,
@@ -648,17 +715,6 @@ public final class GenerateGolden {
 			indexOffset += mesh.raw.faces.size() * 3;
 		}
 
-		// --- Key table: material group keys in OBJ order ----------------------
-		// The native side reports the same list from wr_obj_keys_load, and the host
-		// resolves texture handles in that order. Only keys that produced geometry
-		// are kept, matching ObjSplitting skipping empty groups.
-		final Map<String, CaseRecord> keyTable = new LinkedHashMap<>();
-		for (final GroupResult group : groups) {
-			for (final Map.Entry<String, CaseRecord> entry : group.records.entrySet()) {
-				keyTable.putIfAbsent(entry.getKey(), entry.getValue());
-			}
-		}
-		final List<String> keyTextures = new ArrayList<>(keyTable.keySet());
 		for (final int[] draw : draws) {
 			// Recover which key each bucket came from, by matching the finished mesh
 			// order against the draw order.
@@ -744,15 +800,18 @@ public final class GenerateGolden {
 
 			final String texture;
 			final Integer color;
+			final boolean colorAuthoritative;
 			if (!effectiveMaterials.isEmpty()) {
 				final Mtl objMaterial = effectiveMaterials.get(groupKey);
 				if (objMaterial == null) {
 					texture = "";
 					color = null;
+					colorAuthoritative = false;
 				} else {
 					texture = objMaterial.getMapKd() == null || objMaterial.getMapKd().isEmpty()
 							? "" : objMaterial.getMapKd();
 					final FloatTuple kd = objMaterial.getKd();
+					colorAuthoritative = kd != null;
 					color = kd == null
 							? mergeColor(255, 255, 255, 255)
 							: mergeColor(
@@ -765,9 +824,16 @@ public final class GenerateGolden {
 			} else {
 				texture = materialGroupName.equals("_") ? "" : materialGroupName;
 				color = mergeColor(255, 255, 255, 255);
+				colorAuthoritative = false;
 			}
 
 			final Obj renderable = ObjUtils.convertToRenderable(materialObj);
+			// The raw form after the slash folding is exactly what the native key table reports
+			// (normaliseTextureString), with the case folding the reference's formatIdentifier
+			// applies later anyway. Recording it keeps the golden key table comparable to
+			// wr_obj_keys_load without leaking the resolution step into the native side.
+			final String rawTexture = texture.replace("\\\\", "/").replace("\\", "/")
+					.toLowerCase(Locale.ROOT);
 			final String resolvedTexture = textureResolver.apply(
 					texture.replace("\\\\", "/").replace("\\", "/"));
 
@@ -794,7 +860,11 @@ public final class GenerateGolden {
 				if (i < renderable.getNumTexCoords()) {
 					final FloatTuple uv = renderable.getTexCoord(i);
 					vertex.u = uv.getX();
-					vertex.v = (groupFlipV || flipTextureV) ? 1.0F - uv.getY() : uv.getY();
+					// Only the key's own flipv is baked in here. The model-level flip is a UV
+					// mirror applied later, in ObjModel's constructor order, so a model that
+					// sets both ends up unflipped - the reference composition, which an OR
+					// here would get wrong.
+					vertex.v = groupFlipV ? 1.0F - uv.getY() : uv.getY();
 				} else {
 					vertex.u = 0.0F;
 					vertex.v = 0.0F;
@@ -812,8 +882,8 @@ public final class GenerateGolden {
 
 			result.meshes.add(new Mesh(new MaterialKey(properties, resolvedTexture), mesh));
 			result.records.putIfAbsent(resolvedTexture, new CaseRecord(
-					groupKey, shaderType, groupFlipV || flipTextureV, resolvedTexture,
-					color == null ? 0xFFFFFFFF : color));
+					groupKey, shaderType, groupFlipV, resolvedTexture, rawTexture,
+					color == null ? 0xFFFFFFFF : color, colorAuthoritative));
 		});
 
 		return result;
@@ -838,6 +908,12 @@ public final class GenerateGolden {
 		stream.write((value >>> 24) & 0xFF);
 	}
 
+	private static void writeLong(ByteArrayOutputStream stream, long value) {
+		for (int i = 0; i < 8; i++) {
+			stream.write((int) ((value >>> (8 * i)) & 0xFF));
+		}
+	}
+
 	private static long checksum(byte[] vertexData, byte[] indexData) {
 		long hash = 0xCBF29CE484222325L;
 		for (final byte value : vertexData) {
@@ -860,15 +936,18 @@ public final class GenerateGolden {
 			boolean flipTextureV,
 			boolean materialGroupTextures
 	) throws IOException {
+		// golden_format.hpp documents the file as little endian throughout, so every
+		// multi-byte field goes through the same little-endian helpers the vertex and
+		// index payloads use. DataOutputStream writes big endian and produced files the
+		// native reader rejected as "unsupported golden version".
 		final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-		final DataOutputStream out = new DataOutputStream(buffer);
 
-		out.write("WROBJGLD".getBytes(StandardCharsets.US_ASCII));
-		out.writeInt(MAGIC_VERSION);
-		out.writeInt(keys.size());
-		out.writeInt(draws.size());
-		out.writeLong(vertexData.length);
-		out.writeLong(indexData.length);
+		buffer.write("WROBJGLD".getBytes(StandardCharsets.US_ASCII), 0, 8);
+		writeInt(buffer, MAGIC_VERSION);
+		writeInt(buffer, keys.size());
+		writeInt(buffer, draws.size());
+		writeLong(buffer, vertexData.length);
+		writeLong(buffer, indexData.length);
 		int flags = 0;
 		if (flipTextureV) {
 			flags |= 1;
@@ -876,29 +955,37 @@ public final class GenerateGolden {
 		if (materialGroupTextures) {
 			flags |= 2;
 		}
-		out.writeInt(flags);
-		out.writeInt(0);
+		writeInt(buffer, flags);
+		writeInt(buffer, 0);
 
 		for (final CaseRecord key : keys.values()) {
-			out.writeInt(key.shaderType.ordinal());
-			out.writeInt(key.color);
-			final byte[] texture = key.texture.getBytes(StandardCharsets.UTF_8);
-			out.writeInt(texture.length);
-			out.write(texture);
+			writeInt(buffer, key.shaderType.ordinal());
+			writeInt(buffer, key.color);
+			writeInt(buffer, key.colorAuthoritative ? 1 : 0);
+			final byte[] texture = key.rawTexture.getBytes(StandardCharsets.UTF_8);
+			writeInt(buffer, texture.length);
+			buffer.write(texture, 0, texture.length);
 		}
 
 		for (final int[] draw : draws) {
 			for (final int field : draw) {
-				out.writeInt(field);
+				writeInt(buffer, field);
 			}
 		}
 
-		out.write(vertexData);
-		out.write(indexData);
-		out.writeLong(checksum(vertexData, indexData));
-		out.flush();
+		buffer.write(vertexData, 0, vertexData.length);
+		buffer.write(indexData, 0, indexData.length);
+		writeLong(buffer, checksum(vertexData, indexData));
 
 		Files.write(path, buffer.toByteArray());
+	}
+
+	private static String formatVector(double[] values) {
+		return values[0] + "," + values[1] + "," + values[2];
+	}
+
+	private static String formatBooleans(boolean[] values) {
+		return (values[0] ? 1 : 0) + "," + (values[1] ? 1 : 0) + "," + (values[2] ? 1 : 0);
 	}
 
 	private static void writeCase(Path path, Case testCase, Path objFile, Path mtlFile) throws IOException {
@@ -910,12 +997,27 @@ public final class GenerateGolden {
 			builder.append("mtl=").append(mtlFile.getFileName()).append('\n');
 		}
 		builder.append("golden=").append(testCase.name).append(".golden\n");
+		if (testCase.group != null) {
+			builder.append("group=").append(testCase.group).append('\n');
+		}
 		if (testCase.flipTextureV) {
 			builder.append("flipTextureV=1\n");
 		}
 		if (!testCase.materialGroupTextures) {
 			builder.append("materialGroupTextures=0\n");
 		}
+		// The model- and vehicle-level transforms, in the order the reference applies them:
+		// the ObjectResource-level group first, then the StoredModelResourceBase group. The
+		// runner parses these back and feeds them to wr_obj_builder_apply_transform, which is
+		// the native counterpart of OptimizedObjModel.apply*.
+		builder.append("modelTranslation=").append(formatVector(testCase.modelTranslation)).append('\n');
+		builder.append("modelRotation=").append(formatVector(testCase.modelRotation)).append('\n');
+		builder.append("modelScale=").append(formatVector(testCase.modelScale)).append('\n');
+		builder.append("modelMirror=").append(formatBooleans(testCase.modelMirror)).append('\n');
+		builder.append("schemaTranslation=").append(formatVector(testCase.schemaTranslation)).append('\n');
+		builder.append("schemaRotation=").append(formatVector(testCase.schemaRotation)).append('\n');
+		builder.append("schemaScale=").append(formatVector(testCase.schemaScale)).append('\n');
+		builder.append("schemaMirror=").append(formatBooleans(testCase.schemaMirror)).append('\n');
 		final List<String> transformLines = new ArrayList<>();
 		for (final Transform transform : testCase.transforms) {
 			transformLines.add(transform.toCaseLine());

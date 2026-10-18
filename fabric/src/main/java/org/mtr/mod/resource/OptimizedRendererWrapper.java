@@ -13,6 +13,7 @@ import org.mtr.mapping.render.shader.ShaderManager;
 import org.mtr.mapping.render.tool.GlStateTracker;
 import org.mtr.mapping.render.tool.Utilities;
 import org.mtr.mod.Init;
+import org.mtr.mod.config.Config;
 import org.mtr.mod.data.IGui;
 import org.mtr.mod.resource.nativeobj.FlatDrawPass;
 import org.mtr.mod.resource.nativeobj.NativeModelAccess;
@@ -250,7 +251,12 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
-		if (drawPass == null) {
+		// The flat path is the fast draw route for models from either backend, so it runs
+		// whenever the native OBJ setting allows it. Turning the setting off in the config
+		// screen routes this frame's queues through the original OptimizedRenderer instead,
+		// immediately and without a restart; models already built natively are still valid
+		// OptimizedModels, so the original renderer draws them unchanged.
+		if (drawPass == null || !Config.getClient().getUseNativeObjRendering()) {
 			optimizedRenderer.queue(optimizedModel.optimizedModel, graphicsHolder, ARGB_WHITE, light);
 			return;
 		}
@@ -290,7 +296,10 @@ public final class OptimizedRendererWrapper implements IGui {
 			return;
 		}
 
-		if (drawPass == null) {
+		if (drawPass == null || !Config.getClient().getUseNativeObjRendering()) {
+			// The flag is read per frame, and the queue call in the same frame read the same
+			// value, so anything queued while the setting was off went to the original renderer
+			// and is flushed by it here.
 			optimizedRenderer.render(renderTranslucent);
 			return;
 		}

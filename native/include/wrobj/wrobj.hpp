@@ -72,7 +72,14 @@
 /// Version of the host-facing contract. Bumped whenever the semantics of an
 /// existing entry point change, so a stale library is detected instead of
 /// silently producing wrong geometry.
-#define WROBJ_ABI_VERSION 1
+///
+/// Version 2 adds per-group model views: wr_obj_groups_load and
+/// wr_obj_builder_create_group, and changes the model-level flipTextureV to be
+/// applied as a UV mirror over the source meshes (matching ObjModel's
+/// constructor) rather than folded into each key's own flipv option (which made
+/// a model that sets both flips differ from the Java path, where the two flips
+/// cancel).
+#define WROBJ_ABI_VERSION 2
 
 /// Matches OptimizedModel.ShaderType's ordinal order.
 enum WrObjShaderType {
@@ -145,6 +152,39 @@ WrObjKeyList* wr_obj_keys_load(
 void wr_obj_keys_free(WrObjKeyList* list);
 
 // ---------------------------------------------------------------------------
+// Stage 1b — geometry group discovery
+// ---------------------------------------------------------------------------
+
+/// One geometry group (`g`/`o` statement) with faces.
+typedef struct WrObjGroupInfo {
+    /// Group name exactly as splitByGroups reports it. Owned by the list.
+    const char* name;
+} WrObjGroupInfo;
+
+typedef struct WrObjGroupList {
+    const WrObjGroupInfo* entries;
+    int32_t count;
+} WrObjGroupList;
+
+/// Parse an OBJ document and report its geometry group names.
+///
+/// This is `ObjSplitting.splitByGroups`'s key set: every group that has at
+/// least one face, in first-activation order. The list includes the implicit
+/// "default" group - javagl's DefaultObj activates it from construction, so a
+/// document with no `g` statement at all reports exactly ["default"], and a
+/// document with faces before its first `g` statement reports "default" ahead
+/// of the declared names. MTR addresses model parts by these names, which is
+/// why they must come from the parser rather than from a text scan of `g`
+/// lines: a scan cannot see the implicit group.
+///
+/// Returns null when the document is structurally unreadable.
+WrObjGroupList* wr_obj_groups_load(
+        const char* objContent,
+        int32_t objLength);
+
+void wr_obj_groups_free(WrObjGroupList* list);
+
+// ---------------------------------------------------------------------------
 // Stage 2 — placement capture
 // ---------------------------------------------------------------------------
 
@@ -189,6 +229,37 @@ WrObjBuilder* wr_obj_builder_create(
         int32_t keyCount,
         int32_t materialGroupTextures,
         int32_t flipTextureV);
+
+/// Create a builder limited to one geometry group.
+///
+/// This is the per-group ObjModel the reference path builds: MTR loads an OBJ
+/// with `splitModel=true`, so `ObjSplitting.splitByGroups` hands it one ObjModel
+/// per group and each vehicle part adds placements to *its* group's model only.
+/// A builder created here therefore holds only the named group's source meshes,
+/// and every placement added to it places exactly that group, with the same
+/// shader override and merge rules.
+///
+/// `groupFilter`/`groupFilterLen` name the group as wr_obj_groups_load reported
+/// it; a null or empty filter selects every group, which makes this the strict
+/// superset of wr_obj_builder_create. The key table is still the whole
+/// document's, in wr_obj_keys_load order, so the host's handle array indexes
+/// line up exactly as they do for the unfiltered builder.
+///
+/// Returns null on a structurally unreadable document. A group name the document
+/// does not declare yields a valid builder with no source meshes, matching the
+/// Java path where a part naming a missing group simply finds no model.
+WrObjBuilder* wr_obj_builder_create_group(
+        const char* objContent,
+        int32_t objLength,
+        const char* mtlContent,
+        int32_t mtlLength,
+        const int32_t* keyTextureHandles,
+        const int32_t* keyColorSet,
+        int32_t keyCount,
+        int32_t materialGroupTextures,
+        int32_t flipTextureV,
+        const char* groupFilter,
+        int32_t groupFilterLen);
 
 void wr_obj_builder_free(WrObjBuilder* builder);
 

@@ -214,10 +214,16 @@ bool parseDocument(
 /// activation order, and within each group the material groups in first-use
 /// order. Both wr_obj_keys_load and wr_obj_builder_create walk the document the
 /// same way, so the host's handle array lines up with the builder's key indices.
+///
+/// The model-level flip is deliberately NOT folded into the keys: the Java path
+/// applies a key's own `flipv=1` while building vertices and the model-level
+/// flip later, as a UV mirror in ObjModel's constructor. The two flips cancel
+/// when both are set, so folding them together with an OR produces a different
+/// model than the reference. The caller passes the model-level flip to the
+/// builder, which mirrors the source meshes after this table is built.
 void collectKeys(
         const ObjDocument& document,
         const std::vector<Mtl>& mtls,
-        bool flipTextureV,
         std::vector<KeyEntry>& keys
 ) {
     keys.clear();
@@ -267,7 +273,7 @@ void collectKeys(
             KeyEntry entry;
             entry.key = face.materialKey;
             entry.shaderType = wrobj::legacyShaderType(options.shaderTypeToken);
-            entry.flipTextureV = options.flipTextureV || flipTextureV;
+            entry.flipTextureV = options.flipTextureV;
             entry.color = kDefaultColor;
 
             // ObjModelLoader's three-way texture/colour choice.
@@ -299,9 +305,17 @@ void collectKeys(
 /// name, and OptimizedModel.ObjModel.loadModel then rotates every mesh by 180
 /// degrees around X. Doing it once here removes one full vertex traversal per
 /// placement copy.
-void prepareSourceMeshes(std::vector<SourceMeshEntry>& meshes) {
+///
+/// The model-level flip is ObjModel's own constructor behaviour: a UV mirror on
+/// V over the whole mesh. Applied here, after the per-key flips were already
+/// baked into the vertices at build time, the two compose exactly as they do in
+/// Java - including cancelling when both are set.
+void prepareSourceMeshes(std::vector<SourceMeshEntry>& meshes, bool flipTextureV) {
     for (SourceMeshEntry& entry : meshes) {
         entry.mesh.applyRotationX(180.0F);
+        if (flipTextureV) {
+            entry.mesh.applyUVMirror(false, true);
+        }
     }
 }
 
@@ -469,8 +483,13 @@ extern "C" WrObjKeyList* wr_obj_keys_load(
         return nullptr;
     }
 
+    // The reported flipTextureV per key is the key's own `flipv=1` option. The
+    // model-level flip is not folded in: the host applies it through the builder,
+    // which mirrors the source meshes, matching ObjModel's constructor.
+    (void) flipTextureV;
+
     std::vector<KeyEntry> keys;
-    collectKeys(document, mtls, flipTextureV != 0, keys);
+    collectKeys(document, mtls, keys);
     if (keys.empty()) {
         return nullptr;
     }
@@ -512,6 +531,69 @@ extern "C" void wr_obj_keys_free(WrObjKeyList* list) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1b — geometry group discovery
+// ---------------------------------------------------------------------------
+
+extern "C" WrObjGroupList* wr_obj_groups_load(
+        const char* objContent,
+        int32_t objLength
+) {
+    ObjDocument document;
+    std::vector<Mtl> mtls;
+    if (!parseDocument(objContent, objLength, nullptr, 0, document, mtls)) {
+        return nullptr;
+    }
+
+    // ObjSplitting.splitByGroups: one entry per group with at least one face, in
+    // the order getGroups() reports them. DefaultObj's constructor activates and
+    // registers the "default" group, so a document with no `g` statement reports
+    // ["default"], and a document with faces before its first `g` reports
+    // "default" ahead of the declared names.
+    std::vector<std::string> names;
+    for (const ObjGroup& group : document.groups) {
+        if (!group.faceIndices.empty()) {
+            names.push_back(group.name);
+        }
+    }
+
+    auto* list = static_cast<WrObjGroupList*>(std::calloc(1, sizeof(WrObjGroupList)));
+    if (list == nullptr) {
+        return nullptr;
+    }
+    if (names.empty()) {
+        // A document whose groups all have zero faces. calloc(0, ...) may legally
+        // return null, so an empty list is represented without an allocation.
+        list->entries = nullptr;
+        list->count = 0;
+        return list;
+    }
+    auto* entries = static_cast<WrObjGroupInfo*>(std::calloc(names.size(), sizeof(WrObjGroupInfo)));
+    if (entries == nullptr) {
+        std::free(list);
+        return nullptr;
+    }
+    for (size_t i = 0; i < names.size(); i++) {
+        entries[i].name = duplicateString(names[i]);
+    }
+    list->entries = entries;
+    list->count = static_cast<int32_t>(names.size());
+    return list;
+}
+
+extern "C" void wr_obj_groups_free(WrObjGroupList* list) {
+    if (list == nullptr) {
+        return;
+    }
+    if (list->entries != nullptr) {
+        for (int32_t i = 0; i < list->count; i++) {
+            std::free(const_cast<char*>(list->entries[i].name));
+        }
+        std::free(const_cast<WrObjGroupInfo*>(list->entries));
+    }
+    std::free(list);
+}
+
+// ---------------------------------------------------------------------------
 // Stage 2 — placement capture
 // ---------------------------------------------------------------------------
 
@@ -526,6 +608,26 @@ extern "C" WrObjBuilder* wr_obj_builder_create(
         int32_t materialGroupTextures,
         int32_t flipTextureV
 ) {
+    return wr_obj_builder_create_group(
+            objContent, objLength, mtlContent, mtlLength,
+            keyTextureHandles, keyColorSet, keyCount,
+            materialGroupTextures, flipTextureV,
+            nullptr, 0);
+}
+
+extern "C" WrObjBuilder* wr_obj_builder_create_group(
+        const char* objContent,
+        int32_t objLength,
+        const char* mtlContent,
+        int32_t mtlLength,
+        const int32_t* keyTextureHandles,
+        const int32_t* keyColorSet,
+        int32_t keyCount,
+        int32_t materialGroupTextures,
+        int32_t flipTextureV,
+        const char* groupFilter,
+        int32_t groupFilterLen
+) {
     ObjDocument document;
     std::vector<Mtl> mtls;
     if (!parseDocument(objContent, objLength, mtlContent, mtlLength, document, mtls)) {
@@ -536,8 +638,12 @@ extern "C" WrObjBuilder* wr_obj_builder_create(
         mtls.clear();
     }
 
+    // The key table is the whole document's, in wr_obj_keys_load order, even for
+    // a group-filtered builder: the host resolves one table per document and
+    // hands the same handle array to every per-group builder, so key indexes
+    // must stay comparable across them.
     std::vector<KeyEntry> keys;
-    collectKeys(document, mtls, flipTextureV != 0, keys);
+    collectKeys(document, mtls, keys);
     if (keys.empty()) {
         return nullptr;
     }
@@ -568,8 +674,20 @@ extern "C" WrObjBuilder* wr_obj_builder_create(
         }
     }
 
+    // The per-group ObjModel: only the filtered group's faces become source
+    // meshes, so every placement this builder accumulates places exactly that
+    // group. ObjSplitting.splitByGroups is the reference for which groups exist;
+    // the filter matches by exact name, the same way a ModelPropertiesPart name
+    // is looked up in the Java map.
+    const bool filterByName = groupFilter != nullptr && groupFilterLen > 0;
+    const std::string filter = filterByName
+            ? std::string(groupFilter, static_cast<size_t>(groupFilterLen))
+            : std::string();
     for (const ObjGroup& group : document.groups) {
         if (group.faceIndices.empty()) {
+            continue;
+        }
+        if (filterByName && group.name != filter) {
             continue;
         }
         std::vector<SourceMeshEntry> meshes;
@@ -582,7 +700,7 @@ extern "C" WrObjBuilder* wr_obj_builder_create(
         }
     }
 
-    prepareSourceMeshes(builder->source);
+    prepareSourceMeshes(builder->source, flipTextureV != 0);
     return builder;
 }
 

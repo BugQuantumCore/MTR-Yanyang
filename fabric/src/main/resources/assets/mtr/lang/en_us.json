@@ -546,6 +546,7 @@
 	"options.mtr.show_announcement_messages": "Show \"next station\" messages in chat",
 	"options.mtr.support_patreon": "Support the mod on Patreon!",
 	"options.mtr.use_mtr_font": "Use custom MTR fonts (might not work on some computers)",
+	"options.mtr.use_native_obj_rendering": "Use native C++ OBJ model rendering (reload resources after changing)",
 	"options.mtr.use_tts_announcements": "Enable \"next station\" text-to-speech announcements",
 	"options.mtr.vehicle_oscillation_multiplier": "Vehicle sway effect strength",
 	"rail.mtr.default_3d": "3D Rail",

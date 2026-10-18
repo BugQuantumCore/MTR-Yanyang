@@ -976,6 +976,252 @@ void testSeparateBuildersDoNotShare() {
     wr_obj_builder_free(second);
 }
 
+
+// ---------------------------------------------------------------------------
+// Per-group model views (ABI 2)
+// ---------------------------------------------------------------------------
+
+/// wr_obj_groups_load must report ObjSplitting.splitByGroups' key set exactly,
+/// including the implicit "default" group that a text scan of `g` lines cannot
+/// see. These expectations were verified against the real javagl classes.
+void testGroupDiscovery() {
+    std::cout << "groups: wr_obj_groups_load matches splitByGroups\n";
+
+    struct Case {
+        std::string label;
+        std::string obj;
+        std::vector<std::string> expected;
+    };
+    const Case cases[] = {
+        {"no g at all", "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl m\nf 1 2 3\n", {"default"}},
+        {"faces before the first g", "usemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+                "g A\nv 2 0 0\nv 3 0 0\nv 2 1 0\nf 4 5 6\n", {"default", "A"}},
+        {"two declared groups", "g A\nusemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+                "g B\nv 2 0 0\nv 3 0 0\nv 2 1 0\nf 4 5 6\n", {"A", "B"}},
+        {"a multi-name g lists every name", "g A B\nusemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+                {"A", "B"}},
+        {"a bare g is the default group", "g\nusemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+                {"default"}},
+        {"a declared group with no faces is skipped",
+                "usemtl m\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\ng A\n", {"default"}},
+    };
+
+    for (const Case& testCase : cases) {
+        WrObjGroupList* groups = wr_obj_groups_load(
+                testCase.obj.data(), static_cast<int32_t>(testCase.obj.size()));
+        std::vector<std::string> actual;
+        if (groups != nullptr) {
+            for (int32_t i = 0; i < groups->count; i++) {
+                actual.emplace_back(groups->entries[i].name);
+            }
+        }
+        checkEqual(actual.size(), testCase.expected.size(),
+                testCase.label + ": group count");
+        bool same = actual.size() == testCase.expected.size();
+        for (size_t i = 0; same && i < actual.size(); i++) {
+            same = actual[i] == testCase.expected[i];
+        }
+        check(same, testCase.label + ": group names and order");
+        wr_obj_groups_free(groups);
+    }
+
+    // A structurally broken document reports null rather than an empty list.
+    WrObjGroupList* broken = wr_obj_groups_load("f 1 2 3\n", 10);
+    check(broken == nullptr, "an index error reports no groups");
+    wr_obj_groups_free(broken);
+}
+
+/// One builder per geometry group, which is what the per-group ObjModel means:
+/// a placement on a group's builder places that group's meshes only, so a
+/// vehicle part never places the whole document.
+void testGroupBuilderIsolation() {
+    std::cout << "groups: a per-group builder places only that group\n";
+
+    // Two groups with distinct materials, plus an ungrouped face in "default".
+    const std::string obj =
+            "usemtl plain\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+            "g Body\nusemtl body\nv 2 0 0\nv 3 0 0\nv 2 1 0\nf 4 5 6\n"
+            "g Glass\nusemtl glass#always_on_light\nv 4 0 0\nv 5 0 0\nv 4 1 0\nf 7 8 9\n";
+
+    // Three keys: plain, body, glass. The handles array is one per key.
+    WrObjKeyList* keys = wr_obj_keys_load(obj.data(), static_cast<int32_t>(obj.size()),
+            nullptr, 0, 0);
+    check(keys != nullptr && keys->count == 3, "three material keys");
+    int32_t handles[3] = {0, 1, 2};
+    int32_t colorSet[3] = {0, 0, 0};
+    const int32_t keyCount = keys == nullptr ? 0 : keys->count;
+    if (keys != nullptr) {
+        wr_obj_keys_free(keys);
+    }
+
+    // The Body builder, placed once: exactly one triangle's worth of vertices.
+    WrObjBuilder* body = wr_obj_builder_create_group(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, keyCount, 0, 0,
+            "Body", 4);
+    check(body != nullptr, "the Body builder creates");
+    if (body != nullptr) {
+        wr_obj_builder_add_transform(body, WROBJ_SHADER_CUTOUT, 1.0, 2.0, 3.0, 0);
+        WrObjResult* result = wr_obj_builder_build(body);
+        check(result != nullptr, "the Body builder builds");
+        if (result != nullptr) {
+            checkEqual(result->vertexDataLength, int32_t(3 * WROBJ_VERTEX_STRIDE),
+                    "the Body builder placed one triangle, not the whole document");
+            const auto* draws = static_cast<const WrObjResultDraw*>(result->drawData);
+            if (result->drawCount == 1) {
+                checkEqual(draws[0].shaderType, int32_t(WROBJ_SHADER_CUTOUT),
+                        "a CUTOUT placement keeps the Body bucket cutout");
+            } else {
+                check(false, "the Body builder produced one bucket");
+            }
+            // The first vertex lands at the placement translation, because the
+            // Body group's source vertices are x=2..3 and the placement adds 1.
+            const float* first = reinterpret_cast<const float*>(result->vertexData);
+            checkFloat(first[0], 3.0F, "placed Body vertex x");
+            checkFloat(first[1], 2.0F, "placed Body vertex y");
+            checkFloat(first[2], 3.0F, "placed Body vertex z");
+            wr_obj_result_free(result);
+        }
+        wr_obj_builder_free(body);
+    }
+
+    // The Glass builder: the group's own GLOWING shader wins over the part's
+    // stage, which is the mechanism a resource pack uses to make a group glow.
+    WrObjBuilder* glass = wr_obj_builder_create_group(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, keyCount, 0, 0,
+            "Glass", 5);
+    check(glass != nullptr, "the Glass builder creates");
+    if (glass != nullptr) {
+        wr_obj_builder_add_transform(glass, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(glass);
+        check(result != nullptr, "the Glass builder builds");
+        const auto* glassDraws = result == nullptr
+                ? nullptr
+                : static_cast<const WrObjResultDraw*>(result->drawData);
+        if (result != nullptr && result->drawCount == 1) {
+            checkEqual(glassDraws[0].shaderType, int32_t(WROBJ_SHADER_TRANSLUCENT_GLOWING),
+                    "the material's own glowing shader beats the part's stage");
+        }
+        if (result != nullptr) {
+            wr_obj_result_free(result);
+        }
+        wr_obj_builder_free(glass);
+    }
+
+    // The implicit "default" group is addressable, which a `g`-line scan misses.
+    WrObjBuilder* implicitGroup = wr_obj_builder_create_group(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, keyCount, 0, 0,
+            "default", 7);
+    check(implicitGroup != nullptr, "the implicit default builder creates");
+    if (implicitGroup != nullptr) {
+        wr_obj_builder_add_transform(implicitGroup, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(implicitGroup);
+        check(result != nullptr, "the implicit default builder builds");
+        if (result != nullptr) {
+            checkEqual(result->vertexDataLength, int32_t(3 * WROBJ_VERTEX_STRIDE),
+                    "the implicit group holds one triangle");
+            wr_obj_result_free(result);
+        }
+        wr_obj_builder_free(implicitGroup);
+    }
+
+    // A group the document does not declare is a valid empty model, matching the
+    // Java path where a part naming a missing group finds no model at all.
+    WrObjBuilder* missing = wr_obj_builder_create_group(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, keyCount, 0, 0,
+            "Nope", 4);
+    check(missing != nullptr, "a missing group yields a builder");
+    if (missing != nullptr) {
+        wr_obj_builder_add_transform(missing, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(missing);
+        check(result == nullptr, "a missing group builds no geometry");
+        wr_obj_result_free(result);
+        wr_obj_builder_free(missing);
+    }
+
+    // The unfiltered builder still places every group, which is what the tests
+    // and the whole-document harness rely on.
+    WrObjBuilder* all = wr_obj_builder_create(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, keyCount, 0, 0);
+    check(all != nullptr, "the whole-document builder creates");
+    if (all != nullptr) {
+        wr_obj_builder_add_transform(all, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(all);
+        check(result != nullptr, "the whole-document builder builds");
+        if (result != nullptr) {
+            checkEqual(result->vertexDataLength, int32_t(9 * WROBJ_VERTEX_STRIDE),
+                    "the whole document is three triangles");
+            wr_obj_result_free(result);
+        }
+        wr_obj_builder_free(all);
+    }
+}
+
+/// The model-level flip composes with a key's own flipv the way the Java path
+/// does: two flips cancel, one flip flips.
+void testFlipComposition() {
+    std::cout << "groups: model and key flips compose, and cancel\n";
+
+    // One quad with a V coordinate of 0.25, on a material that flips.
+    const std::string obj =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "vt 0 0.25\nvt 1 0.25\nvt 1 0.75\nvt 0 0.75\n"
+            "usemtl tex#flipv=1\nf 1/1 2/2 3/3 4/4\n";
+
+    int32_t handles[1] = {0};
+    int32_t colorSet[1] = {0};
+
+    /// Reads the first vertex's V from a built result.
+    ///
+    /// The stride is position (3 floats), then u and v (2 floats), so v is the
+    /// fifth float; the sixth slot is the start of the packed normal bytes.
+    const auto firstV = [](WrObjResult* result) -> float {
+        if (result == nullptr || result->vertexData == nullptr) {
+            return -1.0F;
+        }
+        return reinterpret_cast<const float*>(result->vertexData)[4];
+    };
+
+    // Key flip only: v = 1 - 0.25 = 0.75.
+    WrObjBuilder* keyOnly = wr_obj_builder_create(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, 1, 0, 0);
+    check(keyOnly != nullptr, "key-flip builder creates");
+    if (keyOnly != nullptr) {
+        wr_obj_builder_add_transform(keyOnly, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(keyOnly);
+        checkFloat(firstV(result), 0.75F, "the key's own flipv flips V");
+        wr_obj_result_free(result);
+        wr_obj_builder_free(keyOnly);
+    }
+
+    // Both flips: the key flip and the model mirror cancel, v stays 0.25.
+    WrObjBuilder* both = wr_obj_builder_create(obj.data(),
+            static_cast<int32_t>(obj.size()), nullptr, 0, handles, colorSet, 1, 0, 1);
+    check(both != nullptr, "both-flips builder creates");
+    if (both != nullptr) {
+        wr_obj_builder_add_transform(both, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(both);
+        checkFloat(firstV(result), 0.25F, "the model flip cancels the key flip");
+        wr_obj_result_free(result);
+        wr_obj_builder_free(both);
+    }
+
+    // Model flip only, on a material without its own flipv.
+    const std::string plainObj =
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
+            "vt 0 0.25\nvt 1 0.25\nvt 1 0.75\nvt 0 0.75\n"
+            "usemtl tex\nf 1/1 2/2 3/3 4/4\n";
+    WrObjBuilder* modelOnly = wr_obj_builder_create(plainObj.data(),
+            static_cast<int32_t>(plainObj.size()), nullptr, 0, handles, colorSet, 1, 0, 1);
+    check(modelOnly != nullptr, "model-flip builder creates");
+    if (modelOnly != nullptr) {
+        wr_obj_builder_add_transform(modelOnly, WROBJ_SHADER_CUTOUT, 0.0, 0.0, 0.0, 0);
+        WrObjResult* result = wr_obj_builder_build(modelOnly);
+        checkFloat(firstV(result), 0.75F, "the model flip flips V on its own");
+        wr_obj_result_free(result);
+        wr_obj_builder_free(modelOnly);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Golden equivalence
 // ---------------------------------------------------------------------------
@@ -1024,6 +1270,14 @@ void applyCaseVector(
     double c = 0.0;
     if (std::sscanf(iterator->second.c_str(), "%lf,%lf,%lf", &a, &b, &c) != 3) {
         return;
+    }
+    // ObjectResource.transform clamps every non-positive scale component to 1
+    // (clampNumber) before the model applies it, so the runner reproduces the real
+    // caller rather than feeding the builder a scale it never sees in the mod.
+    if (operation == 2) {
+        if (a <= 0.0) { a = 1.0; }
+        if (b <= 0.0) { b = 1.0; }
+        if (c <= 0.0) { c = 1.0; }
     }
     wr_obj_builder_apply_transform(builder, operation, a, b, c);
 }
@@ -1076,7 +1330,11 @@ int runGolden(const std::string& directory, const std::vector<std::string>& case
         std::vector<int32_t> colorSet(expected.keys.size(), 0);
         for (size_t i = 0; i < expected.keys.size(); i++) {
             handles[i] = static_cast<int32_t>(i);
-            colorSet[i] = expected.keys[i].color == static_cast<int32_t>(0xFFFFFFFF) ? 0 : 1;
+            // The golden key table records the flag the reference's loader computed, which is
+            // exactly what the host reports to the builder: an MTL Kd makes the colour
+            // authoritative. A colour-value heuristic cannot tell an authoritative white from
+            // the non-authoritative kind, so the flag travels in the format since version 4.
+            colorSet[i] = expected.keys[i].hasColor != 0 ? 1 : 0;
         }
         // Each golden carries the placement list in its draw offsets; the case
         // file records how many placements were applied.
@@ -1090,14 +1348,35 @@ int runGolden(const std::string& directory, const std::vector<std::string>& case
             }
         }
 
-        WrObjBuilder* builder = wr_obj_builder_create(
-                objContent.data(), static_cast<int32_t>(objContent.size()),
-                mtlContent.empty() ? nullptr : mtlContent.data(),
-                static_cast<int32_t>(mtlContent.size()),
-                handles.data(), colorSet.data(), static_cast<int32_t>(handles.size()),
-                values.count("materialGroupTextures") > 0 ? 0 : 1,
-                values.count("flipTextureV") > 0 ? 1 : 0);
+        // A group case drives one per-group builder, the same ObjModel a vehicle
+        // part addresses; without a group the whole document is the model.
+        const auto groupIt = values.find("group");
+        const std::string group = groupIt == values.end() ? std::string() : groupIt->second;
+        WrObjBuilder* builder = group.empty()
+                ? wr_obj_builder_create(
+                        objContent.data(), static_cast<int32_t>(objContent.size()),
+                        mtlContent.empty() ? nullptr : mtlContent.data(),
+                        static_cast<int32_t>(mtlContent.size()),
+                        handles.data(), colorSet.data(), static_cast<int32_t>(handles.size()),
+                        values.count("materialGroupTextures") > 0 ? 0 : 1,
+                        values.count("flipTextureV") > 0 ? 1 : 0)
+                : wr_obj_builder_create_group(
+                        objContent.data(), static_cast<int32_t>(objContent.size()),
+                        mtlContent.empty() ? nullptr : mtlContent.data(),
+                        static_cast<int32_t>(mtlContent.size()),
+                        handles.data(), colorSet.data(), static_cast<int32_t>(handles.size()),
+                        values.count("materialGroupTextures") > 0 ? 0 : 1,
+                        values.count("flipTextureV") > 0 ? 1 : 0,
+                        group.data(), static_cast<int32_t>(group.size()));
         if (builder == nullptr) {
+            if (expected.keys.empty() && expected.draws.empty() && expected.vertexData.empty()) {
+                // The reference produced no geometry either (a document with no material
+                // group at all renders nothing), and the mod's fall-through takes such a
+                // document to the Java loader, which builds the same empty model. Both
+                // sides render nothing, which is the equivalence being checked.
+                std::cout << "  OK   " << name << " (no material groups: both sides empty)\n";
+                continue;
+            }
             std::cout << "  " << name << ": native builder rejected the document\n";
             failures++;
             continue;
@@ -1153,6 +1432,7 @@ int runGolden(const std::string& directory, const std::vector<std::string>& case
                 golden::Key key;
                 key.shaderType = keys->entries[i].shaderType;
                 key.color = keys->entries[i].color;
+                key.hasColor = keys->entries[i].hasColor;
                 key.texture = keys->entries[i].textureString;
                 actual.keys.push_back(key);
             }
@@ -1261,6 +1541,9 @@ int main(int argc, char** argv) {
     testBuildIsRepeatable();
     testNoUsemtlYieldsNoKeys();
     testSeparateBuildersDoNotShare();
+    testGroupDiscovery();
+    testGroupBuilderIsolation();
+    testFlipComposition();
 
     if (argc > 1) {
         const std::string directory = argv[1];

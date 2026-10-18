@@ -153,9 +153,25 @@ void RawMesh::distinct() {
     // The growth is simulated rather than solved for, because the closed form (smallest power
     // of two above 4/3 of the count) is off by one doubling at the boundary where a count equal
     // to 0.75 * capacity still fits the current table.
+    //
+    // The seed is NOT 16: the set is constructed with new HashSet<>(faces.size()), so the
+    // first put allocates tableSizeFor(pre-dedup face count) buckets - the smallest power of
+    // two at least that count - and only grows by doubling from there. A mesh whose original
+    // face count is under 12 therefore iterates in a different order than a default-sized
+    // set would, which the small golden fixtures pin.
     const size_t faceTotal = orderedFaceIndices.size();
-    uint32_t tableCapacity = 16;
-    while (faceTotal > static_cast<size_t>(tableCapacity) - static_cast<size_t>(tableCapacity) / 4) {
+    uint32_t seed = static_cast<uint32_t>(faceCount);
+    if (seed > 0) {
+        seed -= 1;
+        seed |= seed >> 1;
+        seed |= seed >> 2;
+        seed |= seed >> 4;
+        seed |= seed >> 8;
+        seed |= seed >> 16;
+        seed += 1;
+    }
+    uint32_t tableCapacity = seed == 0 ? 1 : seed;
+    while (faceTotal > static_cast<size_t>(tableCapacity) * 3 / 4) {
         tableCapacity *= 2;
     }
     const uint32_t mask = tableCapacity - 1;
@@ -206,15 +222,19 @@ void RawMesh::generateNormals() {
         const Vec3f& p1 = vertices[static_cast<size_t>(i1)].position;
         const Vec3f& p2 = vertices[static_cast<size_t>(i2)].position;
 
-        // All cross-product arithmetic is double precision, matching the Java
-        // method, because the normalized result is stored as float only at the
-        // end and the rounding differs if the intermediate is narrowed early.
-        const double ax = static_cast<double>(p1.x) - static_cast<double>(p0.x);
-        const double ay = static_cast<double>(p1.y) - static_cast<double>(p0.y);
-        const double az = static_cast<double>(p1.z) - static_cast<double>(p0.z);
-        const double bx = static_cast<double>(p2.x) - static_cast<double>(p0.x);
-        const double by = static_cast<double>(p2.y) - static_cast<double>(p0.y);
-        const double bz = static_cast<double>(p2.z) - static_cast<double>(p0.z);
+        // The cross product itself is double precision, matching the Java method.
+        // The edge subtraction is NOT: the Java lambda subtracts in FLOAT first and
+        // widens the result (fsub, then f2d), so narrowing here would be widening
+        // there. A double subtraction keeps bits the float one rounds away, and
+        // those extra bits change whether the two triangles of one quad compute
+        // bit-identical normals - which decides whether distinct() merges the
+        // shared corners. The rotated-quad golden case pins exactly this.
+        const double ax = static_cast<double>(p1.x - p0.x);
+        const double ay = static_cast<double>(p1.y - p0.y);
+        const double az = static_cast<double>(p1.z - p0.z);
+        const double bx = static_cast<double>(p2.x - p0.x);
+        const double by = static_cast<double>(p2.y - p0.y);
+        const double bz = static_cast<double>(p2.z - p0.z);
         const double nx = ay * bz - az * by;
         const double ny = az * bx - ax * bz;
         const double nz = ax * by - ay * bx;

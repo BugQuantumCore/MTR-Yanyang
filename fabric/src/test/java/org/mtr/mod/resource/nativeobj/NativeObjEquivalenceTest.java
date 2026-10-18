@@ -33,6 +33,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
+import javax.annotation.Nullable;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -128,7 +130,7 @@ public class NativeObjEquivalenceTest {
 		assumeTrue(Files.isRegularFile(manifest), "the golden manifest is missing at " + manifest);
 
 		final List<ReferenceCase> cases = readManifest(manifest);
-		assertTrue(cases.size() >= 7, "the manifest should cover every decision point, found " + cases.size());
+		assertTrue(cases.size() >= 11, "the manifest should cover every decision point, found " + cases.size());
 
 		// Every fixture is compared before the test reports, instead of stopping at the first
 		// failure. The fail-fast form hid a real result for many rounds: model-scale-negative sorts
@@ -386,7 +388,12 @@ public class NativeObjEquivalenceTest {
 		}
 
 		final ModelBuffers buffers = new ModelBuffers();
-		final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> accumulated = new LinkedHashMap<>();
+		// Per-group accumulation: a group's meshes stay in their own map, so a group case can
+		// place exactly that group. This is the map-per-group the reference loader produces -
+		// splitByGroups hands it one ObjModel per group, and a part's addTransformation places
+		// its own group's model only.
+		final Map<String, Map<MaterialKey, org.mtr.mapping.render.model.RawMesh>> accumulatedByGroup =
+				new LinkedHashMap<>();
 
 		ObjSplitting.splitByGroups(sourceObj).forEach((groupName, groupObj) -> {
 			final Map<String, Mtl> effective = testCase.materialGroupTextures ? materials : new HashMap<>();
@@ -444,7 +451,10 @@ public class NativeObjEquivalenceTest {
 					if (i < renderable.getNumTexCoords()) {
 						final FloatTuple uv = renderable.getTexCoord(i);
 						vertex.u = uv.getX();
-						vertex.v = (groupFlipV || testCase.flipTextureV) ? 1.0F - uv.getY() : uv.getY();
+						// Only the key's own flipv is baked in here; the model-level flip is a UV
+						// mirror applied after the X-180 rotation, so the two compose - and cancel
+						// when both are set - exactly as the reference loader does.
+						vertex.v = groupFlipV ? 1.0F - uv.getY() : uv.getY();
 					} else {
 						vertex.u = 0.0F;
 						vertex.v = 0.0F;
@@ -486,8 +496,12 @@ public class NativeObjEquivalenceTest {
 					System.out.println("###   src face " + java.util.Arrays.toString(debugFace.vertices));
 				}
 
-				// ObjModel.loadModel rotates every source mesh by 180 degrees about X.
+				// ObjModel.loadModel rotates every source mesh by 180 degrees about X, and
+				// ObjModel's constructor mirrors V when the model asked for a whole-model flip.
 				mesh.applyRotation(new org.mtr.mapping.holder.Vector3f(1.0F, 0.0F, 0.0F), 180.0F);
+				if (testCase.flipTextureV) {
+					mesh.applyUVMirror(false, true);
+				}
 
 				// Model-level transform, i.e. ObjectResource.apply*, then the vehicle-level one
 				// from StoredModelResourceBase.transform. The order is what the load path does:
@@ -499,9 +513,10 @@ public class NativeObjEquivalenceTest {
 						testCase.schemaScale, testCase.schemaMirror);
 
 				final MaterialKey key = new MaterialKey(shaderType, resolved, color);
-				accumulated.computeIfAbsent(key, k -> new org.mtr.mapping.render.model.RawMesh(
-						new org.mtr.mapping.render.batch.MaterialProperties(shaderType, null, color)))
-						.append(mesh);
+				accumulatedByGroup.computeIfAbsent(groupName, k -> new LinkedHashMap<>())
+						.computeIfAbsent(key, k -> new org.mtr.mapping.render.model.RawMesh(
+								new org.mtr.mapping.render.batch.MaterialProperties(shaderType, null, color)))
+							.append(mesh);
 			});
 		});
 
@@ -509,8 +524,8 @@ public class NativeObjEquivalenceTest {
 		// javagl's branch is `!materials.isEmpty()`, where materials is the map built from the
 		// MTL files the OBJ declared. The native side keys its hasColor flag off the identical
 		// condition, so this is the flag that makes the two colour conventions comparable.
-		packBuffers(buffers, accumulated, testCase.transforms,
-				mtlText != null && !mtlText.isEmpty());
+		packBuffers(buffers, accumulatedByGroup, testCase.transforms,
+				mtlText != null && !mtlText.isEmpty(), testCase.group);
 		return buffers;
 	}
 
@@ -524,6 +539,18 @@ public class NativeObjEquivalenceTest {
 	 */
 	private static int sourceKeyIndex(List<MaterialKey> sourceKeys, MaterialKey placedKey,
 			boolean hasMtl, ModelBuffers buffers) {
+		final int existing = indexOfSourceKey(sourceKeys, placedKey, hasMtl);
+		if (existing >= 0) {
+			return existing;
+		}
+		// The table entry is written here rather than at the call site, so the first-use order is
+		// the order the entries were created in, which is the order the native table has.
+		sourceKeys.add(placedKey);
+		return buffers.recordKey(placedKey, hasMtl);
+	}
+
+	/** The index of a source key by texture and colour, or -1 when it is not in the table. */
+	private static int indexOfSourceKey(List<MaterialKey> sourceKeys, MaterialKey placedKey, boolean hasMtl) {
 		final int colour = ModelBuffers.colourOf(placedKey, hasMtl);
 		for (int i = 0; i < sourceKeys.size(); i++) {
 			final MaterialKey candidate = sourceKeys.get(i);
@@ -532,18 +559,35 @@ public class NativeObjEquivalenceTest {
 				return i;
 			}
 		}
-		// The table entry is written here rather than at the call site, so the first-use order is
-		// the order the entries were created in, which is the order the native table has.
-		sourceKeys.add(placedKey);
-		return buffers.recordKey(placedKey, hasMtl);
+		return -1;
 	}
 
-	/** Applies the placements, then generates normals, de-duplicates and packs. */
+	/**
+	 * Applies the placements, then generates normals, de-duplicates and packs.
+	 *
+	 * <p>{@code group} names the geometry group whose meshes receive the placements, or null
+	 * for every group - the ModelPropertiesPart flow, where a part places its own group's
+	 * ObjModel. The key table is seeded from the whole document either way, because the native
+	 * side reports one document-wide key list and the comparison is over that list.</p>
+	 */
 	private void packBuffers(ModelBuffers buffers,
-			Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> accumulated,
-			List<double[]> transforms, boolean hasMtl) {
+			Map<String, Map<MaterialKey, org.mtr.mapping.render.model.RawMesh>> accumulatedByGroup,
+			List<double[]> transforms, boolean hasMtl, @Nullable String group) {
 		final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> placed = new LinkedHashMap<>();
 		final List<MaterialKey> sourceKeys = new ArrayList<>();
+
+		// Seed the key table from every group's materials, in splitByGroups order. This is the
+		// document-wide key list the native side reports from wr_obj_keys_load, so a group case
+		// still compares keys the group never placed.
+		for (final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> groupMeshes : accumulatedByGroup.values()) {
+			for (final MaterialKey key : groupMeshes.keySet()) {
+				final int existing = indexOfSourceKey(sourceKeys, key, hasMtl);
+				if (existing < 0) {
+					sourceKeys.add(key);
+					buffers.recordKey(key, hasMtl);
+				}
+			}
+		}
 
 		for (final double[] transform : transforms) {
 			final OptimizedModel.ShaderType shaderType =
@@ -551,35 +595,44 @@ public class NativeObjEquivalenceTest {
 			System.out.println("### placement shader=" + shaderType
 					+ " d=(" + transform[1] + "," + transform[2] + "," + transform[3] + ")"
 					+ " flip=" + (transform[4] != 0.0)
-					+ " accumulated=" + accumulated.size());
-			for (final Map.Entry<MaterialKey, org.mtr.mapping.render.model.RawMesh> entry : accumulated.entrySet()) {
-				final MaterialKey key = entry.getKey();
-				final MaterialKey placedKey = key.shaderType == OptimizedModel.ShaderType.CUTOUT
-						? new MaterialKey(shaderType, key.texture, key.color) : key;
-				final org.mtr.mapping.render.model.RawMesh copy =
-						new org.mtr.mapping.render.model.RawMesh(entry.getValue().materialProperties);
-				entry.getValue().vertices.forEach(vertex -> copy.vertices.add(new Vertex(vertex)));
-				entry.getValue().faces.forEach(face -> copy.faces.add(new Face(face)));
-				copy.applyTranslation((float) transform[1], (float) transform[2], (float) transform[3]);
-				if (transform[4] != 0.0) {
-					copy.applyRotation(new org.mtr.mapping.holder.Vector3f(0.0F, 1.0F, 0.0F), 180.0F);
+					+ " group=" + (group == null ? "<all>" : group));
+			for (final Map.Entry<String, Map<MaterialKey, org.mtr.mapping.render.model.RawMesh>> groupEntry : accumulatedByGroup.entrySet()) {
+				// A group case places one group's model, exactly as ModelPropertiesPart does. Every
+				// other group's meshes stay unplaced, which is what the per-group native builder
+				// produces with its group filter.
+				if (group != null && !group.equals(groupEntry.getKey())) {
+					continue;
 				}
-				placed.computeIfAbsent(placedKey, k -> new org.mtr.mapping.render.model.RawMesh(
-						new org.mtr.mapping.render.batch.MaterialProperties(k.shaderType, null, k.color)))
-						.append(copy);
+				for (final Map.Entry<MaterialKey, org.mtr.mapping.render.model.RawMesh> entry : groupEntry.getValue().entrySet()) {
+					final MaterialKey key = entry.getKey();
+					final MaterialKey placedKey = key.shaderType == OptimizedModel.ShaderType.CUTOUT
+								? new MaterialKey(shaderType, key.texture, key.color) : key;
+					final org.mtr.mapping.render.model.RawMesh copy =
+							new org.mtr.mapping.render.model.RawMesh(entry.getValue().materialProperties);
+					entry.getValue().vertices.forEach(vertex -> copy.vertices.add(new Vertex(vertex)));
+					entry.getValue().faces.forEach(face -> copy.faces.add(new Face(face)));
+					copy.applyTranslation((float) transform[1], (float) transform[2], (float) transform[3]);
+					if (transform[4] != 0.0) {
+						copy.applyRotation(new org.mtr.mapping.holder.Vector3f(0.0F, 1.0F, 0.0F), 180.0F);
+					}
+					placed.computeIfAbsent(placedKey, k -> new org.mtr.mapping.render.model.RawMesh(
+								new org.mtr.mapping.render.batch.MaterialProperties(k.shaderType, null, k.color)))
+							.append(copy);
 
-				// Printed after each append, so the offsetting that keeps indices valid as
-				// placements accumulate is visible step by step. If the indices here are sequential
-				// triples rather than offset copies of the source faces, the offset is not being
-				// applied and every placement is colliding with the previous one's vertices.
-				final org.mtr.mapping.render.model.RawMesh afterAppend = placed.get(placedKey);
-				System.out.println("###   after append: " + afterAppend.vertices.size()
-						+ " vertices " + afterAppend.faces.size() + " faces");
-				for (final Face debugFace : afterAppend.faces) {
-					System.out.println("###     face " + java.util.Arrays.toString(debugFace.vertices));
+					// Printed after each append, so the offsetting that keeps indices valid as
+					// placements accumulate is visible step by step. If the indices here are sequential
+					// triples rather than offset copies of the source faces, the offset is not being
+					// applied and every placement is colliding with the previous one's vertices.
+					final org.mtr.mapping.render.model.RawMesh afterAppend = placed.get(placedKey);
+					System.out.println("###   after append: " + afterAppend.vertices.size()
+							+ " vertices " + afterAppend.faces.size() + " faces");
+					for (final Face debugFace : afterAppend.faces) {
+						System.out.println("###     face " + java.util.Arrays.toString(debugFace.vertices));
+					}
 				}
 			}
 		}
+
 
 		final ByteArrayOutputStream vertexBytes = new ByteArrayOutputStream();
 		final ByteArrayOutputStream indexBytes = new ByteArrayOutputStream();
@@ -732,8 +785,11 @@ public class NativeObjEquivalenceTest {
 			return NativeTextureResolver.NO_TEXTURE;
 		};
 
-		final long handle = NativeObjPipeline.createBuilder(objBytes, mtlBytes, materialGroupTextures,
-				testCase.flipTextureV, resolver);
+		// A group case drives a per-group builder, which is the model a vehicle part
+		// addresses: MTR loads one ObjModel per `g` group and a part places its own group.
+		// The unfiltered builder covers the null-group cases, exactly as before.
+		final long handle = NativeObjPipeline.createBuilderGroup(objBytes, mtlBytes, materialGroupTextures,
+				testCase.flipTextureV, resolver, testCase.group);
 		if (handle == 0L) {
 			// No material groups means nothing to build, which happens exactly when the
 			// document carried no usemtl. The native side reports that by declining to create a
@@ -1169,6 +1225,9 @@ public class NativeObjEquivalenceTest {
 				case "mtl":
 					current.mtlPath = value.isEmpty() ? null : value;
 					break;
+				case "group":
+					current.group = value;
+					break;
 				case "flipTextureV":
 					current.flipTextureV = "1".equals(value);
 					break;
@@ -1237,6 +1296,8 @@ public class NativeObjEquivalenceTest {
 		String name = "";
 		String objPath;
 		String mtlPath;
+		/** The geometry group this case places, or null for the whole document. */
+		String group;
 		boolean flipTextureV;
 		boolean materialGroupTextures = true;
 		/** Model-resource level, applied first. */

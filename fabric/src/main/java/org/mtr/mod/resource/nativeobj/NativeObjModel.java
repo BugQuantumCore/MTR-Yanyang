@@ -67,6 +67,18 @@ public final class NativeObjModel implements AutoCloseable {
 	@Nullable
 	private final byte[] mtlContent;
 
+	/**
+	 * The geometry group this model is limited to, or null for the whole document.
+	 *
+	 * <p>MTR addresses model parts by {@code g}-group name, and the reference loader hands each
+	 * part an ObjModel holding only that group's meshes. A model with a group filter reproduces
+	 * that: its builder's source meshes are the group's, so every placement added to a copy
+	 * places that group alone. {@code null} means the whole document, which is what the
+	 * unfiltered builder and the old single-model behaviour cover.</p>
+	 */
+	@Nullable
+	private final String groupFilter;
+
 	/** The native builder handle. Non-zero while the model is usable. */
 	private volatile long handle;
 
@@ -85,7 +97,7 @@ public final class NativeObjModel implements AutoCloseable {
 
 	NativeObjModel(NativeObjKey[] keys, String[] textureLookupKeys, Identifier[] textures,
 			boolean materialGroupTextures, boolean flipTextureV, byte[] objContent,
-			@Nullable byte[] mtlContent) {
+			@Nullable byte[] mtlContent, @Nullable String groupFilter) {
 		this.keys = keys;
 		this.textureLookupKeys = textureLookupKeys;
 		this.textures = textures;
@@ -93,6 +105,7 @@ public final class NativeObjModel implements AutoCloseable {
 		this.flipTextureV = flipTextureV;
 		this.objContent = objContent;
 		this.mtlContent = mtlContent;
+		this.groupFilter = groupFilter;
 		refreshBounds();
 	}
 
@@ -170,7 +183,7 @@ public final class NativeObjModel implements AutoCloseable {
 	 */
 	public NativeObjModel copy() {
 		return new NativeObjModel(keys, textureLookupKeys, textures,
-				materialGroupTextures, flipTextureV, objContent, mtlContent);
+				materialGroupTextures, flipTextureV, objContent, mtlContent, groupFilter);
 	}
 
 	/**
@@ -293,8 +306,8 @@ public final class NativeObjModel implements AutoCloseable {
 	}
 
 	private long createHandle() {
-		return NativeObjPipeline.createBuilder(objContent, mtlContent, materialGroupTextures,
-				flipTextureV, new TableResolver(textureLookupKeys));
+		return NativeObjPipeline.createBuilderGroup(objContent, mtlContent, materialGroupTextures,
+				flipTextureV, new TableResolver(textureLookupKeys), groupFilter);
 	}
 
 	/** Releases the native builder. Idempotent. */

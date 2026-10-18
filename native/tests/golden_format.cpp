@@ -13,7 +13,7 @@ namespace golden {
 namespace {
 
 constexpr char kMagic[8] = {'W', 'R', 'O', 'B', 'J', 'G', 'L', 'D'};
-constexpr int32_t kVersion = 3;
+constexpr int32_t kVersion = 4;
 
 template <typename T>
 bool readPod(std::FILE* file, T& out) {
@@ -106,7 +106,7 @@ bool read(const std::string& path, File& out, std::string& error) {
     for (int32_t i = 0; i < keyCount; i++) {
         Key key;
         if (!readPod(file, key.shaderType) || !readPod(file, key.color)
-                || !readString(file, key.texture)) {
+                || !readPod(file, key.hasColor) || !readString(file, key.texture)) {
             error = path + ": truncated key table";
             std::fclose(file);
             return false;
@@ -175,6 +175,7 @@ bool write(const std::string& path, const File& file, std::string& error) {
     for (const Key& key : file.keys) {
         ok = ok && writePod(handle, key.shaderType);
         ok = ok && writePod(handle, key.color);
+        ok = ok && writePod(handle, key.hasColor);
         ok = ok && writeString(handle, key.texture);
     }
     for (const Draw& draw : file.draws) {
@@ -240,11 +241,13 @@ std::string diff(const File& expected, const File& actual) {
     for (size_t i = 0; i < keyCount; i++) {
         const Key& a = expected.keys[i];
         const Key& b = actual.keys[i];
-        if (a.shaderType != b.shaderType || a.color != b.color || a.texture != b.texture) {
+        if (a.shaderType != b.shaderType || a.color != b.color || a.texture != b.texture
+                || a.hasColor != b.hasColor) {
             out << "key " << i << " differs: expected shaderType=" << a.shaderType
-                << " color=0x" << std::hex << a.color << std::dec << " texture=\"" << a.texture
+                << " color=0x" << std::hex << a.color << std::dec
+                << " hasColor=" << a.hasColor << " texture=\"" << a.texture
                 << "\", got shaderType=" << b.shaderType << " color=0x" << std::hex << b.color
-                << std::dec << " texture=\"" << b.texture << "\"\n";
+                << std::dec << " hasColor=" << b.hasColor << " texture=\"" << b.texture << "\"\n";
         }
     }
 

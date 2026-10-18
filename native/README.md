@@ -131,6 +131,14 @@ The handshake is three steps:
 2. The host resolves each texture string to an opaque integer handle. That handle is
    never interpreted natively; it only ever gets compared.
 3. `wr_obj_builder_create` takes the handles back and builds the source meshes.
+   `wr_obj_builder_create_group` does the same for one geometry group, which is
+   what a vehicle part addresses: MTR loads an OBJ with `splitModel=true`, so
+   `ObjSplitting.splitByGroups` hands the Java path one `ObjModel` per `g` group,
+   and the native path mirrors that with one filtered builder per group. The
+   group names come from `wr_obj_groups_load`, which reports exactly
+   `splitByGroups`' key set - including the implicit `default` group that holds
+   faces written before the first `g` statement, which a text scan of `g` lines
+   cannot see.
 
 The handle joins the shader type and the colour in the merge key, which is exactly
 `MaterialProperties`' equality contract. Two keys whose materials resolved
@@ -282,6 +290,10 @@ simpler test would miss:
 | `schema-transform` | the `ObjectResource`-level translation, rotation, scale and mirror |
 | `model-scale-negative` | the inverse-transpose normal correction together with the winding flip from a negative scale component |
 | `model-scale-positive` | the same correction with the winding left alone, and the order of the two model-level operations |
+| `grouped-body` | the per-group builder placing only the named group's meshes, the `ModelPropertiesPart` flow |
+| `grouped-glass` | a group whose material carries `always_on_light`, so its own GLOWING shader beats the part's stage - the resource-pack glow mechanism |
+| `grouped-glass-both-flips` | the model-level V mirror cancelling the key's own `flipv`, the composition `ObjModel`'s constructor implements |
+| `grouped-default` | the implicit `default` group being addressable by name |
 
 ---
 
@@ -450,16 +462,18 @@ Documented rather than hidden, because each one is a deliberate decision:
    intentional — it keeps the native side optional for Java-only contributors — but it
    means a release build has to run the native workflow first.
 
-6. **One equivalence fixture does not reproduce bit for bit.** The
-   `model-scale-negative` case, which combines a non-uniform negative scale with a 45
-   degree rotation, produces a 384 byte vertex buffer natively against 576 bytes from the
-   Java pipeline, over the same 12 indices. The native side merges four of its twelve
-   pre-distinct corners through `distinct()` where the Java side merges none, so the two
-   disagree on how many distinct vertices the fixture has. The triangle sets are equal and
-   the rendered geometry is unchanged, but the buffers are not interchangeable and the
-   cause is not identified. Every other fixture passes byte for byte. This is recorded
-   rather than worked around: the comparator reports the difference on every run instead
-   of tolerating it.
+6. **Resolved: `model-scale-negative` now reproduces bit for bit.** The case combines a
+   non-uniform negative scale with a 45 degree rotation, and it used to produce a 384
+   byte vertex buffer natively against 576 bytes from the Java pipeline. Two separate
+   bit-level causes are now fixed: `generateNormals` subtracted edge vectors in double
+   precision while the Java lambda narrows to float first and widens the result, and the
+   extra bits decided whether the two triangles of a quad compute bit-identical normals -
+   which `distinct()` then merges on; and `distinct()`'s de-duplication iterated a
+   `HashSet` seeded with a default 16-bucket table, while the reference constructs
+   `new HashSet<>(faces.size())` whose first allocation is `tableSizeFor(faceCount)`
+   buckets - a mesh under 12 faces iterates in a different order at a different table
+   size. Both are now reproduced exactly (float-first subtraction, `tableSizeFor` seed),
+   and the fixture passes byte for byte with the other thirteen.
 
 7. **Resolved: the material's own vertex attribute state is now applied.** The draw
    path once flushed only the queued globals, so a `Kd`-coloured material rendered
@@ -481,8 +495,8 @@ actually been built and run, as opposed to what is intended to work:
 
 | Platform | Built | Tests run | Notes |
 |---|---|---|---|
-| Windows x64 | yes, locally and on CI | 151 + 71 native, 4 JVM | the reference platform for this work |
-| Linux x64 | **yes** | 151 + 71 native | Ubuntu 24.04, gcc 13, libstdc++ 13, WSL2 |
+| Windows x64 | yes, locally and on CI | 198 + 71 native, 4 JVM | the reference platform for this work |
+| Linux x64 | **yes** | 198 + 71 native | Ubuntu 24.04, gcc 13, libstdc++ 13, WSL2 |
 | macOS arm64 | **not confirmed** | — | two macOS-only defects found and fixed (`-ffp-contract`, `Darwin` matching a `win` test); clang builds clean on Linux as a proxy |
 | macOS x64 | **deliberately not built** | — | an Intel Mac has no library in the jar and falls back to the Java pipeline |
 | iOS arm64 | **build target added** | — | `iphoneos`, 13.0 minimum; CI job added, has not been scheduled |

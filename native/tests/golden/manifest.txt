@@ -122,3 +122,35 @@ modelScale 3,1,0.25
 modelTranslation -0.5,0,0.25
 transform 0,0,0,0,0
 end
+
+# --- Per-group placement, the ModelPropertiesPart flow ------------------
+# MTR loads an OBJ with splitModel=true, so each `g` group is its own ObjModel and
+# a part's addTransformation places exactly that group. These cases pin that the
+# native per-group builders agree with the Java per-group models, including the
+# implicit "default" group a text scan of `g` lines cannot see.
+case grouped-body
+obj grouped_two_parts.obj
+group Body
+transform 2,0,1,0.5,0
+end
+
+case grouped-glass
+obj grouped_two_parts.obj
+group Glass
+transform 0,1,2,0,1
+end
+
+# The Glass material carries flipv=1; the model-level flip must cancel it, which
+# is the composition the reference implements as key flip plus UV mirror.
+case grouped-glass-both-flips
+obj grouped_two_parts.obj
+group Glass
+flipTextureV 1
+transform 0,1,2,0,1
+end
+
+case grouped-default
+obj grouped_two_parts.obj
+group default
+transform 0,0,0,0,0
+end

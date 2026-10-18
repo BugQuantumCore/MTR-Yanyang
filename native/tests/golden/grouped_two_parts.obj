@@ -1,0 +1,34 @@
+# A three-group document shaped like a vehicle model: ungrouped faces land in the
+# implicit "default" group, "Body" is a plain cutout material, and "Glass" carries
+# the always_on_light option on its material so the group renders glowing - the
+# resource-pack mechanism MTR uses to make a model group glow. The Glass material
+# also sets flipv, so the both-flips case can pin that the two flips cancel.
+
+usemtl plain
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 0.5 1.0 0.0
+vt 0.0 0.25
+vt 1.0 0.25
+vt 0.5 0.75
+f 1/1 2/2 3/3
+
+g Body
+usemtl body
+v 2.0 0.0 0.0
+v 3.0 0.0 0.0
+v 2.5 1.0 0.0
+vt 0.0 0.25
+vt 1.0 0.25
+vt 0.5 0.75
+f 4/4 5/5 6/6
+
+g Glass
+usemtl glass#always_on_light,flipv=1
+v 4.0 0.0 0.0
+v 5.0 0.0 0.0
+v 4.5 1.0 0.0
+vt 0.0 0.25
+vt 1.0 0.25
+vt 0.5 0.75
+f 7/7 8/8 9/9

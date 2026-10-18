@@ -47,6 +47,19 @@ public final class Client extends ClientSchema {
 		return useMTRFont;
 	}
 
+	/**
+	 * Whether OBJ models may be built and drawn through the native C++ pipeline.
+	 *
+	 * <p>When false, OBJ models load through the original Java loader and draw through the
+	 * original {@code OptimizedRenderer}, which is the reference behaviour of upstream MTR. The
+	 * setting exists so a player who suspects the native path on their machine can turn it off
+	 * without removing the mod: it is read live by both the model loader and the draw wrapper,
+	 * so switching it and reloading resources (F3+T, or rejoining the world) is enough.</p>
+	 */
+	public boolean getUseNativeObjRendering() {
+		return useNativeObjRendering;
+	}
+
 	public boolean getDisableShadowsForShaders() {
 		return disableShadowsForShaders;
 	}
@@ -89,6 +102,10 @@ public final class Client extends ClientSchema {
 
 	public void toggleUseMTRFont() {
 		useMTRFont = !useMTRFont;
+	}
+
+	public void toggleUseNativeObjRendering() {
+		useNativeObjRendering = !useNativeObjRendering;
 	}
 
 	public void toggleDisableShadowsForShaders() {
