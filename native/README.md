@@ -380,14 +380,25 @@ stutter.
 
 The production path is now `FlatDrawPass` on the Java side, which keeps every property
 the native list had - flat integer-referenced batches, per-frame storage that is
-allocated once and grown, change-detection on every attribute, grouping by material
-`equals` so each distinct material binds its shader once per frame - and reproduces
-`BatchManager.RenderCall.draw` exactly, including the parts the native list never
-had: the material's own `Kd` colour and BRIGHT full-bright lightmap applied after the
-queued state, the queued light per car rather than per run, the shader-pack fallback
-that routes the pose through the current shader's model view matrix, and the state
-tracker's capture and restore around the pass. `FlatDrawPassTest` pins the emitted
-call stream against a recorder.
+allocated once and grown, grouping by material `equals` so each distinct material binds
+its shader once per frame - and reproduces `BatchManager.RenderCall.draw` exactly,
+including the parts the native list never had: the material's own `Kd` colour and
+BRIGHT full-bright lightmap applied after the queued state, the queued light per car
+rather than per run, the shader-pack fallback that routes the pose through the current
+shader's model view matrix, and the state tracker's capture and restore around the pass.
+`FlatDrawPassTest` pins the emitted call stream against a recorder.
+
+The pass originally kept the native list's change detection as well - skipping writes
+whose value had not changed since the previous item. That is provably equivalent to the
+reference under both documented readings of where current attribute values live, and
+pixel-verified on Mesa, but a user's gray-model report survived it on commodity drivers.
+The pass now issues the reference's per-item stream unconditionally - every draw is
+preceded by its own bind, overlay, light, colour and pose writes, call for call what
+`RenderCall.draw` would have sent - so the two paths cannot diverge on any driver. The
+redundancy a change-detecting pass would have suppressed is still counted in the
+statistics line, and the line now also carries an attribute readback - the driver's own
+answer for what the last draw's colour and lightmap current values were - so a future
+gray report can be located from the log alone.
 
 ### The bind order, and why it is not negotiable
 

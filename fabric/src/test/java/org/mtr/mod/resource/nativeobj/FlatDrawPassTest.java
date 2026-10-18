@@ -209,10 +209,13 @@ final class FlatDrawPassTest {
 		final RecordingSink sink = new RecordingSink();
 		pass.render(true, new RecordingBinder(), sink);
 
-		assertEquals(List.of(
-				// The array binds first, exactly like RenderCall.draw, because current
-				// generic vertex attribute values can be vertex array object state on a
-				// driver: anything written before the bind could land in the wrong VAO.
+		// Both cars get the full reference stream: the array binds first, exactly like
+		// RenderCall.draw, because current generic vertex attribute values can be vertex
+		// array object state on a driver: anything written before the bind could land in
+		// the wrong VAO. Nothing is suppressed between items any more - the pass issues the
+		// reference's per-item stream unconditionally, which is what makes it equivalent to
+		// the reference on every driver rather than only where Mesa's semantics hold.
+		final List<Call> oneCar = List.of(
 				new Call("bindVertexArray", 10),
 				new Call("attribI2i", 3, 10, 10),
 				// The material's lightmap is written high half first, which is the order the
@@ -225,10 +228,8 @@ final class FlatDrawPassTest {
 				new Call("attrib4f", 7, 0F, 1F, 0F, 0F),
 				new Call("attrib4f", 8, 0F, 0F, 1F, 0F),
 				new Call("attrib4f", 9, 0F, 0F, 0F, 1F),
-				new Call("drawElements", 6),
-				// The second car: same colour, same light, same pose, same array - everything
-				// except the draw itself is suppressed.
-				new Call("drawElements", 6)), sink.calls);
+				new Call("drawElements", 6));
+		assertEquals(List.of(oneCar, oneCar).stream().flatMap(List::stream).toList(), sink.calls);
 	}
 
 	@Test
@@ -244,15 +245,21 @@ final class FlatDrawPassTest {
 		final RecordingSink sink = new RecordingSink();
 		pass.render(true, new RecordingBinder(), sink);
 
-		// One queued lightmap write per distinct value: the queued value's low half is written
-		// first, which is what the reference's exchange-then-high-half-first composes to.
+		// One queued lightmap write per item, each carrying that car's light with its low half
+		// first, which is what the reference's exchange-then-high-half-first composes to. The
+		// two cars that share a light still get their own write, because the pass re-issues the
+		// full reference stream per item.
 		assertEquals(List.of(
+				new Call("attribI2i", 4, 0x00A0, 0x00F0),
 				new Call("attribI2i", 4, 0x00A0, 0x00F0),
 				new Call("attribI2i", 4, 0x00F0, 0x00A0)), sink.named("attribI2i")
 				.stream().filter(call -> call.args[0].equals(4)).toList());
 
-		// The queued colour, once, because it does not change.
-		assertEquals(List.of(new Call("attrib4f", 1, 1F, 1F, 1F, 1F)), sink.named("attrib4f")
+		// The queued colour, per item, because the pass writes it for every draw.
+		assertEquals(List.of(
+				new Call("attrib4f", 1, 1F, 1F, 1F, 1F),
+				new Call("attrib4f", 1, 1F, 1F, 1F, 1F),
+				new Call("attrib4f", 1, 1F, 1F, 1F, 1F)), sink.named("attrib4f")
 				.stream().filter(call -> call.args[0].equals(1)).toList());
 	}
 
@@ -290,7 +297,7 @@ final class FlatDrawPassTest {
 	}
 
 	@Test
-	void poseChangesAreWrittenAndRepeatsAreSuppressed() {
+	void everyItemWritesTheReferenceStreamPosesIncluded() {
 		final FlatDrawPass pass = new FlatDrawPass();
 		final int bucket = pass.registerBucket(cutout());
 		pass.queue(bucket, 40, 7, 0x00F000F0, 0xFFFFFFFF, IDENTITY, 0);
@@ -300,10 +307,9 @@ final class FlatDrawPassTest {
 		final RecordingSink sink = new RecordingSink();
 		pass.render(true, new RecordingBinder(), sink);
 
-		// Each array switch re-establishes the pose, because the bind can restore the
-		// array's own current attribute values; within one array, repeats are suppressed. The
-		// identity pose is written as four column vec4s, the second array repeats it, and the
-		// third item - back on the first array - writes the translated pose.
+		// Every item writes its pose as four column vec4s, exactly like the reference's
+		// unconditional matrix apply: the identity pose twice, then the translated pose for
+		// the third item - back on the first array.
 		assertEquals(List.of(
 				new Call("attrib4f", 6, 1F, 0F, 0F, 0F),
 				new Call("attrib4f", 7, 0F, 1F, 0F, 0F),
@@ -319,7 +325,7 @@ final class FlatDrawPassTest {
 				new Call("attrib4f", 9, 4F, 5F, 6F, 1F)), sink.named("attrib4f")
 				.stream().filter(call -> (Integer) call.args[0] >= 6).toList());
 
-		// Two of the three draws bind; the third re-binds the first array.
+		// Every item binds its array, exactly like RenderCall.draw.
 		assertEquals(List.of(
 				new Call("bindVertexArray", 40),
 				new Call("bindVertexArray", 41),
@@ -327,7 +333,7 @@ final class FlatDrawPassTest {
 	}
 
 	@Test
-	void sharedVertexArraysBindOncePerRun() {
+	void sharedVertexArraysBindPerItemLikeTheReference() {
 		final FlatDrawPass pass = new FlatDrawPass();
 		final int bucket = pass.registerBucket(cutout());
 		// Three cars of the same model: the same vertex array three times over.
@@ -338,7 +344,10 @@ final class FlatDrawPassTest {
 		final RecordingSink sink = new RecordingSink();
 		pass.render(true, new RecordingBinder(), sink);
 
-		assertEquals(List.of(new Call("bindVertexArray", 50)), sink.named("bindVertexArray"));
+		assertEquals(List.of(
+				new Call("bindVertexArray", 50),
+				new Call("bindVertexArray", 50),
+				new Call("bindVertexArray", 50)), sink.named("bindVertexArray"));
 		assertEquals(3, sink.named("drawElements").size());
 	}
 

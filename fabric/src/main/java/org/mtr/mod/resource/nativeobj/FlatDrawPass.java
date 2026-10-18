@@ -16,8 +16,8 @@ import java.util.Arrays;
  * downcall - and an upcall costs several times what an LWJGL downcall does. On a scene with
  * thousands of vehicle draws per frame the native list loses more to the crossings than its
  * attribute cache saves, which showed up as frame stutter. The same economics mean a Java
- * loop with the same change-detection cache wins outright: it issues the same GL calls the
- * native cache issues, but every one of them is a plain LWJGL downcall.</p>
+ * loop with the reference's own per-item call stream wins outright: it issues the same GL
+ * calls the reference issues, and every one of them is a plain LWJGL downcall.</p>
  *
  * <h2>Semantics</h2>
  *
@@ -45,9 +45,9 @@ import java.util.Arrays;
  * own stale values, which reads as a permanent wash or blackout on the model. Writing every
  * attribute while the target VAO is bound is correct under both readings.</p>
  *
- * <p>The queued light is per car, sampled at each car's world position, so it is applied per
- * item with change detection rather than once per pass. The previous native flush applied it
- * once per material run, which dimmed every car in a run to the first car's light.</p>
+ * <p>The queued light is per car, sampled at each car's world position, so it is written per
+ * item rather than once per pass. The previous native flush applied it once per material run,
+ * which dimmed every car in a run to the first car's light.</p>
  *
  * <h2>Ordering</h2>
  *
@@ -169,6 +169,23 @@ public final class FlatDrawPass {
 		default boolean useFloatAttributeFallback() {
 			return false;
 		}
+
+		/**
+		 * Reads the current value of an integer vertex attribute into the two-element
+		 * array, for the periodic diagnostics line. The default does nothing, so test
+		 * sinks stay silent; the real implementation answers with
+		 * {@code glGetVertexAttribIiv}.
+		 */
+		default void readIntegerAttrib(int location, int[] out) {
+		}
+
+		/**
+		 * Reads the current value of a float vertex attribute into the four-element
+		 * array, for the periodic diagnostics line. The default does nothing; the real
+		 * implementation answers with {@code glGetVertexAttribfv}.
+		 */
+		default void readFloatAttrib(int location, float[] out) {
+		}
 	}
 
 	/** Sets up and tears down a material's shader, texture and blend state around a run. */
@@ -225,15 +242,31 @@ public final class FlatDrawPass {
 	private int[] bucketTally = new int[0];
 	private int[] bucketCursor = new int[0];
 
-	/** The pose currently in the attribute slots, for change detection. */
-	private final float[] lastPose = new float[16];
-	private boolean hasLastPose;
-	private boolean lastColorValid;
-	private int lastColor;
-	private boolean lastLightValid;
-	private int lastLight;
-	private boolean lastVaoValid;
-	private int lastVao;
+	// -----------------------------------------------------------------------
+	// Periodic attribute readback, for the diagnostics line
+	// -----------------------------------------------------------------------
+
+	/** Set by the owner when the next flush should capture the attribute readback. */
+	private boolean readbackRequested;
+
+	/** The lightmap attribute's current value as the driver reports it, or null. */
+	private int[] readbackLight;
+
+	/** The colour attribute's current value as the driver reports it, or null. */
+	private float[] readbackColor;
+
+	/** The lightmap halves the pass wrote for the last drawn item, for the same line. */
+	private int readbackWrittenLightX;
+	private int readbackWrittenLightY;
+
+	/** What the last drawn item's effective light should have been, for the same line. */
+	private int readbackExpectedLight = -1;
+
+	/** What the last drawn item's effective colour should have been, for the same line. */
+	private int readbackExpectedColor = -1;
+
+	/** The vertex array of the last drawn item, for the same line. */
+	private int readbackLastVao;
 
 	// -----------------------------------------------------------------------
 	// Statistics, mirroring the native draw list's counters
@@ -426,94 +459,111 @@ public final class FlatDrawPass {
 				binder.cleanup();
 			}
 		}
+
+		captureReadback(sink);
 	}
 
 	/**
 	 * Draws one material's run.
 	 *
-	 * <p>The change-detection caches reset per run rather than per frame: the reference
-	 * re-applies its state unconditionally and so never depends on a value surviving a
-	 * shader bind, and resetting here costs at most a handful of writes per run.</p>
+	 * <p>Every item issues the reference stream in full: bind the vertex array, then write
+	 * the overlay, the effective lightmap, the effective colour and the pose, then draw.
+	 * This is exactly the calls {@code RenderCall.draw} sends for the same item - bind,
+	 * {@code queuedState.apply()}, {@code materialProperties.vertexAttributeState.apply()},
+	 * draw - with the two applies collapsed into the effective values, because no draw
+	 * happens between them and only the values in force at the draw are observable.</p>
 	 *
-	 * <p>Every attribute write happens AFTER the vertex array is bound, which is the order
-	 * {@code RenderCall.draw} uses: bind, apply the queued state, apply the material state,
-	 * draw. That order matters because current generic vertex attribute values are ambiguous
-	 * driver territory: Mesa keeps them as context state, but a driver is free to treat them
-	 * as vertex array object state, where writing them before a bind lands in the wrong VAO
-	 * and the newly bound VAO restores its own stale values instead. Writing only while the
-	 * target VAO is bound is correct under both readings, and costs nothing measurable: the
-	 * overlay and the material lightmap re-establish once per array switch, and the per-item
-	 * colour, light and pose caches are simply invalidated by the switch.</p>
+	 * <p>The pass previously skipped unchanged writes between items sharing a vertex array.
+	 * That is provably equivalent under both documented readings of where current generic
+	 * vertex attribute values live, and pixel-verified on Mesa, but a persistent
+	 * driver-side gray wash survived it. Issuing the reference's exact per-item stream
+	 * removes the dedup as a variable: the driver now sees, call for call, what the
+	 * reference path - which renders correctly on those drivers - would have sent for the
+	 * same items. The cost is bounded by the reference's own, which the original renderer
+	 * already pays per draw.</p>
+	 *
+	 * <p>The array still binds first, because current generic vertex attribute values can
+	 * be vertex array object state on a driver and anything written before the bind could
+	 * land in the wrong array; the bind may restore the array's own stale values, so every
+	 * write follows it - the same re-application {@code RenderCall.draw} performs per
+	 * array.</p>
 	 */
 	private void drawRun(int bucket, int start, int end, boolean customShader, boolean floatFallback, GlSink sink) {
-		hasLastPose = false;
-		lastColorValid = false;
-		lastLightValid = false;
-		lastVaoValid = false;
-
 		final boolean hasMaterialColor = bucketHasColor[bucket];
 		final int materialColor = bucketColor[bucket];
 		final boolean hasMaterialLight = bucketHasLight[bucket];
 		final int materialLight = bucketLight[bucket];
 
+		// Locals for the redundancy count only: the writes themselves are unconditional.
+		int previousVao = 0;
+		int previousColor = 0;
+		int previousLightX = 0;
+		int previousLightY = 0;
+
 		for (int i = start; i < end; i++) {
 			// Every car of one model shares the same vertex arrays, so a run frequently holds
-			// long stretches of one array; re-binding the array already in place is a no-op.
-			if (!lastVaoValid || lastVao != sortedVao[i]) {
-				sink.bindVertexArray(sortedVao[i]);
-				lastVao = sortedVao[i];
-				lastVaoValid = true;
-				callsIssued++;
-
-				// The bind may have restored this array's own current attribute values, so
-				// everything the pass writes has to be re-established after it - the same
-				// re-application RenderCall.draw performs per array.
-				writeOverlay(floatFallback, sink);
-				if (hasMaterialLight) {
-					writeMaterialLightmap(materialLight, floatFallback, sink);
-					lastLight = materialLight;
-					lastLightValid = true;
-				} else {
-					lastLightValid = false;
-				}
-				lastColorValid = false;
-				hasLastPose = false;
-			} else {
+			// long stretches of one array. The reference re-binds per draw regardless, so this
+			// does too: the bind is idempotent on every driver, and it re-establishes the
+			// array's own current attribute values before the writes below overwrite the
+			// ones this pass uses.
+			if (sortedVao[i] == previousVao) {
 				callsSkipped++;
 			}
+			previousVao = sortedVao[i];
+			sink.bindVertexArray(sortedVao[i]);
+			callsIssued++;
+			readbackLastVao = sortedVao[i];
 
+			// The queued state's overlay, re-established per item exactly like apply() does.
+			callsSkipped++;
+			writeOverlay(floatFallback, sink);
+
+			// The queued light is per car, sampled at the car's position, so it is applied per
+			// item; the BRIGHT material's full-bright lightmap replaces it exactly like the
+			// material apply does after the queued apply.
+			final int writtenLightX;
+			final int writtenLightY;
+			if (hasMaterialLight) {
+				writeMaterialLightmap(materialLight, floatFallback, sink);
+				readbackExpectedLight = materialLight;
+				writtenLightX = (short) (materialLight >>> 16);
+				writtenLightY = (short) materialLight;
+			} else {
+				writeQueuedLightmap(sortedLight[i], floatFallback, sink);
+				readbackExpectedLight = sortedLight[i];
+				writtenLightX = (short) sortedLight[i];
+				writtenLightY = (short) (sortedLight[i] >>> 16);
+			}
+			readbackWrittenLightX = writtenLightX;
+			readbackWrittenLightY = writtenLightY;
+			if (writtenLightX == previousLightX && writtenLightY == previousLightY) {
+				callsSkipped++;
+			}
+			previousLightX = writtenLightX;
+			previousLightY = writtenLightY;
+
+			// The queued colour is white and the material's Kd replaces it when present - the
+			// same composition the reference's two sequential applies leave in force.
 			final int effectiveColor = hasMaterialColor ? materialColor : sortedColor[i];
-			if (!lastColorValid || lastColor != effectiveColor) {
-				writeColor(effectiveColor, sink);
-				lastColor = effectiveColor;
-				lastColorValid = true;
-			} else {
+			if (effectiveColor == previousColor) {
 				callsSkipped++;
 			}
-
-			if (!hasMaterialLight) {
-				// The queued light is per car, sampled at the car's position, so it is
-				// applied per item with change detection.
-				if (!lastLightValid || lastLight != sortedLight[i]) {
-					writeQueuedLightmap(sortedLight[i], floatFallback, sink);
-					lastLight = sortedLight[i];
-					lastLightValid = true;
-				} else {
-					callsSkipped++;
-				}
-			}
+			previousColor = effectiveColor;
+			writeColor(effectiveColor, sink);
+			readbackExpectedColor = effectiveColor;
 
 			if (customShader) {
-				if (!poseEquals(i)) {
-					writePose(i, sink);
-				} else {
+				if (poseEqualsPrevious(i, start)) {
 					callsSkipped += 4;
 				}
+				writePose(i, sink);
 			} else {
 				// The shader-pack fallback sends the pose through the current shader's model
 				// view matrix, exactly as the reference's VertexAttributeState.apply does.
+				if (poseEqualsPrevious(i, start)) {
+					callsSkipped++;
+				}
 				sink.setModelViewMatrix(sortedPose, i << 4);
-				callsIssued++;
 			}
 
 			sink.drawElements(sortedIndexCount[i]);
@@ -604,18 +654,81 @@ public final class FlatDrawPass {
 					sortedPose[base + row * 4 + 2],
 					sortedPose[base + row * 4 + 3]);
 		}
-		System.arraycopy(sortedPose, base, lastPose, 0, 16);
-		hasLastPose = true;
 		callsIssued += 4;
 	}
 
-	private boolean poseEquals(int index) {
-		if (!hasLastPose) {
+
+	// -----------------------------------------------------------------------
+	// Periodic attribute readback
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Asks the next flush to read the colour and lightmap attribute current values back
+	 * from the driver, so the diagnostics line can compare what the driver holds against
+	 * what the pass wrote.
+	 *
+	 * <p>The readback happens at the end of the flush, while the last item's vertex array
+	 * is still bound and before the owner's {@code GlStateTracker.restore()} runs, so the
+	 * values read are the ones the last draw of the pass actually used. A driver that
+	 * resets current attribute values anywhere between the write and the draw shows up
+	 * here as a mismatch, which is the difference between "the write never reached the
+	 * shader" and "everything matched and the gray is elsewhere".</p>
+	 */
+	public void requestReadback() {
+		readbackRequested = true;
+	}
+
+	/** The lightmap attribute value the driver reported at the last readback, or null. */
+	public int[] readbackLightValue() {
+		return readbackLight;
+	}
+
+	/** The lightmap halves the pass itself wrote for the last drawn item. */
+	public int[] readbackWrittenLightValue() {
+		return new int[]{readbackWrittenLightX, readbackWrittenLightY};
+	}
+
+	/** The colour attribute value the driver reported at the last readback, or null. */
+	public float[] readbackColorValue() {
+		return readbackColor;
+	}
+
+	/** The light the last drawn item should have had in force, or -1 before any draw. */
+	public int readbackExpectedLightValue() {
+		return readbackExpectedLight;
+	}
+
+	/** The colour the last drawn item should have had in force, or -1 before any draw. */
+	public int readbackExpectedColorValue() {
+		return readbackExpectedColor;
+	}
+
+	/** The vertex array the last drawn item bound; 0 before any draw. */
+	public int readbackLastVaoValue() {
+		return readbackLastVao;
+	}
+
+	/** Captures the readback if the owner asked for it; runs inside the flush, arrays still bound. */
+	private void captureReadback(GlSink sink) {
+		if (!readbackRequested) {
+			return;
+		}
+		readbackRequested = false;
+		readbackLight = new int[2];
+		readbackColor = new float[4];
+		sink.readIntegerAttrib(ATTR_UV_LIGHTMAP, readbackLight);
+		sink.readFloatAttrib(ATTR_COLOR, readbackColor);
+	}
+
+	/** True when item index's pose equals the previous item's pose, bit for bit. */
+	private boolean poseEqualsPrevious(int index, int runStart) {
+		if (index <= runStart) {
 			return false;
 		}
 		final int base = index << 4;
+		final int previous = base - 16;
 		for (int i = 0; i < 16; i++) {
-			if (Float.floatToRawIntBits(sortedPose[base + i]) != Float.floatToRawIntBits(lastPose[i])) {
+			if (Float.floatToRawIntBits(sortedPose[base + i]) != Float.floatToRawIntBits(sortedPose[previous + i])) {
 				return false;
 			}
 		}
@@ -631,19 +744,21 @@ public final class FlatDrawPass {
 		bucketCount = 0;
 		bucketOrderCount = 0;
 		itemCount = 0;
-		hasLastPose = false;
-		lastColorValid = false;
-		lastLightValid = false;
-		lastVaoValid = false;
 	}
 
-	/** A one-line summary of the pass's work, in the native draw list's format. */
+	/**
+	 * A one-line summary of the pass's work, in the native draw list's format.
+	 *
+	 * <p>The pass writes every attribute for every draw, exactly like the reference, so the
+	 * second counter counts the writes a change-detecting pass would have suppressed -
+	 * the redundancy the reference itself pays - rather than calls this pass avoided.</p>
+	 */
 	public String describeStatistics() {
 		final long total = callsIssued + callsSkipped;
 		final double skippedPercent = total == 0 ? 0.0 : callsSkipped * 100.0 / total;
 		return String.format(
 				"flat draw pass: %d flush(es), %d array(s) drawn, %d draw call(s), "
-						+ "%d vertex state call(s) issued and %d skipped (%.1f%%), %d bucket(s) live",
+						+ "%d vertex state call(s) issued and %d redundant (%.1f%%), %d bucket(s) live",
 				flushes, arraysDrawn, drawCalls, callsIssued, callsSkipped, skippedPercent, bucketCount);
 	}
 

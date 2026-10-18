@@ -20,6 +20,10 @@ import org.mtr.mod.resource.nativeobj.NativeModelAccess;
 import org.mtr.mod.resource.nativeobj.NativeObjPipeline;
 
 import javax.annotation.Nullable;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -97,6 +101,14 @@ public final class OptimizedRendererWrapper implements IGui {
 
 	/** The pose currently being queued, reused so a frame allocates nothing. */
 	private final float[] poseScratch = new float[16];
+
+	/**
+	 * Direct buffers for the periodic attribute readback. The getters need a direct buffer,
+	 * the readback happens at most once per statistics interval, and allocating per call would
+	 * put the one allocation exactly on the diagnostic path.
+	 */
+	private final IntBuffer readbackInts = ByteBuffer.allocateDirect(8).order(ByteOrder.nativeOrder()).asIntBuffer();
+	private final FloatBuffer readbackFloats = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder()).asFloatBuffer();
 
 	/** The light of the most recent queue call, sampled into the periodic statistics line. */
 	private int lastQueuedLight = -1;
@@ -189,6 +201,24 @@ public final class OptimizedRendererWrapper implements IGui {
 					public boolean useFloatAttributeFallback() {
 						// Read after the state capture, so the tracker's gl4ES detection is fresh.
 						return GlStateTracker.isGl4ES();
+					}
+
+					@Override
+					public void readIntegerAttrib(int location, int[] out) {
+						readbackInts.clear();
+						GL33.glGetVertexAttribIiv(location, GL33.GL_CURRENT_VERTEX_ATTRIB, readbackInts);
+						out[0] = readbackInts.get(0);
+						out[1] = readbackInts.get(1);
+					}
+
+					@Override
+					public void readFloatAttrib(int location, float[] out) {
+						readbackFloats.clear();
+						GL33.glGetVertexAttribfv(location, GL33.GL_CURRENT_VERTEX_ATTRIB, readbackFloats);
+						out[0] = readbackFloats.get(0);
+						out[1] = readbackFloats.get(1);
+						out[2] = readbackFloats.get(2);
+						out[3] = readbackFloats.get(3);
 					}
 				};
 				Init.LOGGER.info("[wrgl] the flat OBJ draw path is active; native model builds are {}",
@@ -352,6 +382,11 @@ public final class OptimizedRendererWrapper implements IGui {
 		}
 
 		pendingRenderTranslucent = renderTranslucent;
+		if (flushesSinceReport >= 1199) {
+			// The next flush is the statistics flush: ask it to read the attribute current
+			// values back from the driver, so the line can verify what the draws used.
+			drawPass.requestReadback();
+		}
 		GlStateTracker.capture();
 		try {
 			protectedRender.run();
@@ -362,9 +397,40 @@ public final class OptimizedRendererWrapper implements IGui {
 		flushesSinceReport++;
 		if (flushesSinceReport >= 1200) {
 			flushesSinceReport = 0;
-			Init.LOGGER.info("[wrgl] {}; last queued light 0x{}",
-					drawPass.describeStatistics(), Integer.toHexString(lastQueuedLight));
+			Init.LOGGER.info("[wrgl] {}; last queued light 0x{}; {}",
+					drawPass.describeStatistics(), Integer.toHexString(lastQueuedLight), describeReadback());
 		}
+	}
+
+	/**
+	 * One line describing the last attribute readback: what the driver reports against what
+	 * the pass wrote for the last drawn item.
+	 *
+	 * <p>A match means the writes reached the attribute state the draws consumed, so a gray
+	 * report with matching readbacks points past the draw path - at the shader, the samplers
+	 * or the lightmap texture. A mismatch means the driver moved or reset the values between
+	 * the write and the draw, which is exactly the class of problem this line exists to
+	 * expose.</p>
+	 */
+	private String describeReadback() {
+		final int[] reportedLight = drawPass.readbackLightValue();
+		final float[] reportedColor = drawPass.readbackColorValue();
+		if (reportedLight == null || reportedColor == null) {
+			return "readback not captured";
+		}
+		final int[] writtenLight = drawPass.readbackWrittenLightValue();
+		final boolean lightMatches = (short) reportedLight[0] == (short) writtenLight[0]
+						&& (short) reportedLight[1] == (short) writtenLight[1];
+		final int expectedColor = drawPass.readbackExpectedColorValue();
+		final boolean colorMatches = Math.abs(reportedColor[0] - ((expectedColor >>> 24) & 0xFF) / 255F) < 0.004F
+						&& Math.abs(reportedColor[1] - ((expectedColor >>> 16) & 0xFF) / 255F) < 0.004F
+					&& Math.abs(reportedColor[2] - ((expectedColor >>> 8) & 0xFF) / 255F) < 0.004F
+					&& Math.abs(reportedColor[3] - (expectedColor & 0xFF) / 255F) < 0.004F;
+		return String.format("readback color=(%.3f,%.3f,%.3f,%.3f) lightmap=(%d,%d)%s expected color 0x%08X light 0x%08X, vao %d",
+					reportedColor[0], reportedColor[1], reportedColor[2], reportedColor[3],
+					reportedLight[0], reportedLight[1],
+					colorMatches && lightMatches ? " [matches" : " [MISMATCH:",
+					expectedColor, drawPass.readbackExpectedLightValue(), drawPass.readbackLastVaoValue());
 	}
 
 	/**
@@ -382,11 +448,28 @@ public final class OptimizedRendererWrapper implements IGui {
 		}
 		auditedMaterials++;
 		Init.LOGGER.info("[wrgl] material audit #{}: bucket={} shader={} texture={} kd-color={} bright-lightmap={}",
-				auditedMaterials, bucket, material.shaderType, material.getTexture(),
+				auditedMaterials, bucket, material.shaderType, describeTexture(material),
 				material.vertexAttributeState.color == null ? "none"
 						: String.format("0x%08X", material.vertexAttributeState.color),
 				material.vertexAttributeState.lightmapUV == null ? "none"
 						: String.format("0x%08X", material.vertexAttributeState.lightmapUV));
+	}
+
+	/**
+	 * The texture as {@code namespace:path}, so an audit line can be matched against the
+	 * resource pack's files directly. The holder's own toString is the object identity,
+	 * which is what the audit used to print and which no two lines ever shared usefully.
+	 */
+	private static String describeTexture(MaterialProperties material) {
+		final org.mtr.mapping.holder.Identifier texture = material.getTexture();
+		if (texture == null) {
+			return "none";
+		}
+		try {
+			return texture.getNamespace() + ":" + texture.getPath();
+		} catch (final Exception exception) {
+			return String.valueOf(texture);
+		}
 	}
 
 	/**
