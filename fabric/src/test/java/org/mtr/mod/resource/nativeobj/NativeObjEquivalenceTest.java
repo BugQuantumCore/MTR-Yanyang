@@ -33,7 +33,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
-import javax.annotation.Nullable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -572,7 +571,7 @@ public class NativeObjEquivalenceTest {
 	 */
 	private void packBuffers(ModelBuffers buffers,
 			Map<String, Map<MaterialKey, org.mtr.mapping.render.model.RawMesh>> accumulatedByGroup,
-			List<double[]> transforms, boolean hasMtl, @Nullable String group) {
+			List<double[]> transforms, boolean hasMtl, String group) {
 		final Map<MaterialKey, org.mtr.mapping.render.model.RawMesh> placed = new LinkedHashMap<>();
 		final List<MaterialKey> sourceKeys = new ArrayList<>();
 
