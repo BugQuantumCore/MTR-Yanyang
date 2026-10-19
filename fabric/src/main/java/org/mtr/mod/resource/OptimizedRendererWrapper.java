@@ -106,8 +106,15 @@ public final class OptimizedRendererWrapper implements IGui {
 	 * Direct buffers for the periodic attribute readback. The getters need a direct buffer,
 	 * the readback happens at most once per statistics interval, and allocating per call would
 	 * put the one allocation exactly on the diagnostic path.
+	 *
+	 * <p>The integer buffer must hold four ints: {@code glGetVertexAttribIiv} reports the full
+	 * {@code ivec4} current value and LWJGL refuses the call when fewer elements remain. The
+	 * eight-byte buffer this field used to carry made every readback throw
+	 * {@code IllegalArgumentException: Number of remaining elements is 2, must be at least 4},
+	 * so the diagnostics line never printed and the exception fired once per flush after the
+	 * first statistics interval.</p>
 	 */
-	private final IntBuffer readbackInts = ByteBuffer.allocateDirect(8).order(ByteOrder.nativeOrder()).asIntBuffer();
+	private final IntBuffer readbackInts = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder()).asIntBuffer();
 	private final FloatBuffer readbackFloats = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder()).asFloatBuffer();
 
 	/** The light of the most recent queue call, sampled into the periodic statistics line. */
@@ -205,10 +212,14 @@ public final class OptimizedRendererWrapper implements IGui {
 
 					@Override
 					public void readIntegerAttrib(int location, int[] out) {
+						// The getter reports the full ivec4, so the buffer and the out array are
+						// four elements wide; the pass only ever sets the x and y components.
 						readbackInts.clear();
 						GL33.glGetVertexAttribIiv(location, GL33.GL_CURRENT_VERTEX_ATTRIB, readbackInts);
 						out[0] = readbackInts.get(0);
 						out[1] = readbackInts.get(1);
+						out[2] = readbackInts.get(2);
+						out[3] = readbackInts.get(3);
 					}
 
 					@Override
@@ -219,6 +230,25 @@ public final class OptimizedRendererWrapper implements IGui {
 						out[1] = readbackFloats.get(1);
 						out[2] = readbackFloats.get(2);
 						out[3] = readbackFloats.get(3);
+					}
+
+					@Override
+					public int readAttribArrayEnabled(int location) {
+						readbackInts.clear();
+						GL33.glGetVertexAttribiv(location, GL33.GL_VERTEX_ATTRIB_ARRAY_ENABLED, readbackInts);
+						return readbackInts.get(0);
+					}
+
+					@Override
+					public int readAttribArrayDivisor(int location) {
+						readbackInts.clear();
+						GL33.glGetVertexAttribiv(location, GL33.GL_VERTEX_ATTRIB_ARRAY_DIVISOR, readbackInts);
+						return readbackInts.get(0);
+					}
+
+					@Override
+					public int readCurrentProgram() {
+						return GL33.glGetInteger(GL33.GL_CURRENT_PROGRAM);
 					}
 				};
 				Init.LOGGER.info("[wrgl] the flat OBJ draw path is active; native model builds are {}",
@@ -382,9 +412,14 @@ public final class OptimizedRendererWrapper implements IGui {
 		}
 
 		pendingRenderTranslucent = renderTranslucent;
-		if (flushesSinceReport >= 1199) {
-			// The next flush is the statistics flush: ask it to read the attribute current
-			// values back from the driver, so the line can verify what the draws used.
+		// The next flush is the statistics flush: ask it to read the attribute current
+		// values back from the driver, so the line can verify what the draws used. The
+		// decision is made before the flush runs: a flush that still throws (the readback
+		// now contains its own failures, but anything else can abort the pass) must not
+		// latch the counter at the request threshold, requesting a readback on every frame
+		// that follows - the reset below runs whether the flush completed or not.
+		final boolean reportThisFlush = flushesSinceReport >= 1199;
+		if (reportThisFlush) {
 			drawPass.requestReadback();
 		}
 		GlStateTracker.capture();
@@ -394,43 +429,135 @@ public final class OptimizedRendererWrapper implements IGui {
 			GlStateTracker.restore();
 		}
 
-		flushesSinceReport++;
-		if (flushesSinceReport >= 1200) {
+		if (reportThisFlush) {
 			flushesSinceReport = 0;
 			Init.LOGGER.info("[wrgl] {}; last queued light 0x{}; {}",
 					drawPass.describeStatistics(), Integer.toHexString(lastQueuedLight), describeReadback());
+		} else {
+			flushesSinceReport++;
 		}
 	}
 
 	/**
 	 * One line describing the last attribute readback: what the driver reports against what
-	 * the pass wrote for the last drawn item.
+	 * the pass wrote for the last drawn item, plus the shading state that item was drawn
+	 * under.
 	 *
 	 * <p>A match means the writes reached the attribute state the draws consumed, so a gray
-	 * report with matching readbacks points past the draw path - at the shader, the samplers
-	 * or the lightmap texture. A mismatch means the driver moved or reset the values between
-	 * the write and the draw, which is exactly the class of problem this line exists to
-	 * expose.</p>
+	 * report with matching readbacks points past the attribute stream - at the shader, the
+	 * samplers, the fog or the lightmap texture. A mismatch means the driver moved or reset
+	 * the values between the write and the draw, which is exactly the class of problem this
+	 * line exists to expose.</p>
+	 *
+	 * <p>The rest of the line carries every uniform input that can dim a model. The samplers
+	 * are what {@code setupShaderBatchState} handed the program for the last material run -
+	 * the texture at unit 0, the overlay at unit 1 and the lightmap at unit 2 - read after
+	 * the flush, before the rest of the frame changes them. The fog, the shader colour
+	 * modulator and the attribute-array flags of the last vertex array are printed for the
+	 * same reason: a gray model with a correct attribute stream is being dimmed by one of
+	 * them, and this line names which.</p>
 	 */
 	private String describeReadback() {
+		final String readbackError = drawPass.readbackErrorValue();
+		if (readbackError != null) {
+			return "readback failed: " + readbackError;
+		}
 		final int[] reportedLight = drawPass.readbackLightValue();
 		final float[] reportedColor = drawPass.readbackColorValue();
 		if (reportedLight == null || reportedColor == null) {
 			return "readback not captured";
 		}
+		final int[] reportedOverlay = drawPass.readbackOverlayValue();
+		final float[] reportedMatrix = drawPass.readbackMatrixValue();
+		final float[] writtenMatrix = drawPass.readbackWrittenMatrixValue();
+		final int[] reportedEnabled = drawPass.readbackAttribEnabledValue();
+		final int[] reportedDivisor = drawPass.readbackAttribDivisorValue();
 		final int[] writtenLight = drawPass.readbackWrittenLightValue();
+
 		final boolean lightMatches = (short) reportedLight[0] == (short) writtenLight[0]
 						&& (short) reportedLight[1] == (short) writtenLight[1];
 		final int expectedColor = drawPass.readbackExpectedColorValue();
 		final boolean colorMatches = Math.abs(reportedColor[0] - ((expectedColor >>> 24) & 0xFF) / 255F) < 0.004F
 						&& Math.abs(reportedColor[1] - ((expectedColor >>> 16) & 0xFF) / 255F) < 0.004F
-					&& Math.abs(reportedColor[2] - ((expectedColor >>> 8) & 0xFF) / 255F) < 0.004F
-					&& Math.abs(reportedColor[3] - (expectedColor & 0xFF) / 255F) < 0.004F;
-		return String.format("readback color=(%.3f,%.3f,%.3f,%.3f) lightmap=(%d,%d)%s expected color 0x%08X light 0x%08X, vao %d",
+						&& Math.abs(reportedColor[2] - ((expectedColor >>> 8) & 0xFF) / 255F) < 0.004F
+						&& Math.abs(reportedColor[3] - (expectedColor & 0xFF) / 255F) < 0.004F;
+		final boolean overlayMatches = reportedOverlay == null
+					|| (short) reportedOverlay[0] == (short) (FlatDrawPass.OVERLAY_DEFAULT >>> 16)
+					&& (short) reportedOverlay[1] == (short) FlatDrawPass.OVERLAY_DEFAULT;
+		final int firstMatrixMismatch = matrixMismatch(reportedMatrix, writtenMatrix);
+
+		final StringBuilder builder = new StringBuilder();
+		builder.append(String.format(
+					"readback color=(%.3f,%.3f,%.3f,%.3f) lightmap=(%d,%d) overlay=(%d,%d)%s "
+								+ "expected color 0x%08X light 0x%08X, vao %d",
 					reportedColor[0], reportedColor[1], reportedColor[2], reportedColor[3],
 					reportedLight[0], reportedLight[1],
-					colorMatches && lightMatches ? " [matches" : " [MISMATCH:",
-					expectedColor, drawPass.readbackExpectedLightValue(), drawPass.readbackLastVaoValue());
+					reportedOverlay == null ? -1 : reportedOverlay[0],
+					reportedOverlay == null ? -1 : reportedOverlay[1],
+					colorMatches && lightMatches && overlayMatches && firstMatrixMismatch < 0
+								? " matches"
+								: String.format(" [MISMATCH: matrix[%d]", firstMatrixMismatch),
+					expectedColor, drawPass.readbackExpectedLightValue(), drawPass.readbackLastVaoValue()));
+		if (reportedMatrix != null) {
+			builder.append(String.format("; matrix rows (%.2f,%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f,%.2f) "
+							+ "(%.2f,%.2f,%.2f,%.2f) (%.2f,%.2f,%.2f,%.2f)",
+					(Object[]) formatMatrix(reportedMatrix)));
+		}
+		if (reportedEnabled != null) {
+			// One character per attribute location, 0 through 9: E enabled, . disabled,
+			// ? unknown (the test sinks answer -1). The expected pattern for a model built
+			// under the reference mapping is E-E--E----: position, texture and normal from
+			// the buffer; colour, overlay, lightmap and the four matrix rows current.
+			final StringBuilder flags = new StringBuilder();
+			for (int location = 0; location < reportedEnabled.length; location++) {
+				flags.append(reportedEnabled[location] < 0 ? '?' : reportedEnabled[location] != 0 ? 'E' : '.');
+			}
+			builder.append("; vao attribs ").append(flags);
+		}
+		if (reportedDivisor != null) {
+			builder.append(String.format("; matrix divisors (%d,%d,%d,%d)",
+					reportedDivisor[0], reportedDivisor[1], reportedDivisor[2], reportedDivisor[3]));
+		}
+		builder.append(String.format("; program 0x%X", drawPass.readbackProgramValue()));
+		builder.append(String.format("; samplers (%d,%d,%d)",
+					RenderSystem.getShaderTexture(0), RenderSystem.getShaderTexture(1), RenderSystem.getShaderTexture(2)));
+		final float[] fogColor = RenderSystem.getShaderFogColor();
+		builder.append(String.format("; fog %.1f..%.1f rgba (%.2f,%.2f,%.2f,%.2f)",
+					RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(),
+					fogColor[0], fogColor[1], fogColor[2], fogColor[3]));
+		final float[] shaderColor = RenderSystem.getShaderColor();
+		builder.append(String.format("; shaderColor (%.2f,%.2f,%.2f,%.2f)",
+					shaderColor[0], shaderColor[1], shaderColor[2], shaderColor[3]));
+		builder.append(String.format("; path (customShader=%s, gl4ES=%s)",
+					Utilities.canUseCustomShader(), GlStateTracker.isGl4ES()));
+		return builder.toString();
+	}
+
+	/**
+	 * The index of the first element where the driver-reported matrix rows differ from the
+	 * rows the pass wrote for the last drawn item, or -1 when they agree. Null inputs - the
+	 * test sinks, or the shader-pack fallback that sends no matrix attributes at all - agree
+	 * with anything.
+	 */
+	private static int matrixMismatch(@Nullable float[] reported, @Nullable float[] written) {
+		if (reported == null || written == null) {
+			return -1;
+		}
+		for (int i = 0; i < 16; i++) {
+			if (Float.floatToRawIntBits(reported[i]) != Float.floatToRawIntBits(written[i])) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	/** The sixteen floats of a matrix, boxed for {@code String.format}'s varargs. */
+	private static Object[] formatMatrix(float[] matrix) {
+		final Object[] out = new Object[16];
+		for (int i = 0; i < 16; i++) {
+			out[i] = matrix[i];
+		}
+		return out;
 	}
 
 	/**

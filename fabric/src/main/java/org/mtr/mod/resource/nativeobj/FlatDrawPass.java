@@ -84,8 +84,13 @@ public final class FlatDrawPass {
 	/** Pass index for translucent materials. Drawn last, and dropped when translucency is off. */
 	private static final int PASS_TRANSLUCENT = 2;
 
-	/** {@code OverlayTexture.getDefaultUvMapped()}, which the queued state always carries. */
-	private static final int OVERLAY_DEFAULT = (10 << 16) | 10;
+	/**
+	 * {@code OverlayTexture.getDefaultUvMapped()}, which the queued state always carries.
+	 *
+	 * <p>Public because the owner's diagnostics line compares the driver-reported overlay
+	 * against the value this pass writes, and both sides must agree on the constant.</p>
+	 */
+	public static final int OVERLAY_DEFAULT = (10 << 16) | 10;
 
 	/** Attribute locations, matching {@code VertexAttributeType}'s declarations. */
 	private static final int ATTR_COLOR = 1;
@@ -171,10 +176,11 @@ public final class FlatDrawPass {
 		}
 
 		/**
-		 * Reads the current value of an integer vertex attribute into the two-element
-		 * array, for the periodic diagnostics line. The default does nothing, so test
-		 * sinks stay silent; the real implementation answers with
-		 * {@code glGetVertexAttribIiv}.
+		 * Reads the current value of an integer vertex attribute into the four-element
+		 * array, for the periodic diagnostics line. The getter reports the full
+		 * {@code ivec4}, so the array must hold four elements even though the pass only
+		 * ever sets the x and y components. The default does nothing, so test sinks stay
+		 * silent; the real implementation answers with {@code glGetVertexAttribIiv}.
 		 */
 		default void readIntegerAttrib(int location, int[] out) {
 		}
@@ -185,6 +191,36 @@ public final class FlatDrawPass {
 		 * implementation answers with {@code glGetVertexAttribfv}.
 		 */
 		default void readFloatAttrib(int location, float[] out) {
+		}
+
+		/**
+		 * Reads whether the location's attribute array is enabled in the bound vertex
+		 * array, for the periodic diagnostics line: 1 enabled, 0 disabled, -1 unknown.
+		 * Attribute-array enablement is vertex array object state, so the answer belongs
+		 * to whichever array is bound when the readback runs - the last drawn item's. The
+		 * default answers -1 so test sinks stay silent.
+		 */
+		default int readAttribArrayEnabled(int location) {
+			return -1;
+		}
+
+		/**
+		 * Reads the location's attribute divisor as the driver reports it, or -1 when
+		 * unknown. The four matrix locations must read 0: a divisor above zero would
+		 * spread one pose over every item of a run and read as geometry in the wrong
+		 * place rather than as colour, so the line prints it to rule the case out.
+		 */
+		default int readAttribArrayDivisor(int location) {
+			return -1;
+		}
+
+		/**
+		 * Reads the GL name of the currently bound shader program, or 0 when unknown.
+		 * The readback runs before the material's cleanup, so on the custom path this is
+		 * the program the last material's draws ran under.
+		 */
+		default int readCurrentProgram() {
+			return 0;
 		}
 	}
 
@@ -252,8 +288,29 @@ public final class FlatDrawPass {
 	/** The lightmap attribute's current value as the driver reports it, or null. */
 	private int[] readbackLight;
 
+	/** The overlay attribute's current value as the driver reports it, or null. */
+	private int[] readbackOverlay;
+
 	/** The colour attribute's current value as the driver reports it, or null. */
 	private float[] readbackColor;
+
+	/** The four matrix attribute rows' current values as the driver reports them, or null. */
+	private float[] readbackMatrix;
+
+	/** The matrix rows the pass itself wrote for the last drawn item, or null. */
+	private float[] readbackWrittenMatrix;
+
+	/** The attribute-array enablement for locations 0-9 as the driver reports it, or null. */
+	private int[] readbackAttribEnabled;
+
+	/** The matrix locations' divisors as the driver reports them, or null. */
+	private int[] readbackAttribDivisor;
+
+	/** The GL name of the program that was bound at the readback, or 0. */
+	private int readbackProgram;
+
+	/** Why the last readback failed, or null when it ran. */
+	private String readbackError;
 
 	/** The lightmap halves the pass wrote for the last drawn item, for the same line. */
 	private int readbackWrittenLightX;
@@ -557,6 +614,15 @@ public final class FlatDrawPass {
 					callsSkipped += 4;
 				}
 				writePose(i, sink);
+				if (readbackRequested) {
+					// Only the statistics frame pays for this: the pose the last draw used,
+					// kept so the diagnostics line can compare it against what the driver
+					// reports for the four matrix attributes.
+					if (readbackWrittenMatrix == null) {
+						readbackWrittenMatrix = new float[16];
+					}
+					System.arraycopy(sortedPose, i << 4, readbackWrittenMatrix, 0, 16);
+				}
 			} else {
 				// The shader-pack fallback sends the pose through the current shader's model
 				// view matrix, exactly as the reference's VertexAttributeState.apply does.
@@ -708,16 +774,91 @@ public final class FlatDrawPass {
 		return readbackLastVao;
 	}
 
-	/** Captures the readback if the owner asked for it; runs inside the flush, arrays still bound. */
+	/** The overlay attribute value the driver reported at the last readback, or null. */
+	public int[] readbackOverlayValue() {
+		return readbackOverlay;
+	}
+
+	/** The matrix attribute rows the driver reported at the last readback, or null. */
+	public float[] readbackMatrixValue() {
+		return readbackMatrix;
+	}
+
+	/** The matrix rows the pass itself wrote for the last drawn item, or null. */
+	public float[] readbackWrittenMatrixValue() {
+		return readbackWrittenMatrix;
+	}
+
+	/** The attribute-array enablement for locations 0-9 at the last readback, or null. */
+	public int[] readbackAttribEnabledValue() {
+		return readbackAttribEnabled;
+	}
+
+	/** The matrix locations' divisors at the last readback, or null. */
+	public int[] readbackAttribDivisorValue() {
+		return readbackAttribDivisor;
+	}
+
+	/** The GL name of the program bound at the last readback, or 0. */
+	public int readbackProgramValue() {
+		return readbackProgram;
+	}
+
+	/** Why the last readback failed, or null when it ran. */
+	public String readbackErrorValue() {
+		return readbackError;
+	}
+
+	/**
+	 * Captures the readback if the owner asked for it; runs inside the flush, arrays still
+	 * bound, and cannot take the pass down: every read routes through this method's own
+	 * {@code catch}, so a diagnostic failure lands in the diagnostics line as a note
+	 * instead of aborting the flush the way an undersized readback buffer once did.
+	 */
 	private void captureReadback(GlSink sink) {
 		if (!readbackRequested) {
 			return;
 		}
 		readbackRequested = false;
-		readbackLight = new int[2];
-		readbackColor = new float[4];
-		sink.readIntegerAttrib(ATTR_UV_LIGHTMAP, readbackLight);
-		sink.readFloatAttrib(ATTR_COLOR, readbackColor);
+		try {
+			readbackError = null;
+			readbackLight = new int[4];
+			readbackOverlay = new int[4];
+			readbackColor = new float[4];
+			readbackMatrix = new float[16];
+			readbackAttribEnabled = new int[10];
+			readbackAttribDivisor = new int[4];
+			sink.readIntegerAttrib(ATTR_UV_LIGHTMAP, readbackLight);
+			sink.readIntegerAttrib(ATTR_UV_OVERLAY, readbackOverlay);
+			sink.readFloatAttrib(ATTR_COLOR, readbackColor);
+			final float[] row = new float[4];
+			for (int matrixRow = 0; matrixRow < 4; matrixRow++) {
+				sink.readFloatAttrib(ATTR_MATRIX_MODEL + matrixRow, row);
+				System.arraycopy(row, 0, readbackMatrix, matrixRow << 2, 4);
+			}
+			for (int location = 0; location < readbackAttribEnabled.length; location++) {
+				readbackAttribEnabled[location] = sink.readAttribArrayEnabled(location);
+			}
+			for (int matrixRow = 0; matrixRow < readbackAttribDivisor.length; matrixRow++) {
+				readbackAttribDivisor[matrixRow] = sink.readAttribArrayDivisor(ATTR_MATRIX_MODEL + matrixRow);
+			}
+			readbackProgram = sink.readCurrentProgram();
+		} catch (final Throwable throwable) {
+			// The readback is a diagnostic: it must never take the draw pass down with it.
+			// Drop every captured value so the line cannot mix a half-filled readback with
+			// a real one, and record why, so the line says "readback failed" rather than
+		// falling back to "readback not captured" with no reason attached.
+			readbackLight = null;
+			readbackOverlay = null;
+			readbackColor = null;
+			readbackMatrix = null;
+			readbackWrittenMatrix = null;
+			readbackAttribEnabled = null;
+			readbackAttribDivisor = null;
+			readbackProgram = 0;
+			final String message = throwable.getMessage();
+			readbackError = throwable.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+		}
 	}
 
 	/** True when item index's pose equals the previous item's pose, bit for bit. */
