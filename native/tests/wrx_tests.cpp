@@ -12,8 +12,13 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -58,7 +63,7 @@ bool createFile(const std::filesystem::path& path, uint64_t size) {
 
 std::unique_ptr<TestRegion> createRegion(const char* tag) {
         const auto directory = std::filesystem::temp_directory_path() /
-                ("wrx-tests-" + std::to_string(::getpid()) + "-" + tag);
+                ("wrx-tests-" + std::to_string(static_cast<int>(::getpid())) + "-" + tag);
         std::filesystem::create_directories(directory);
         wrx::RegionPaths paths;
         paths.directory = directory.string();
