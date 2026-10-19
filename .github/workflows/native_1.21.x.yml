@@ -189,10 +189,13 @@ jobs:
         run: |
           ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
             -PmodLoader=fabric \
-            -PminecraftVersion=1.21.4
+            -PminecraftVersion=1.21.4 \
+            -Pgpr.user=\"${GPR_USER}\" -Pgpr.key=\"${GPR_KEY}\"
         working-directory: ./Minecraft-Transit-Railway
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPR_USER: ${{ secrets.GPR_USER }}
+          GPR_KEY: ${{ secrets.GPR_KEY }}
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4

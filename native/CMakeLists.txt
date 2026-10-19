@@ -123,7 +123,7 @@ if(WRVK_BUILD_TESTS)
             src/wrobj_parse.cpp
             src/wrobj_mesh.cpp
             src/wrobj_pipeline.cpp)
-    target_include_directories(wrobj_core PRIVATE include)
+    target_include_directories(wrobj_core PUBLIC include)
 
     add_executable(wrobj_tests tests/wrobj_tests.cpp tests/golden_format.cpp)
     target_link_libraries(wrobj_tests PRIVATE wrobj_core)
