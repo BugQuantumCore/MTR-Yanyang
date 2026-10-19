@@ -42,6 +42,37 @@ configurations {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Native Vulkan OBJ pipeline packaging. CI drops the platform libraries under
+// natives/<platform>/wrvk.* and the compiled SPIR-V under
+// native/shaders/spirv/*.spv; both end up at the jar root
+// (native/<platform>/wrvk.*, shaders/spirv/*.spv) exactly where
+// org.mtr.nativeobj.NativeRuntime and WrxRegion expect them. Without a
+// populated natives directory the mod still builds and runs — the native
+// path simply never activates (pure-GL development builds).
+// ---------------------------------------------------------------------------
+val nativeResources = layout.buildDirectory.dir("native-resources")
+val nativeSources = File(project.rootDir, "natives")
+val shaderSources = File(project.rootDir, "native/shaders/spirv")
+
+val processNativesTask = tasks.register("processNatives", Copy::class) {
+	from(nativeSources)
+	into(nativeResources)
+	from(shaderSources)
+	into(nativeResources.map { it.dir("shaders/spirv") })
+	onlyIf { nativeSources.isDirectory || shaderSources.isDirectory }
+}
+
+sourceSets {
+	main {
+		resources.srcDir(nativeResources)
+	}
+}
+
+tasks.named("processResources") {
+	dependsOn(processNativesTask)
+}
+
 java {
 	withSourcesJar()
 	targetCompatibility = requiredJava

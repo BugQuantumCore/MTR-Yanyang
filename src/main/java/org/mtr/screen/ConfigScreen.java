@@ -20,86 +20,113 @@ import org.mtr.widget.NumberInputComponent;
  */
 public final class ConfigScreen extends SingleTabBackgroundScreenBase {
 
-	private final Client client = Config.getClient();
-	private final NumberInputComponent dynamicTextureResolutionInputComponent;
-	private final NumberInputComponent trainOscillationInputComponent;
+        private final Client client = Config.getClient();
+        private final NumberInputComponent dynamicTextureResolutionInputComponent;
+        private final NumberInputComponent trainOscillationInputComponent;
 
-	private static final int LEFT_WIDTH = 96;
+        private static final int LEFT_WIDTH = 96;
 
-	public ConfigScreen(@Nullable Screen previousScreenLegacy) {
-		super(previousScreenLegacy, TranslationProvider.GUI_MTR_MTR_OPTIONS.getString());
+        public ConfigScreen(@Nullable Screen previousScreenLegacy) {
+                super(previousScreenLegacy, TranslationProvider.GUI_MTR_MTR_OPTIONS.getString());
 
-		createCheckbox(TranslationProvider.OPTIONS_MTR_SHOW_ANNOUNCEMENT_MESSAGES.getString(), client.getChatAnnouncements(), client::toggleChatAnnouncements);
-		createCheckbox(TranslationProvider.OPTIONS_MTR_USE_TTS_ANNOUNCEMENTS.getString(), client.getTextToSpeechAnnouncements(), client::toggleTextToSpeechAnnouncements);
-		createCheckbox(TranslationProvider.OPTIONS_MTR_HIDE_TRANSLUCENT_PARTS.getString(), client.getHideTranslucentParts(), client::toggleHideTranslucentParts);
-		createLanguageOptions();
+                createCheckbox(TranslationProvider.OPTIONS_MTR_SHOW_ANNOUNCEMENT_MESSAGES.getString(), client.getChatAnnouncements(), client::toggleChatAnnouncements);
+                createCheckbox(TranslationProvider.OPTIONS_MTR_USE_TTS_ANNOUNCEMENTS.getString(), client.getTextToSpeechAnnouncements(), client::toggleTextToSpeechAnnouncements);
+                createCheckbox(TranslationProvider.OPTIONS_MTR_HIDE_TRANSLUCENT_PARTS.getString(), client.getHideTranslucentParts(), client::toggleHideTranslucentParts);
+                createLanguageOptions();
 
-		dynamicTextureResolutionInputComponent = createNumberInput(TranslationProvider.OPTIONS_MTR_DYNAMIC_TEXTURE_RESOLUTION.getString(), Client.DYNAMIC_RESOLUTION_COUNT - 1, client.getDynamicTextureResolution());
-		trainOscillationInputComponent = createNumberInput(TranslationProvider.OPTIONS_MTR_VEHICLE_OSCILLATION_MULTIPLIER.getString(), Client.TRAIN_OSCILLATION_COUNT, Math.round(client.getVehicleOscillationMultiplier() * 100));
-		trainOscillationInputComponent.setSuffix("%");
+                dynamicTextureResolutionInputComponent = createNumberInput(TranslationProvider.OPTIONS_MTR_DYNAMIC_TEXTURE_RESOLUTION.getString(), Client.DYNAMIC_RESOLUTION_COUNT - 1, client.getDynamicTextureResolution());
+                trainOscillationInputComponent = createNumberInput(TranslationProvider.OPTIONS_MTR_VEHICLE_OSCILLATION_MULTIPLIER.getString(), Client.TRAIN_OSCILLATION_COUNT, Math.round(client.getVehicleOscillationMultiplier() * 100));
+                trainOscillationInputComponent.setSuffix("%");
 
-		createCheckbox(TranslationProvider.OPTIONS_MTR_DEFAULT_RAIL_3D.getString(), client.getDefaultRail3D(), client::toggleDefaultRail3D);
-		createCheckbox(TranslationProvider.OPTIONS_MTR_USE_MTR_FONT.getString(), client.getUseMTRFont(), client::toggleUseMTRFont);
-		createCheckbox(TranslationProvider.OPTIONS_MTR_DISABLE_SHADOWS_FOR_SHADERS.getString(), client.getDisableShadowsForShaders(), client::toggleDisableShadowsForShaders);
+                createCheckbox(TranslationProvider.OPTIONS_MTR_DEFAULT_RAIL_3D.getString(), client.getDefaultRail3D(), client::toggleDefaultRail3D);
+                createCheckbox(TranslationProvider.OPTIONS_MTR_USE_MTR_FONT.getString(), client.getUseMTRFont(), client::toggleUseMTRFont);
+                createCheckbox(TranslationProvider.OPTIONS_MTR_DISABLE_SHADOWS_FOR_SHADERS.getString(), client.getDisableShadowsForShaders(), client::toggleDisableShadowsForShaders);
+                createNativeCommMethodOptions();
 
-		final ButtonComponent supportButton = (ButtonComponent) new ButtonComponent(true)
-			.setChildOf(contentContainer)
-			.setY(new SiblingConstraint())
-			.setWidth(new RelativeConstraint());
+                final ButtonComponent supportButton = (ButtonComponent) new ButtonComponent(true)
+                        .setChildOf(contentContainer)
+                        .setY(new SiblingConstraint())
+                        .setWidth(new RelativeConstraint());
 
-		supportButton.setText(TranslationProvider.OPTIONS_MTR_SUPPORT_PATREON.getString());
-		supportButton.onClick(() -> Util.getPlatform().openUri("https://www.patreon.com/minecraft_transit_railway"));
-	}
+                supportButton.setText(TranslationProvider.OPTIONS_MTR_SUPPORT_PATREON.getString());
+                supportButton.onClick(() -> Util.getPlatform().openUri("https://www.patreon.com/minecraft_transit_railway"));
+        }
 
-	@Override
-	public void onScreenClose() {
-		client.setDynamicTextureResolution((int) dynamicTextureResolutionInputComponent.getValue());
-		client.setVehicleOscillationMultiplier(trainOscillationInputComponent.getValue() / 100);
-		DynamicTextureCache.instance.refresh();
-		Config.save();
-		super.onScreenClose();
-	}
+        @Override
+        public void onScreenClose() {
+                client.setDynamicTextureResolution((int) dynamicTextureResolutionInputComponent.getValue());
+                client.setVehicleOscillationMultiplier(trainOscillationInputComponent.getValue() / 100);
+                DynamicTextureCache.instance.refresh();
+                Config.save();
+                super.onScreenClose();
+        }
 
-	private void createCheckbox(String label, boolean initialState, Runnable toggleAction) {
-		final CheckboxComponent checkboxComponent = (CheckboxComponent) new CheckboxComponent()
-			.setChildOf(contentContainer)
-			.setY(new SiblingConstraint())
-			.setWidth(new RelativeConstraint());
+        private void createCheckbox(String label, boolean initialState, Runnable toggleAction) {
+                final CheckboxComponent checkboxComponent = (CheckboxComponent) new CheckboxComponent()
+                        .setChildOf(contentContainer)
+                        .setY(new SiblingConstraint())
+                        .setWidth(new RelativeConstraint());
 
-		checkboxComponent.setText(label);
-		checkboxComponent.onClick(toggleAction);
-		checkboxComponent.setChecked(initialState);
+                checkboxComponent.setText(label);
+                checkboxComponent.onClick(toggleAction);
+                checkboxComponent.setChecked(initialState);
 
-		GuiHelper.createSpacing(contentContainer);
-	}
+                GuiHelper.createSpacing(contentContainer);
+        }
 
-	private void createLanguageOptions() {
-		GuiHelper.createLabel(contentContainer, TranslationProvider.OPTIONS_MTR_LANGUAGE_OPTIONS.getString());
+        private void createLanguageOptions() {
+                GuiHelper.createLabel(contentContainer, TranslationProvider.OPTIONS_MTR_LANGUAGE_OPTIONS.getString());
 
-		final ButtonComponent languageButton = (ButtonComponent) new ButtonComponent(true)
-			.setChildOf(contentContainer)
-			.setY(new SiblingConstraint())
-			.setWidth(new PixelConstraint(LEFT_WIDTH));
+                final ButtonComponent languageButton = (ButtonComponent) new ButtonComponent(true)
+                        .setChildOf(contentContainer)
+                        .setY(new SiblingConstraint())
+                        .setWidth(new PixelConstraint(LEFT_WIDTH));
 
-		languageButton.setText(client.getLanguageDisplay().translationKey.getString());
-		languageButton.onClick(() -> {
-			client.cycleLanguageDisplay();
-			languageButton.setText(client.getLanguageDisplay().translationKey.getString());
-		});
+                languageButton.setText(client.getLanguageDisplay().translationKey.getString());
+                languageButton.onClick(() -> {
+                        client.cycleLanguageDisplay();
+                        languageButton.setText(client.getLanguageDisplay().translationKey.getString());
+                });
 
-		GuiHelper.createSpacing(contentContainer);
-	}
+                GuiHelper.createSpacing(contentContainer);
+        }
 
-	private NumberInputComponent createNumberInput(String label, double max, double initialValue) {
-		GuiHelper.createLabel(contentContainer, label);
+        /**
+         * "Java 与 C++ 通信方式" — the transport selector for the native Vulkan
+         * OBJ pipeline. The current value's description renders below the
+         * cycling button, so both halves of the setting are visible without a
+         * tooltip; changing it takes effect the next time the native pipeline
+         * initialises (a resource reload re-detects Vulkan).
+         */
+        private void createNativeCommMethodOptions() {
+                GuiHelper.createLabel(contentContainer, TranslationProvider.OPTIONS_MTR_JAVA_CPP_COMMUNICATION_METHOD.getString());
 
-		final NumberInputComponent numberInputComponent = (NumberInputComponent) new NumberInputComponent(0, max, 1, false, null)
-			.setChildOf(contentContainer)
-			.setY(new SiblingConstraint())
-			.setWidth(new PixelConstraint(LEFT_WIDTH));
+                final ButtonComponent methodButton = (ButtonComponent) new ButtonComponent(true)
+                        .setChildOf(contentContainer)
+                        .setY(new SiblingConstraint())
+                        .setWidth(new PixelConstraint(LEFT_WIDTH));
 
-		GuiHelper.createSpacing(contentContainer);
-		numberInputComponent.setValue(initialValue);
-		return numberInputComponent;
-	}
+                methodButton.setText(client.getNativeCommMethod().translationKey.getString());
+                methodButton.onClick(() -> {
+                        client.cycleNativeCommMethod();
+                        methodButton.setText(client.getNativeCommMethod().translationKey.getString());
+                        Config.save();
+                });
+
+                GuiHelper.createLabel(contentContainer, client.getNativeCommMethod().descriptionKey.getString());
+                GuiHelper.createSpacing(contentContainer);
+        }
+
+        private NumberInputComponent createNumberInput(String label, double max, double initialValue) {
+                GuiHelper.createLabel(contentContainer, label);
+
+                final NumberInputComponent numberInputComponent = (NumberInputComponent) new NumberInputComponent(0, max, 1, false, null)
+                        .setChildOf(contentContainer)
+                        .setY(new SiblingConstraint())
+                        .setWidth(new PixelConstraint(LEFT_WIDTH));
+
+                GuiHelper.createSpacing(contentContainer);
+                numberInputComponent.setValue(initialValue);
+                return numberInputComponent;
+        }
 }

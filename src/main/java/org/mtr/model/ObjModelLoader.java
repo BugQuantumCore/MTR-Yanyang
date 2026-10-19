@@ -14,6 +14,7 @@ import org.mtr.resource.RenderStage;
 
 import java.awt.*;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
 
@@ -66,6 +67,20 @@ public final class ObjModelLoader extends ModelLoaderBase {
 			parseStarted();
 			MainRenderer.WORKER_THREAD.worker.submit(() -> {
 				try {
+					// Native Vulkan pipeline: when active, the C++ side parses the
+					// document straight out of the exchange region (Java writes the
+					// OBJ/MTL text into shared memory; the mesh never crosses back).
+					// Semantics mirror the javagl branch exactly, including the
+					// per-material option parsing, which stays on this side.
+					if (org.mtr.nativeobj.NativeRuntime.isActive()) {
+						final List<String[]> mtlFiles = new ObjectArrayList<>();
+						for (final String mtlFileName : sourceMtlFileNames(objString)) {
+							mtlFiles.add(new String[]{mtlFileName, mtlResolver.apply(formatFilePath(mtlFileName))});
+						}
+						addNativeModels(objString, mtlFiles, textureResolver, splitModel, flipTextureV);
+						setModelLoaded();
+						return;
+					}
 					final Obj sourceObj = ObjReader.read(IOUtils.toInputStream(objString, StandardCharsets.UTF_8));
 					final Object2ObjectOpenHashMap<String, Mtl> materials = new Object2ObjectOpenHashMap<>();
 					sourceObj.getMtlFileNames().forEach(mtlFileName -> {
@@ -182,6 +197,67 @@ public final class ObjModelLoader extends ModelLoaderBase {
 
 	private static String formatFilePath(String path) {
 		return path.replace("\\\\", "/").replace("\\", "/");
+	}
+
+	/**
+	 * mtllib entries of the raw OBJ text, in order. The native payload carries
+	 * MTL contents the same way the javagl branch resolves them.
+	 */
+	private static List<String> sourceMtlFileNames(String objString) {
+		final List<String> names = new ObjectArrayList<>();
+		for (final String line : objString.split("\n")) {
+			final String trimmed = line.trim();
+			if (trimmed.startsWith("mtllib")) {
+				final String name = trimmed.substring(6).trim();
+				if (!name.isEmpty()) {
+					names.add(name);
+				}
+			}
+		}
+		return names;
+	}
+
+	/**
+	 * Decode a native build reply into this loader's groups: the material
+	 * names come back from C++, and the option parsing (stage, flipv,
+	 * texture) is the same javagl code path, so a pack behaves identically
+	 * whichever renderer draws it.
+	 */
+	/**
+	 * Decode a native build reply into this loader's name-keyed groups: the
+	 * group names come back from C++ exactly as splitByGroups would report
+	 * them, and the material option parsing (stage, flipv, texture) runs the
+	 * same javagl code path, so a pack behaves identically whichever renderer
+	 * draws it.
+	 */
+	private void addNativeModels(String objString, List<String[]> mtlFiles, Function<String, ResourceLocation> textureResolver, boolean splitModel, boolean flipTextureV) {
+		final org.mtr.nativeobj.NativeModelLoader.NativeBuild build = org.mtr.nativeobj.NativeModelLoader.INSTANCE.loadObj(objString, mtlFiles, splitModel, flipTextureV);
+		for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Group group : build.groups()) {
+			final NewOptimizedModelGroup newOptimizedModelGroup = new NewOptimizedModelGroup();
+			for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Mesh mesh : group.meshes()) {
+				final Object2ObjectOpenHashMap<String, String> materialOptions = splitMaterialOptions(mesh.name());
+				final String materialGroupName = materialOptions.get("");
+				final boolean newFlipTextureV = flipTextureV || materialOptions.getOrDefault("flipv", "0").equals("1");
+
+				// material-name-as-texture branch mirrors the javagl loader's
+				// three-way rule: with MTLs present the map_Kd was already
+				// folded into the native key, so the name resolves directly
+				final ResourceLocation texture;
+				if (!mtlFiles.isEmpty()) {
+					texture = textureResolver.apply(formatFilePath(materialGroupName));
+				} else {
+					texture = materialGroupName.equals("_") ? null : textureResolver.apply(formatFilePath(materialGroupName));
+				}
+				final ResourceLocation resolvedTexture = texture == null ? defaultTexture : texture;
+				// flipv is baked natively (per-material via the key table), so
+				// only the stage needs to travel with the draw item
+				final org.mtr.resource.RenderStage stage = getRenderStage(materialOptions.get("#"));
+				newOptimizedModelGroup.addNative(stage, resolvedTexture,
+					new org.mtr.nativeobj.NativeModel(group.modelId(), mesh.meshId(), resolvedTexture,
+						stage == null ? org.mtr.resource.RenderStage.INTERIOR : stage, mesh.colorPacked(), mesh.aabb()));
+			}
+			addModel(group.name(), newOptimizedModelGroup);
+		}
 	}
 
 	@Nullable

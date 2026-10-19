@@ -6,95 +6,108 @@ import org.mtr.generated.config.ClientSchema;
 
 public final class Client extends ClientSchema {
 
-	public static final int DYNAMIC_RESOLUTION_COUNT = 8;
-	public static final int TRAIN_OSCILLATION_COUNT = 150;
+        public static final int DYNAMIC_RESOLUTION_COUNT = 8;
+        public static final int TRAIN_OSCILLATION_COUNT = 150;
 
-	public Client(ReaderBase readerBase) {
-		super(readerBase);
-		updateData(readerBase);
-	}
+        public Client(ReaderBase readerBase) {
+                super(readerBase);
+                updateData(readerBase);
+        }
 
-	public boolean getChatAnnouncements() {
-		return chatAnnouncements;
-	}
+        public boolean getChatAnnouncements() {
+                return chatAnnouncements;
+        }
 
-	public boolean getTextToSpeechAnnouncements() {
-		return textToSpeechAnnouncements;
-	}
+        public boolean getTextToSpeechAnnouncements() {
+                return textToSpeechAnnouncements;
+        }
 
-	public boolean getHideTranslucentParts() {
-		return hideTranslucentParts;
-	}
+        public boolean getHideTranslucentParts() {
+                return hideTranslucentParts;
+        }
 
-	public LanguageDisplay getLanguageDisplay() {
-		return languageDisplay;
-	}
+        public LanguageDisplay getLanguageDisplay() {
+                return languageDisplay == null ? LanguageDisplay.NORMAL : languageDisplay;
+        }
 
-	public int getDynamicTextureResolution() {
-		return (int) dynamicTextureResolution;
-	}
+        /**
+         * The transport the native Vulkan OBJ pipeline uses; never null. A null in
+         * the config file (or an old file) resolves to the documented default.
+         */
+        public NativeCommMethod getNativeCommMethod() {
+                return nativeCommMethod == null ? NativeCommMethod.SHARED_MEMORY : nativeCommMethod;
+        }
 
-	public double getVehicleOscillationMultiplier() {
-		return vehicleOscillationMultiplier;
-	}
+        public void cycleNativeCommMethod() {
+                final NativeCommMethod[] values = NativeCommMethod.values();
+                nativeCommMethod = values[(getNativeCommMethod().ordinal() + 1) % values.length];
+        }
 
-	public boolean getDefaultRail3D() {
-		return defaultRail3D;
-	}
+        public int getDynamicTextureResolution() {
+                return (int) dynamicTextureResolution;
+        }
 
-	public boolean getUseMTRFont() {
-		return useMTRFont;
-	}
+        public double getVehicleOscillationMultiplier() {
+                return vehicleOscillationMultiplier;
+        }
 
-	public boolean getDisableShadowsForShaders() {
-		return disableShadowsForShaders;
-	}
+        public boolean getDefaultRail3D() {
+                return defaultRail3D;
+        }
 
-	public boolean matchesPreloadResourcePattern(String id) {
-		return id.replaceFirst(preloadResourcePattern, "").isEmpty();
-	}
+        public boolean getUseMTRFont() {
+                return useMTRFont;
+        }
 
-	public boolean showBetaWarningScreen() {
-		return !Keys.MOD_VERSION.equals(betaWarningVersion);
-	}
+        public boolean getDisableShadowsForShaders() {
+                return disableShadowsForShaders;
+        }
 
-	public void toggleChatAnnouncements() {
-		chatAnnouncements = !chatAnnouncements;
-	}
+        public boolean matchesPreloadResourcePattern(String id) {
+                return id.replaceFirst(preloadResourcePattern, "").isEmpty();
+        }
 
-	public void toggleTextToSpeechAnnouncements() {
-		textToSpeechAnnouncements = !textToSpeechAnnouncements;
-	}
+        public boolean showBetaWarningScreen() {
+                return !Keys.MOD_VERSION.equals(betaWarningVersion);
+        }
 
-	public void toggleHideTranslucentParts() {
-		hideTranslucentParts = !hideTranslucentParts;
-	}
+        public void toggleChatAnnouncements() {
+                chatAnnouncements = !chatAnnouncements;
+        }
 
-	public void cycleLanguageDisplay() {
-		languageDisplay = LanguageDisplay.values()[(languageDisplay.ordinal() + 1) % LanguageDisplay.values().length];
-	}
+        public void toggleTextToSpeechAnnouncements() {
+                textToSpeechAnnouncements = !textToSpeechAnnouncements;
+        }
 
-	public void setDynamicTextureResolution(int dynamicTextureResolution) {
-		this.dynamicTextureResolution = Math.clamp(dynamicTextureResolution, 0, DYNAMIC_RESOLUTION_COUNT);
-	}
+        public void toggleHideTranslucentParts() {
+                hideTranslucentParts = !hideTranslucentParts;
+        }
 
-	public void setVehicleOscillationMultiplier(double trainOscillationMultiplier) {
-		this.vehicleOscillationMultiplier = Math.clamp(trainOscillationMultiplier, 0, (TRAIN_OSCILLATION_COUNT / 100.0));
-	}
+        public void cycleLanguageDisplay() {
+                languageDisplay = LanguageDisplay.values()[(languageDisplay.ordinal() + 1) % LanguageDisplay.values().length];
+        }
 
-	public void toggleDefaultRail3D() {
-		defaultRail3D = !defaultRail3D;
-	}
+        public void setDynamicTextureResolution(int dynamicTextureResolution) {
+                this.dynamicTextureResolution = Math.clamp(dynamicTextureResolution, 0, DYNAMIC_RESOLUTION_COUNT);
+        }
 
-	public void toggleUseMTRFont() {
-		useMTRFont = !useMTRFont;
-	}
+        public void setVehicleOscillationMultiplier(double trainOscillationMultiplier) {
+                this.vehicleOscillationMultiplier = Math.clamp(trainOscillationMultiplier, 0, (TRAIN_OSCILLATION_COUNT / 100.0));
+        }
 
-	public void toggleDisableShadowsForShaders() {
-		disableShadowsForShaders = !disableShadowsForShaders;
-	}
+        public void toggleDefaultRail3D() {
+                defaultRail3D = !defaultRail3D;
+        }
 
-	public void hideBetaWarningScreen() {
-		betaWarningVersion = Keys.MOD_VERSION;
-	}
+        public void toggleUseMTRFont() {
+                useMTRFont = !useMTRFont;
+        }
+
+        public void toggleDisableShadowsForShaders() {
+                disableShadowsForShaders = !disableShadowsForShaders;
+        }
+
+        public void hideBetaWarningScreen() {
+                betaWarningVersion = Keys.MOD_VERSION;
+        }
 }

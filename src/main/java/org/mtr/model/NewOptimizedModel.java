@@ -36,6 +36,14 @@ public final class NewOptimizedModel {
 	@Nullable
 	private final VertexBuffer vertexBuffer;
 	private final VertexFormat.Mode drawMode;
+	/**
+	 * The native Vulkan mesh when this model was built through the native
+	 * pipeline (see {@code docs/NATIVE_VULKAN.md}); null means the GL path.
+	 * When present, {@link #begin} is a no-op and {@link #render} queues the
+	 * draw through the native frame recorder instead of issuing GL commands.
+	 */
+	@Nullable
+	private final org.mtr.nativeobj.NativeModel nativeModel;
 
 	/**
 	 * Reusable model-view matrix scratch — render is single-threaded on the GL thread, so
@@ -70,9 +78,20 @@ public final class NewOptimizedModel {
 	 *                 buffer, or {@code null} to skip buffer creation entirely
 	 */
 	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback) {
+		this(texture, drawMode, callback, null);
+	}
+
+	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable org.mtr.nativeobj.NativeModel nativeModel) {
 		this.vertexBuffer = callback == null ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
 		this.texture = texture;
 		this.drawMode = drawMode;
+		this.nativeModel = nativeModel;
+	}
+
+	/** The native mesh handle, or null when this model renders through MC's GL path. */
+	@Nullable
+	public org.mtr.nativeobj.NativeModel getNativeModel() {
+		return nativeModel;
 	}
 
 	/**
@@ -88,6 +107,11 @@ public final class NewOptimizedModel {
 	/*public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable ShaderInstance shaderProgram) {
 //
 *///? }
+		if (nativeModel != null) {
+			// the native drain queues this mesh into the Vulkan frame; GL state
+			// must stay untouched so the surrounding passes stay exact
+			return;
+		}
 		if (vertexBuffer != null && shaderProgram != null) {
 			if (shaderProgram.MODEL_VIEW_MATRIX != null) {
 				// Reuse the static scratch matrix instead of `new Matrix4f(...)` per draw call.
@@ -147,6 +171,9 @@ public final class NewOptimizedModel {
 	/*public void begin(@Nullable ShaderInstance shaderProgram) {
 //
 *///? }
+		if (nativeModel != null) {
+			return;
+		}
 		if (vertexBuffer != null && shaderProgram != null) {
 			vertexBuffer.bind();
 			shaderProgram.setDefaultUniforms(drawMode, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), Minecraft.getInstance().getWindow());

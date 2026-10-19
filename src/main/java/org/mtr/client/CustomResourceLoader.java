@@ -108,6 +108,10 @@ public class CustomResourceLoader {
          * detailed cost breakdown and proposed parallelisation.</p>
          */
         public static void reload() {
+
+        // The native Vulkan pipeline owns GPU copies of every built model; free
+        // them before the rebuild replaces the loader set (leak safety).
+        org.mtr.nativeobj.NativeRuntime.freeAllModelsForReload();
                 MINECRAFT_MODEL_RESOURCES.clear();
                 MINECRAFT_TEXTURE_RESOURCES.clear();
                 RESOURCE_CACHE.clear();

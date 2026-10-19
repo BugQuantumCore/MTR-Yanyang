@@ -1,0 +1,202 @@
+name: Native Vulkan OBJ pipeline (1.21.x)
+
+on:
+  push:
+    branches: [ '1.21.x' ]
+    paths:
+      - 'native/**'
+      - 'buildSrc/**'
+      - 'src/main/java/**'
+      - 'build-fabric.gradle.kts'
+      - '.github/workflows/native_1.21.x.yml'
+  pull_request:
+    branches: [ '1.21.x' ]
+    paths:
+      - 'native/**'
+      - 'buildSrc/**'
+      - 'src/main/java/**'
+      - 'build-fabric.gradle.kts'
+      - '.github/workflows/native_1.21.x.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            platform: windows-x64
+            library: wrvk.dll
+          - name: linux-x64
+            os: ubuntu-latest
+            platform: linux-x64
+            library: libwrvk.so
+          - name: macos-arm64
+            os: macos-14
+            platform: macos-arm64
+            library: libwrvk.dylib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S native -B native/build -DWRVK_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build native/build --config Release
+
+      - name: Test
+        working-directory: native/build
+        run: ctest -C Release --output-on-failure
+
+      - name: Upload library
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrvk-${{ matrix.platform }}
+          path: native/build/${{ matrix.library }}
+          if-no-files-found: error
+
+      - name: Upload test binaries (linux, for the golden harness)
+        if: matrix.name == 'linux-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrvk-test-binaries
+          path: |
+            native/build/wrobj_tests
+            native/build/wrx_tests
+            native/build/wrvk_tests
+
+  compile-spirv:
+    name: compile-spirv
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install glslang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools spirv-tools
+
+      - name: Validate GLSL
+        run: |
+          glslangValidator --target-env vulkan1.1 -V native/shaders/entity.vert -o /tmp/entity_cutout.vert.spv
+          glslangValidator --target-env vulkan1.1 -V native/shaders/entity.vert -o /tmp/entity_translucent.vert.spv
+          glslangValidator --target-env vulkan1.1 -V native/shaders/cutout.frag -o /tmp/entity_cutout.frag.spv
+          glslangValidator --target-env vulkan1.1 -V native/shaders/translucent.frag -o /tmp/entity_translucent.frag.spv
+          glslangValidator --target-env vulkan1.1 -V native/shaders/beacon.vert -o /tmp/beacon_beam.vert.spv
+          glslangValidator --target-env vulkan1.1 -V native/shaders/beacon.frag -o /tmp/beacon_beam.frag.spv
+          spirv-val /tmp/entity_cutout.vert.spv
+          spirv-val /tmp/entity_cutout.frag.spv
+          spirv-val /tmp/entity_translucent.vert.spv
+          spirv-val /tmp/entity_translucent.frag.spv
+          spirv-val /tmp/beacon_beam.vert.spv
+          spirv-val /tmp/beacon_beam.frag.spv
+
+      - name: Upload SPIR-V
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrvk-spirv
+          path: /tmp/*.spv
+
+  assemble:
+    name: assemble
+    needs: [ build-and-test, compile-spirv ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download libraries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: wrvk-*
+          merge-multiple: true
+
+      - name: Download SPIR-V
+        uses: actions/download-artifact@v4
+        with:
+          path: spirv
+          pattern: wrvk-spirv
+          merge-multiple: true
+
+      - name: Layout
+        run: |
+          mkdir -p natives/windows-x64 natives/linux-x64 natives/macos-arm64 native/shaders/spirv
+          find artifacts -type f | head -50
+          cp artifacts/wrvk.dll natives/windows-x64/ 2>/dev/null || cp artifacts/windows-x64/wrvk.dll natives/windows-x64/ || true
+          cp artifacts/libwrvk.so natives/linux-x64/ 2>/dev/null || cp artifacts/linux-x64/libwrvk.so natives/linux-x64/ || true
+          cp artifacts/libwrvk.dylib natives/macos-arm64/ 2>/dev/null || cp artifacts/macos-arm64/libwrvk.dylib natives/macos-arm64/ || true
+          ls -R natives
+          ls -R artifacts
+          cp spirv/*.spv native/shaders/spirv/ || true
+          ls native/shaders/spirv
+
+      - name: Upload assembled natives
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrvk-natives
+          path: |
+            natives
+            native/shaders/spirv
+
+  build-mod:
+    name: build-mod
+    needs: assemble
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MTR-YanYang
+        uses: actions/checkout@v4
+        with:
+          path: Minecraft-Transit-Railway
+
+      - name: Checkout Transport-Simulation-Core
+        uses: actions/checkout@v4
+        with:
+          repository: Yanyang-Technology-Group/Transport-Simulation-Core
+          path: Transport-Simulation-Core
+
+      - name: Download natives
+        uses: actions/download-artifact@v4
+        with:
+          path: Minecraft-Transit-Railway/wr-vk-artifacts
+          name: wrvk-natives
+
+      - name: Layout natives into the mod tree
+        run: |
+          cp -r Minecraft-Transit-Railway/wr-vk-artifacts/natives Minecraft-Transit-Railway/natives
+          mkdir -p Minecraft-Transit-Railway/native/shaders/spirv
+          cp -r Minecraft-Transit-Railway/wr-vk-artifacts/native/shaders/spirv/. Minecraft-Transit-Railway/native/shaders/spirv/
+          find Minecraft-Transit-Railway/natives -type f
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build (1.21.4)
+        run: |
+          ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
+            -PmodLoader=fabric \
+            -PminecraftVersion=1.21.4
+        working-directory: ./Minecraft-Transit-Railway
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: YYMTR-fabric-1.21.4-native
+          path: Minecraft-Transit-Railway/build/release/*.jar
+          if-no-files-found: error

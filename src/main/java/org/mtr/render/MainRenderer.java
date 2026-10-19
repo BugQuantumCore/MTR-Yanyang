@@ -151,6 +151,10 @@ public class MainRenderer {
                         return;
                 }
 
+                // Idempotent, auto-detected: brings up the native Vulkan pipeline when
+                // VulkanMod is driving the frame; a no-op on the GL path.
+                org.mtr.nativeobj.NativeRuntime.initialise();
+
                 final long millisElapsed = getMillisElapsed();
                 timerMillis += millisElapsed;
 
@@ -335,7 +339,26 @@ public class MainRenderer {
         }
 
         private static void renderModel(PoseStack matrixStack, Object2ObjectOpenHashMap<NewOptimizedModel, Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<ObjectIntImmutablePair<StoredMatrixTransformations>>>> modelRenders, Vec3 offset) {
+                // Native Vulkan pipeline: models built through the exchange carry a native
+                // mesh; their draws are queued into the shared-memory frame slot and recorded
+                // by the C++ side inside VulkanMod's command buffer. GL models in the same
+                // bucket keep drawing exactly as before.
+                final org.mtr.nativeobj.NativeFrameRecorder nativeRecorder;
+                if (org.mtr.nativeobj.NativeRuntime.isActive()) {
+                        nativeRecorder = new org.mtr.nativeobj.NativeFrameRecorder(org.mtr.nativeobj.NativeRuntime.getInstance());
+                } else {
+                        nativeRecorder = null;
+                }
                 modelRenders.forEach((newOptimizedModel, modelsForRenderStage) -> modelsForRenderStage.forEach((renderStage, renderDetails) -> {
+                        if (nativeRecorder != null && newOptimizedModel.getNativeModel() != null) {
+                                renderDetails.forEach(renderDetailsEntry -> {
+                                        renderDetailsEntry.left().transform(matrixStack, offset);
+                                        nativeRecorder.queue(newOptimizedModel.getNativeModel(), matrixStack.last().pose(),
+                                                renderStage.isFullBrightness ? 1 : (float) renderDetailsEntry.rightInt() / 0xF);
+                                        matrixStack.popPose();
+                                });
+                                return;
+                        }
                         final ResourceLocation texture = newOptimizedModel.texture;
                         final RenderType renderLayer = switch (renderStage) {
                                 case LIGHT -> MoreRenderLayers.getLight(texture, false);
@@ -353,6 +376,10 @@ public class MainRenderer {
                         });
                         renderLayer.clearRenderState();
                 }));
+
+                if (nativeRecorder != null) {
+                        nativeRecorder.submitAndClear();
+                }
         }
 
         private static long getMillisElapsed() {

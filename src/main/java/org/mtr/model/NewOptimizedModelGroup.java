@@ -6,14 +6,27 @@ import net.minecraft.world.phys.AABB;
 import org.jspecify.annotations.Nullable;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import org.mtr.nativeobj.NativeModel;
+import org.mtr.nativeobj.NativeModelLoader;
 import org.mtr.resource.RenderStage;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 public final class NewOptimizedModelGroup {
 
 	public final ObjectArrayList<AABB> boxes = new ObjectArrayList<>();
 	private final Object2ObjectOpenHashMap<@Nullable RenderStage, Object2ObjectOpenHashMap<ResourceLocation, ObjectArrayList<StoredVertexData>>> storedVertexConsumersForRenderStageAndTexture = new Object2ObjectOpenHashMap<>();
+	/**
+	 * Native channel: entries whose geometry lives on the C++ side (built by
+	 * the native OBJ loader) and never becomes Java vertex data. Kept parallel
+	 * to the vertex channel so {@link #merge} and {@link #build} treat both.
+	 */
+	private final List<NativeEntry> nativeEntries = new ArrayList<>();
+
+	public record NativeEntry(@Nullable RenderStage renderStage, ResourceLocation texture, NativeModel model, boolean colorSet) {
+	}
 
 	public void add(@Nullable RenderStage renderStage, ResourceLocation texture, Consumer<ObjectArrayList<StoredVertexData>> consumer, @Nullable ObjectArrayList<AABB> boxes) {
 		final ObjectArrayList<StoredVertexData> storedVertexDataList = new ObjectArrayList<>();
@@ -46,7 +59,29 @@ public final class NewOptimizedModelGroup {
 				);
 			}
 		});
+		for (final NativeEntry entry : nativeEntries) {
+			if (entry.renderStage() != null) {
+				newOptimizedModels.computeIfAbsent(entry.renderStage(), key -> new ObjectArrayList<>())
+					.add(new NewOptimizedModel(entry.texture(), drawMode, null, entry.model()));
+			}
+		}
 		return newOptimizedModels;
+	}
+
+	/**
+	 * Register a natively-built mesh with this group. The AABB comes from the
+	 * native build reply, so {@link #boxes} stays exactly as informative as
+	 * the Java path's.
+	 */
+	public void addNative(@Nullable RenderStage renderStage, ResourceLocation texture, NativeModel model) {
+		final float[] aabb = model.aabb;
+		boxes.add(new AABB(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]));
+		nativeEntries.add(new NativeEntry(renderStage, texture, model, true));
+	}
+
+	/** Native entries of this group, for the placement merge. */
+	public List<NativeEntry> nativeEntries() {
+		return nativeEntries;
 	}
 
 	public void merge(NewOptimizedModelGroup newOptimizedModelGroup, RenderStage defaultRenderStage, double translateX, double translateY, double translateZ, boolean flip) {
@@ -60,5 +95,13 @@ public final class NewOptimizedModelGroup {
 				)
 			);
 		});
+		for (final NativeEntry entry : newOptimizedModelGroup.nativeEntries) {
+			final RenderStage newRenderStage = entry.renderStage() == null ? defaultRenderStage : entry.renderStage();
+			final NativeModel placed = NativeModelLoader.INSTANCE.place(entry.model(), translateX, translateY, translateZ, flip);
+			if (placed != null) {
+				boxes.add(new AABB(placed.aabb[0], placed.aabb[1], placed.aabb[2], placed.aabb[3], placed.aabb[4], placed.aabb[5]));
+				nativeEntries.add(new NativeEntry(newRenderStage, entry.texture(), placed, entry.colorSet()));
+			}
+		}
 	}
 }
