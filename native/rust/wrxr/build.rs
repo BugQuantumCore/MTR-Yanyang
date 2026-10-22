@@ -15,6 +15,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    // The SKIP toggle must participate in the build-script fingerprint: cargo
+    // only re-runs a script on env changes when they are declared, so without
+    // this line one SKIP=1 invocation (CMake's) would poison the cached
+    // directives in a shared --target-dir and every later `cargo test` in
+    // that dir would link against a missing C++ bundle.
+    println!("cargo:rerun-if-env-changed=WRXR_SKIP_CPP_BUNDLE");
     if env::var_os("WRXR_SKIP_CPP_BUNDLE").is_some() {
         return;
    }

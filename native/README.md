@@ -64,10 +64,35 @@ native/build.sh wrctor_tests run  # 22 checks (dlopen ctor boot smoke)
                                    #  poison advancement, wr_* ABI, poller)
 ```
 
-CI (`.github/workflows/native_1.21.x.yml`) builds the 3 desktop platforms with
+CI (`.github/workflows/native_1.21.x.yml`) builds all 8 shipped platforms with
 CMake, compiles the GLSL to SPIR-V with glslang (validated by spirv-val),
 packages `native/<platform>/wrvk.*` + `shaders/spirv/*.spv` into the mod jar
 and runs the full Gradle test suite.
+
+| platform           | runner              | toolchain                                        |
+|---------------------|---------------------|--------------------------------------------------|
+| windows-x64         | windows-latest      | native MSVC x64 + `x86_64-pc-windows-msvc`       |
+| windows-arm64       | windows-11-arm      | native MSVC ARM64 + `aarch64-pc-windows-msvc`    |
+| linux-x64           | ubuntu-latest       | native gcc + `x86_64-unknown-linux-gnu`          |
+| linux-arm64         | ubuntu-24.04-arm    | native gcc + `aarch64-unknown-linux-gnu`          |
+| macos-arm64         | macos-14            | native AppleClang + `aarch64-apple-darwin`       |
+| android-arm64       | ubuntu-latest       | Android NDK (bionic, API 26) + `aarch64-linux-android` |
+| ios-arm64           | macos-14            | iPhoneOS SDK + `aarch64-apple-ios`, ad-hoc signed |
+| ipados-arm64        | (assemble copy)     | iPadOS shares the iPhoneOS platform binary byte-for-byte; the jar carries it under its own directory |
+
+Cross builds pass `-DWRXR_TARGET=<triple>` to CMake so the Rust transport core
+is built for the target triple (`cargo --target`), while the C++ half follows
+the normal toolchain-file routes (`android.toolchain.cmake` for the NDK,
+`CMAKE_SYSTEM_NAME=iOS` for the iPhoneOS SDK). Native jobs run the full ctest
+suite on their own architecture; cross jobs verify the produced machine type
+(`llvm-readelf` Machine:AArch64 without glibc NEEDED entries for Android,
+`otool` LC_BUILD_VERSION platform IOS + `lipo` arm64 for iOS) before upload.
+
+On the Java side `NativeRuntime.detectPlatform` picks the directory: the
+`os.name`/`os.arch` probes resolve the desktop families, `/system/build.prop`
+marks Android (desktop-style JVMs on Android report `os.name=Linux`), and
+`/var/mobile` + `uname -m` (`iPad*`/`iPhone*` device models) distinguish
+iOS/iPadOS from macOS (their JVMs report a spoofed `Darwin`/`Mac OS X`).
 
 ## Vendored headers
 

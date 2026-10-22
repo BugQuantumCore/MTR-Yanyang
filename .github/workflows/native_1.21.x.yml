@@ -23,6 +23,25 @@ on:
       - '.github/workflows/native_1.21.x.yml'
   workflow_dispatch:
 
+# ---------------------------------------------------------------------------
+# The platform matrix — all eight targets the mod ships in every jar
+# (native/<platform>/wrvk.*; see org.mtr.nativeobj.NativeRuntime):
+#
+#   windows-x64     native, windows-latest (MSVC x64)
+#   windows-arm64   native, windows-11-arm  (MSVC ARM64)
+#   linux-x64       native, ubuntu-latest
+#   linux-arm64     native, ubuntu-24.04-arm
+#   macos-arm64     native, macos-14
+#   android-arm64   cross, ubuntu-latest + Android NDK (bionic, API 26)
+#   ios-arm64       cross, macos-14 + iOS SDK (arm64, ad-hoc signed)
+#   ipados-arm64    iPadOS shares the iphoneos platform binary with iOS —
+#                   the assemble job copies the ios-arm64 artifact; a
+#                   separate platform directory exists because the jar
+#                   layout (and NativeRuntime.detectPlatform) name it.
+#
+# Native jobs run the full ctest suite; cross jobs build the library and
+# verify the produced machine type / platform before it is uploaded.
+# ---------------------------------------------------------------------------
 jobs:
   build-and-test:
     name: ${{ matrix.name }}
@@ -35,14 +54,44 @@ jobs:
             os: windows-latest
             platform: windows-x64
             library: wrvk.dll
+            cross: ''
+            rustTargets: ''
+          - name: windows-arm64
+            os: windows-11-arm
+            platform: windows-arm64
+            library: wrvk.dll
+            cross: ''
+            rustTargets: ''
           - name: linux-x64
             os: ubuntu-latest
             platform: linux-x64
             library: libwrvk.so
+            cross: ''
+            rustTargets: ''
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            platform: linux-arm64
+            library: libwrvk.so
+            cross: ''
+            rustTargets: ''
           - name: macos-arm64
             os: macos-14
             platform: macos-arm64
             library: libwrvk.dylib
+            cross: ''
+            rustTargets: ''
+          - name: android-arm64
+            os: ubuntu-latest
+            platform: android-arm64
+            library: libwrvk.so
+            cross: android
+            rustTargets: aarch64-linux-android
+          - name: ios-arm64
+            os: macos-14
+            platform: ios-arm64
+            library: libwrvk.dylib
+            cross: ios
+            rustTargets: aarch64-apple-ios
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,27 +99,111 @@ jobs:
       - name: Set up Rust
         # CMake drives cargo for the Rust transport core (rust/wrxr); the
         # runners ship a Rust toolchain but pin it explicitly for
-        # reproducibility.
+        # reproducibility. Cross jobs add the cross std for their triple.
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
 
       - name: Configure
+        if: matrix.cross == ''
         run: cmake -S native -B native/build -DWRVK_BUILD_TESTS=ON
+
+      - name: Locate the Android NDK
+        # The ubuntu image ships the SDK + an NDK (ANDROID_NDK_HOME); scan
+        # the sdk dir as a fallback and sdkmanager-install r27c if neither
+        # exists. The linker wrapper pins --target/-sysroot itself so any
+        # rustc version links through the NDK toolchain.
+        if: matrix.cross == 'android'
+        run: |
+          set -e
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          NDK="${ANDROID_NDK_HOME:-}"
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            NDK=""
+            if [ -d "$SDK/ndk" ] && [ -n "$(ls "$SDK/ndk" 2>/dev/null)" ]; then
+              NDK="$SDK/ndk/$(ls "$SDK/ndk" | sort -V | tail -1)"
+            fi
+          fi
+          if [ -z "$NDK" ]; then
+            echo "no preinstalled NDK; installing r27c via sdkmanager"
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.3.13750702" > /dev/null
+            NDK="$SDK/ndk/27.3.13750702"
+          fi
+          echo "NDK=$NDK"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          printf '#!/bin/sh\nexec "%s/bin/clang" --target=aarch64-linux-android26 --sysroot="%s/sysroot" "$@"\n' \
+            "$TOOLCHAIN" "$TOOLCHAIN" > "$RUNNER_TEMP/android-clang.sh"
+          chmod +x "$RUNNER_TEMP/android-clang.sh"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$RUNNER_TEMP/android-clang.sh" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=$TOOLCHAIN/bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "NDK_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Configure (Android)
+        if: matrix.cross == 'android'
+        run: >
+          cmake -S native -B native/build -DWRVK_BUILD_TESTS=OFF
+          -DCMAKE_TOOLCHAIN_FILE=$NDK_HOME/build/cmake/android.toolchain.cmake
+          -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26
+          -DWRXR_TARGET=aarch64-linux-android
+
+      - name: Prepare the iOS cross toolchain
+        if: matrix.cross == 'ios'
+        # rustc passes the -Wl,-platform_version line itself; the wrapper's
+        # only job is selecting the iphoneos SDK for the clang driver.
+        run: |
+          set -e
+          printf '#!/bin/sh\nexec xcrun --sdk iphoneos clang "$@"\n' > "$RUNNER_TEMP/ios-clang.sh"
+          chmod +x "$RUNNER_TEMP/ios-clang.sh"
+          echo "CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=$RUNNER_TEMP/ios-clang.sh" >> "$GITHUB_ENV"
+
+      - name: Configure (iOS)
+        if: matrix.cross == 'ios'
+        run: >
+          cmake -S native -B native/build -DWRVK_BUILD_TESTS=OFF
+          -DCMAKE_SYSTEM_NAME=iOS
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DWRXR_TARGET=aarch64-apple-ios
 
       - name: Build
         run: cmake --build native/build --config Release
 
       - name: Test
+        if: matrix.cross == ''
         working-directory: native/build
         run: ctest -C Release --output-on-failure
 
       - name: Rust transport suite
-        if: matrix.name == 'linux-x64'
+        if: matrix.name == 'linux-x64' || matrix.name == 'linux-arm64'
         run: cargo test --release --offline --manifest-path native/rust/wrxr/Cargo.toml
+
+      - name: Verify the Android library
+        if: matrix.cross == 'android'
+        run: |
+          set -e
+          "$NDK_TOOLCHAIN/bin/llvm-readelf" -h native/build/libwrvk.so | grep -q "Machine: AArch64" \
+            || { echo "not an AArch64 library"; exit 1; }
+          if "$NDK_TOOLCHAIN/bin/llvm-readelf" -d native/build/libwrvk.so | grep -q "libc\.so\.6\|libstdc++"; then
+            echo "glibc leaked into the Android build (host toolchain misfire)"; exit 1
+          fi
+          "$NDK_TOOLCHAIN/bin/llvm-readelf" -d native/build/libwrvk.so | grep NEEDED
+          file native/build/libwrvk.so
+
+      - name: Sign and verify the iOS library
+        if: matrix.cross == 'ios'
+        run: |
+          set -e
+          codesign --force --sign - native/build/libwrvk.dylib
+          otool -l native/build/libwrvk.dylib | grep -A3 LC_BUILD_VERSION | grep -q "platform IOS" \
+            || { echo "not an iOS-platform dylib"; exit 1; }
+          lipo -info native/build/libwrvk.dylib | grep -q arm64 || { echo "not arm64"; exit 1; }
+          otool -L native/build/libwrvk.dylib
+          file native/build/libwrvk.dylib
 
       - name: Upload library
         uses: actions/upload-artifact@v4
         with:
-          name: wrvk-${{ matrix.platform }}
+          name: wrvk-lib-${{ matrix.platform }}
           path: native/build/${{ matrix.library }}
           if-no-files-found: error
 
@@ -129,26 +262,36 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: wrvk-*
-          merge-multiple: true
+          pattern: wrvk-lib-*
 
       - name: Download SPIR-V
         uses: actions/download-artifact@v4
         with:
           path: spirv
           pattern: wrvk-spirv
-          merge-multiple: true
 
       - name: Layout
+        # One directory per platform, matching the jar layout
+        # (native/<platform>/wrvk.*). iPadOS shares the iPhoneOS platform
+        # binary byte-for-byte — same kernel, same SDK — so it is a copy of
+        # the ios-arm64 artifact under its own directory.
         run: |
-          mkdir -p natives/windows-x64 natives/linux-x64 natives/macos-arm64 native/shaders/spirv
-          find artifacts -type f | head -50
-          cp artifacts/wrvk.dll natives/windows-x64/ 2>/dev/null || cp artifacts/windows-x64/wrvk.dll natives/windows-x64/ || true
-          cp artifacts/libwrvk.so natives/linux-x64/ 2>/dev/null || cp artifacts/linux-x64/libwrvk.so natives/linux-x64/ || true
-          cp artifacts/libwrvk.dylib natives/macos-arm64/ 2>/dev/null || cp artifacts/macos-arm64/libwrvk.dylib natives/macos-arm64/ || true
-          ls -R natives
-          ls -R artifacts
+          set -e
+          for platform in windows-x64 windows-arm64 linux-x64 linux-arm64 macos-arm64 android-arm64 ios-arm64 ipados-arm64; do
+            mkdir -p "natives/$platform"
+          done
+          cp artifacts/wrvk-lib-windows-x64/wrvk.dll natives/windows-x64/wrvk.dll
+          cp artifacts/wrvk-lib-windows-arm64/wrvk.dll natives/windows-arm64/wrvk.dll
+          cp artifacts/wrvk-lib-linux-x64/libwrvk.so natives/linux-x64/libwrvk.so
+          cp artifacts/wrvk-lib-linux-arm64/libwrvk.so natives/linux-arm64/libwrvk.so
+          cp artifacts/wrvk-lib-macos-arm64/libwrvk.dylib natives/macos-arm64/libwrvk.dylib
+          cp artifacts/wrvk-lib-android-arm64/libwrvk.so natives/android-arm64/libwrvk.so
+          cp artifacts/wrvk-lib-ios-arm64/libwrvk.dylib natives/ios-arm64/libwrvk.dylib
+          cp natives/ios-arm64/libwrvk.dylib natives/ipados-arm64/libwrvk.dylib
           cp spirv/*.spv native/shaders/spirv/ || true
+          # every file must be present and non-empty
+          find natives -type f -size +0c | wc -l | grep -qx 8 || { find natives -type f -ls; exit 1; }
+          ls -lR natives
           ls native/shaders/spirv
 
       - name: Upload assembled natives
@@ -234,21 +377,27 @@ jobs:
           done
         working-directory: ./Minecraft-Transit-Railway
 
-      - name: Verify the packaged natives (all four targets)
+      - name: Verify the packaged natives (all four targets, all eight platforms)
         # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
         # native/<platform>/<library> and shaders/spirv/*.spv in every
-        # release jar, and their absence from the sources jars.
+        # release jar for every shipped platform, and their absence from the
+        # sources jars.
         run: |
+          set -e
           cd Minecraft-Transit-Railway/wr-vk-release
+          platforms="windows-x64 windows-arm64 linux-x64 linux-arm64 macos-arm64 android-arm64 ios-arm64 ipados-arm64"
           for project in 1.21.1-fabric 1.21.1-neoforge 1.21.4-fabric 1.21.4-neoforge; do
             jar=$(ls "$project"/*.jar | grep -v sources | head -1)
             echo "verifying $jar"
-            unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)' || { echo "native libraries missing from $jar"; exit 1; }
+            for platform in $platforms; do
+              unzip -l "$jar" | grep -q "native/$platform/wrvk\.\(dll\|so\|dylib\)" \
+                || { echo "native library for $platform missing from $jar"; exit 1; }
+            done
             unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
             sourcesJar=$(ls "$project"/*sources*.jar | head -1)
             if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo "binaries leaked into $sourcesJar"; exit 1; fi
           done
-          echo "native packaging contract verified in all eight jars"
+          echo "native packaging contract verified in all eight jars, all eight platforms"
 
       - name: Upload mod jars
         uses: actions/upload-artifact@v4

@@ -10,6 +10,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
@@ -276,7 +277,104 @@ public final class NativeRuntime {
 
         private static String libraryName() {
                 final String os = System.getProperty("os.name").toLowerCase();
-                return os.contains("win") ? "wrvk.dll" : os.contains("mac") || os.contains("darwin") ? "libwrvk.dylib" : "libwrvk.so";
+                return os.contains("win") ? "wrvk.dll"
+                                : os.contains("mac") || os.contains("darwin") || os.contains("ios") || os.contains("ipados") ? "libwrvk.dylib"
+                                : "libwrvk.so";
+        }
+
+        /**
+         * The full platform key: the jar layout under {@code native/} names
+         * eight targets — windows-x64, windows-arm64, linux-x64, linux-arm64,
+         * macos-arm64, android-arm64, ios-arm64 and ipados-arm64.
+         *
+         * <p>Android and iOS are the two JVM-on-mobile families where the
+         * {@code os.name} / {@code os.arch} probes lie: Android JVMs report
+         * {@code "Linux"}+{@code "aarch64"} even when they are desktop-style
+         * OpenJDK builds running inside a launcher (Pojav family), and iOS
+         * JVMs report a spoofed {@code "Darwin"}/{@code "Mac OS X"} because
+         * the JVM itself is a macOS build. The probes below resolve the real
+         * family: {@code /system/build.prop} exists only on Android devices,
+         * {@code /var/mobile} (the app sandbox root) exists only on iOS and
+         * iPadOS, and {@code uname -m} reports the device model ("iPad…",
+         * "iPhone…") there. Every probe is a best effort — a miss simply
+         * falls through to the desktop family, and a wrong pick fails the
+         * resource lookup, which disables the native path with a log line
+         * instead of crashing (see {@link #extractNatives}).</p>
+         */
+        private static String detectPlatform() {
+                final String os = System.getProperty("os.name").toLowerCase();
+                final String arch = System.getProperty("os.arch", "");
+                final String archSuffix = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "x64";
+
+                if (os.contains("win")) {
+                        return "windows-" + archSuffix;
+                }
+
+                if (os.contains("mac") || os.contains("darwin") || os.contains("ios") || os.contains("ipados")) {
+                        if (isIosFamily()) {
+                                return (isIpad() ? "ipados-" : "ios-") + archSuffix;
+                        }
+                        return "macos-" + archSuffix;
+                }
+
+                if (os.contains("android") || isAndroid()) {
+                        return "android-" + archSuffix;
+                }
+
+                return "linux-" + archSuffix;
+        }
+
+        /**
+         * True when the JVM runs on Android — either on ART itself (Dalvik / an
+         * Android vendor string) or as a desktop OpenJDK inside an Android
+         * launcher, where {@code /system/build.prop} is the reliable mark: it
+         * exists on every Android device and never on a desktop Linux.
+         */
+        private static boolean isAndroid() {
+                final String vmName = System.getProperty("java.vm.name", "").toLowerCase();
+                final String vmVendor = System.getProperty("java.vm.vendor", "").toLowerCase();
+                if (vmName.contains("dalvik") || vmVendor.contains("android")) {
+                        return true;
+                }
+                try {
+                        return Files.isReadable(Path.of("/system", "build.prop"));
+                } catch (Throwable ignored) {
+                        return false;
+                }
+        }
+
+        /**
+         * True when the JVM runs on iOS or iPadOS. {@code /var/mobile} is the
+         * app sandbox root on both — it never exists on macOS. A JVM that
+         * spells {@code os.name} as "iOS"/"iPadOS" also lands here.
+         */
+        private static boolean isIosFamily() {
+                try {
+                        return Files.isDirectory(Path.of("/var", "mobile"))
+                                        || Files.isDirectory(Path.of("/private", "var", "mobile"));
+                } catch (Throwable ignored) {
+                        return false;
+                }
+        }
+
+        /**
+         * True on iPad specifically: {@code uname -m} reports the Apple
+         * device model on iOS/iPadOS ("iPad13,4", "iPhone14,2", …) while on
+         * macOS it reports the cpu ("arm64"). The binaries are identical —
+         * this pick only decides which jar resource ({@code ipados-arm64} vs
+         * {@code ios-arm64}) is extracted — so a failed probe defaults to
+         * iPhone and still loads on an iPad.
+         */
+        private static boolean isIpad() {
+                try {
+                        final Process process = new ProcessBuilder("uname", "-m").start();
+                        final String machine = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim().toLowerCase();
+                        process.waitFor();
+                        return machine.startsWith("ipad");
+                } catch (Throwable ignored) {
+                        // no /bin/uname in the sandbox or spawning is denied — treat as iPhone
+                }
+                return false;
         }
 
         /**
@@ -284,10 +382,7 @@ public final class NativeRuntime {
          * temp directory, under exactly the name {@link System#load} expects.
          */
         private static Path extractNatives() throws IOException {
-                final String os = System.getProperty("os.name").toLowerCase();
-                final String arch = System.getProperty("os.arch");
-                final String platform = (os.contains("win") ? "windows" : os.contains("mac") || os.contains("darwin") ? "macos" : "linux")
-                                + "-" + (arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "x64");
+                final String platform = detectPlatform();
                 final String libraryName = libraryName();
                 final Path directory = Files.createTempDirectory("mtr-native-vulkan-" + platform + "-");
                 directory.toFile().deleteOnExit();

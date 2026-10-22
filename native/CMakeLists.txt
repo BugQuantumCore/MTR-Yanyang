@@ -67,6 +67,12 @@ set(WRVK_SOURCES
 # so --offline always works), then link it in exactly like another object
 # library. WRXR_SKIP_CPP_BUNDLE stops the crate's build script from also
 # compiling the C++ bundle — that exists for `cargo test` only.
+#
+# Cross builds: pass -DWRXR_TARGET=<triple> to build the Rust core for a
+# non-host triple (aarch64-linux-android, aarch64-apple-ios, ...). The env
+# vars the cross link needs (CARGO_TARGET_<TRIPLE>_LINKER / _AR etc.) are
+# supplied by the caller's environment — cargo inherits them through this
+# custom target — so the toolchain wiring stays in one place: the CI job.
 # ---------------------------------------------------------------------------
 find_program(CARGO_EXECUTABLE cargo)
 if(NOT CARGO_EXECUTABLE)
@@ -77,27 +83,44 @@ set(WRXR_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrxr/Cargo.toml)
 # output per target dir, and the SKIP_CPP_BUNDLE invocation must never
 # poison the cache a later `cargo test` uses to link the C++ bundle.
 set(WRXR_TARGET_DIR ${CMAKE_BINARY_DIR}/rust-target)
-if(WIN32)
-        set(WRXR_STATICLIB ${WRXR_TARGET_DIR}/release/wrxr.lib)
+set(WRXR_TARGET "" CACHE STRING "Rust target triple for cross builds; empty = the host triple")
+if(WRXR_TARGET)
+        # `cargo build --target <triple>` places the artifacts under
+        # <target-dir>/<triple>/release/. The staticlib suffix still follows
+        # the target's own object format (MSVC triples produce wrxr.lib).
+        set(WRXR_LIBDIR ${WRXR_TARGET_DIR}/${WRXR_TARGET}/release)
+        set(WRXR_TARGET_ARGS --target ${WRXR_TARGET})
+        if(WRXR_TARGET MATCHES "windows-msvc$")
+                set(WRXR_STATICLIB ${WRXR_LIBDIR}/wrxr.lib)
+        else()
+                set(WRXR_STATICLIB ${WRXR_LIBDIR}/libwrxr.a)
+        endif()
 else()
-        set(WRXR_STATICLIB ${WRXR_TARGET_DIR}/release/libwrxr.a)
+        set(WRXR_LIBDIR ${WRXR_TARGET_DIR}/release)
+        set(WRXR_TARGET_ARGS)
+        if(WIN32)
+                set(WRXR_STATICLIB ${WRXR_LIBDIR}/wrxr.lib)
+        else()
+                set(WRXR_STATICLIB ${WRXR_LIBDIR}/libwrxr.a)
+        endif()
 endif()
-if(WIN32)
+if(WIN32 AND NOT WRXR_TARGET)
         # The C++ objects are built against the static CRT (see the MSVC
         # runtime selection above), so the Rust core must match: crt-static
         # keeps one CRT in the DLL — required for the DllMain thread-start
-        # discipline documented in src/wrmain.cpp.
+        # discipline documented in src/wrmain.cpp. Cross Windows targets set
+        # their own RUSTFLAGS in the CI job if ever needed.
         add_custom_target(wrxr_rust
                 COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
                         "RUSTFLAGS=-C target-feature=+crt-static"
-                        cargo build --release --offline --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
+                        cargo build --release --offline ${WRXR_TARGET_ARGS} --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
                 BYPRODUCTS ${WRXR_STATICLIB}
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 COMMENT "building the Rust transport core (wrxr)")
 else()
         add_custom_target(wrxr_rust
                 COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
-                        cargo build --release --offline --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
+                        cargo build --release --offline ${WRXR_TARGET_ARGS} --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
                 BYPRODUCTS ${WRXR_STATICLIB}
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 COMMENT "building the Rust transport core (wrxr)")
@@ -113,6 +136,15 @@ if(WIN32)
     # rustc would normally link itself; from the MSVC side they must be
     # named explicitly.
     target_link_libraries(wrvk PRIVATE gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 ${WRXR_STATICLIB})
+elseif(ANDROID)
+    # Bionic: pthread lives in libc, the dl/log/m/vulkan libs exist on every
+    # Vulkan-capable device, and libatomic covers the 16-byte atomics the
+    # Rust core emits for aarch64.
+    target_link_libraries(wrvk PRIVATE ${CMAKE_DL_LIBS} atomic log ${WRXR_STATICLIB})
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Apple platforms: pthread/dl are inside libSystem; MoltenVK ships as a
+    # dylib inside the host app (the loader's candidate list already has it).
+    target_link_libraries(wrvk PRIVATE ${CMAKE_DL_LIBS} ${WRXR_STATICLIB})
 else()
     find_package(Threads REQUIRED)
     target_link_libraries(wrvk PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})

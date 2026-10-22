@@ -46,6 +46,7 @@ mtr_custom_resources.json
 natives/
 native/build-local/
 native/build/
+native/build-cross/
 native/rust/wrxr/target/
 
 # website build outputs (generated during :fabric:setupFiles)

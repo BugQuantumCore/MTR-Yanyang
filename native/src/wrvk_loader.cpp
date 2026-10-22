@@ -77,8 +77,19 @@ public:
 #if defined(_WIN32)
                         "vulkan-1.dll",
 #elif defined(__APPLE__)
+#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+                        // iOS/iPadOS hosts embed MoltenVK in the app bundle;
+                        // the plain names below never resolve there.
+                        "@executable_path/Frameworks/libMoltenVK.dylib",
+                        "@executable_path/Frameworks/MoltenVK.framework/MoltenVK",
+                        "@executable_path/libMoltenVK.dylib",
+                        "@rpath/libMoltenVK.dylib",
+#endif
                         "libvulkan.1.dylib", "libMoltenVK.dylib", "/usr/local/lib/libvulkan.dylib",
 #else
+                        // Android resolves the system loader through the
+                        // plain soname (no libvulkan.so.1 there); desktop
+                        // Linux hits the versioned one first.
                         "libvulkan.so.1", "libvulkan.so",
 #endif
                 };
