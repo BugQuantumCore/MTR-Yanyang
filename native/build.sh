@@ -14,10 +14,12 @@ mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 FLAGS="-std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -Iinclude"
 
-# The Rust transport core (zero dependencies → builds fully offline).
+# The Rust transport core (zero dependencies → builds fully offline). The
+# dedicated target dir keeps the build-script cache separate from `cargo
+# test` runs in the same tree.
 export WRXR_SKIP_CPP_BUNDLE=1
-cargo build --release --offline --manifest-path rust/wrxr/Cargo.toml
-RUSTLIB="$(pwd)/rust/wrxr/target/release/libwrxr.a"
+cargo build --release --offline --target-dir "$OUT/rust-target" --manifest-path rust/wrxr/Cargo.toml
+RUSTLIB="$(pwd)/$OUT/rust-target/release/libwrxr.a"
 RUSTLIBS="$RUSTLIB -lstdc++ -lm -lpthread -ldl"
 
 # The C++ half of the server + the renderer + the boot shim.

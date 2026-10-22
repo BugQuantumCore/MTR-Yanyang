@@ -73,7 +73,10 @@ if(NOT CARGO_EXECUTABLE)
         message(FATAL_ERROR "cargo is required to build the Rust transport core (rustup.rs)")
 endif()
 set(WRXR_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrxr/Cargo.toml)
-set(WRXR_TARGET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrxr/target)
+# A dedicated target dir (NOT the crate's default): cargo caches build-script
+# output per target dir, and the SKIP_CPP_BUNDLE invocation must never
+# poison the cache a later `cargo test` uses to link the C++ bundle.
+set(WRXR_TARGET_DIR ${CMAKE_BINARY_DIR}/rust-target)
 if(WIN32)
         set(WRXR_STATICLIB ${WRXR_TARGET_DIR}/release/wrxr.lib)
 else()
@@ -87,14 +90,14 @@ if(WIN32)
         add_custom_target(wrxr_rust
                 COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
                         "RUSTFLAGS=-C target-feature=+crt-static"
-                        cargo build --release --offline --manifest-path ${WRXR_MANIFEST}
+                        cargo build --release --offline --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
                 BYPRODUCTS ${WRXR_STATICLIB}
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 COMMENT "building the Rust transport core (wrxr)")
 else()
         add_custom_target(wrxr_rust
                 COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
-                        cargo build --release --offline --manifest-path ${WRXR_MANIFEST}
+                        cargo build --release --offline --target-dir ${WRXR_TARGET_DIR} --manifest-path ${WRXR_MANIFEST}
                 BYPRODUCTS ${WRXR_STATICLIB}
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 COMMENT "building the Rust transport core (wrxr)")
@@ -106,7 +109,10 @@ target_compile_options(wrvk PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>)
 add_dependencies(wrvk wrxr_rust)
 if(WIN32)
-    target_link_libraries(wrvk PRIVATE gdi32 user32 ${WRXR_STATICLIB})
+    # The Rust staticlib embeds std, which references the Winsock/NT APIs
+    # rustc would normally link itself; from the MSVC side they must be
+    # named explicitly.
+    target_link_libraries(wrvk PRIVATE gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 ${WRXR_STATICLIB})
 else()
     find_package(Threads REQUIRED)
     target_link_libraries(wrvk PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})
@@ -175,7 +181,7 @@ if(WRVK_BUILD_TESTS)
     target_include_directories(wrvk_tests PRIVATE include)
     add_dependencies(wrvk_tests wrxr_rust)
     if(WIN32)
-            target_link_libraries(wrvk_tests PRIVATE wrobj_core gdi32 user32 ${WRXR_STATICLIB})
+            target_link_libraries(wrvk_tests PRIVATE wrobj_core gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 ${WRXR_STATICLIB})
     else()
             target_link_libraries(wrvk_tests PRIVATE wrobj_core Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})
     endif()
