@@ -182,15 +182,20 @@ jobs:
 
       - name: Verify the Android library
         if: matrix.cross == 'android'
+        # readelf aligns its columns — assert with "Machine:.*AArch64", and
+        # print the evidence before the assertions so a failure is diagnosable.
         run: |
           set -e
-          "$NDK_TOOLCHAIN/bin/llvm-readelf" -h native/build/libwrvk.so | grep -q "Machine: AArch64" \
+          echo "=== readelf -h ==="
+          "$NDK_TOOLCHAIN/bin/llvm-readelf" -h native/build/libwrvk.so
+          echo "=== readelf -d ==="
+          "$NDK_TOOLCHAIN/bin/llvm-readelf" -d native/build/libwrvk.so
+          file native/build/libwrvk.so
+          "$NDK_TOOLCHAIN/bin/llvm-readelf" -h native/build/libwrvk.so | grep -q "Machine:.*AArch64" \
             || { echo "not an AArch64 library"; exit 1; }
           if "$NDK_TOOLCHAIN/bin/llvm-readelf" -d native/build/libwrvk.so | grep -q "libc\.so\.6\|libstdc++"; then
             echo "glibc leaked into the Android build (host toolchain misfire)"; exit 1
           fi
-          "$NDK_TOOLCHAIN/bin/llvm-readelf" -d native/build/libwrvk.so | grep NEEDED
-          file native/build/libwrvk.so
 
       - name: Sign and verify the iOS library
         if: matrix.cross == 'ios'
