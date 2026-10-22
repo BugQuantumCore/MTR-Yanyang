@@ -90,6 +90,7 @@ struct Server::Impl {
         std::mutex mutex;
         Region region;
         bool booted{false};
+        std::atomic<bool> shutdownRequested{false};
 
         struct ModelEntry {
                 uint32_t modelId;
@@ -220,160 +221,160 @@ struct Server::Impl {
                         keyColorSet[static_cast<size_t>(i)] = keys->entries[i].hasColor;
                 }
 
-		// Per (geometry-group) result: model ids must be per group, because the
-		// Java side addresses model parts by group name (ModelPropertiesPart
-		// writeCache). One model entry per group, one name in the reply.
-		struct GroupBuild {
-			std::string name;
-			std::vector<MeshInfo> meshInfos;
-			std::vector<std::shared_ptr<GpuMesh>> meshes;
-			uint32_t modelId{0};
-		};
-		std::vector<GroupBuild> groupBuilds;
-		std::vector<MeshInfo> groupMeshesScratch;
+                // Per (geometry-group) result: model ids must be per group, because the
+                // Java side addresses model parts by group name (ModelPropertiesPart
+                // writeCache). One model entry per group, one name in the reply.
+                struct GroupBuild {
+                        std::string name;
+                        std::vector<MeshInfo> meshInfos;
+                        std::vector<std::shared_ptr<GpuMesh>> meshes;
+                        uint32_t modelId{0};
+                };
+                std::vector<GroupBuild> groupBuilds;
+                std::vector<MeshInfo> groupMeshesScratch;
 
-		const auto buildOne = [&](WrObjBuilder* builder, const std::string& groupName) {
-			if (builder == nullptr) {
-				return;
-			}
-			// The reference pipeline places source meshes explicitly; a bare
-			// builder has no placements and produces no geometry. One identity
-			// placement exposes the source mesh set.
-			wr_obj_builder_add_transform(builder, 0, 0.0, 0.0, 0.0, 0);
-			WrObjResult* result = wr_obj_builder_build(builder);
-			wr_obj_builder_free(builder);
-			if (result == nullptr) {
-				return;
-			}
-			const auto* draws = static_cast<const WrObjResultDraw*>(result->drawData);
-			for (int32_t d = 0; d < result->drawCount; d++) {
-				const WrObjResultDraw& draw = draws[d];
-				auto mesh = std::make_shared<GpuMesh>();
-				const auto* source = static_cast<const uint8_t*>(result->vertexData);
-				mesh->vertices.assign(source + draw.vertexOffset * VERTEX_BYTES,
-					source + (draw.vertexOffset + draw.vertexCount) * VERTEX_BYTES);
-				const auto* sourceIndices = static_cast<const uint32_t*>(result->indexData);
-				mesh->indices.assign(sourceIndices + draw.indexOffset,
-					sourceIndices + draw.indexOffset + draw.indexCount);
+                const auto buildOne = [&](WrObjBuilder* builder, const std::string& groupName) {
+                        if (builder == nullptr) {
+                                return;
+                        }
+                        // The reference pipeline places source meshes explicitly; a bare
+                        // builder has no placements and produces no geometry. One identity
+                        // placement exposes the source mesh set.
+                        wr_obj_builder_add_transform(builder, 0, 0.0, 0.0, 0.0, 0);
+                        WrObjResult* result = wr_obj_builder_build(builder);
+                        wr_obj_builder_free(builder);
+                        if (result == nullptr) {
+                                return;
+                        }
+                        const auto* draws = static_cast<const WrObjResultDraw*>(result->drawData);
+                        for (int32_t d = 0; d < result->drawCount; d++) {
+                                const WrObjResultDraw& draw = draws[d];
+                                auto mesh = std::make_shared<GpuMesh>();
+                                const auto* source = static_cast<const uint8_t*>(result->vertexData);
+                                mesh->vertices.assign(source + draw.vertexOffset * VERTEX_BYTES,
+                                        source + (draw.vertexOffset + draw.vertexCount) * VERTEX_BYTES);
+                                const auto* sourceIndices = static_cast<const uint32_t*>(result->indexData);
+                                mesh->indices.assign(sourceIndices + draw.indexOffset,
+                                        sourceIndices + draw.indexOffset + draw.indexCount);
 
-				MeshInfo info{};
-				info.meshId = nextMeshId++;
-				info.vertexCount = static_cast<uint32_t>(draw.vertexCount);
-				info.indexCount = static_cast<uint32_t>(draw.indexCount);
-				info.kd[0] = static_cast<uint8_t>((draw.color >> 24) & 0xFF);
-				info.kd[1] = static_cast<uint8_t>((draw.color >> 16) & 0xFF);
-				info.kd[2] = static_cast<uint8_t>((draw.color >> 8) & 0xFF);
-				info.kd[3] = static_cast<uint8_t>(draw.color & 0xFF);
-				info.name = keys->entries[draw.keyIndex].key;
+                                MeshInfo info{};
+                                info.meshId = nextMeshId++;
+                                info.vertexCount = static_cast<uint32_t>(draw.vertexCount);
+                                info.indexCount = static_cast<uint32_t>(draw.indexCount);
+                                info.kd[0] = static_cast<uint8_t>((draw.color >> 24) & 0xFF);
+                                info.kd[1] = static_cast<uint8_t>((draw.color >> 16) & 0xFF);
+                                info.kd[2] = static_cast<uint8_t>((draw.color >> 8) & 0xFF);
+                                info.kd[3] = static_cast<uint8_t>(draw.color & 0xFF);
+                                info.name = keys->entries[draw.keyIndex].key;
 
-				float bounds[6] = {1e30F, 1e30F, 1e30F, -1e30F, -1e30F, -1e30F};
-				const auto* vertexBytes = mesh->vertices.data();
-				for (int32_t v = 0; v < draw.vertexCount; v++) {
-					float xyz[3];
-					std::memcpy(xyz, vertexBytes + static_cast<size_t>(v) * VERTEX_BYTES, sizeof(xyz));
-					bounds[0] = std::min(bounds[0], xyz[0]);
-					bounds[1] = std::min(bounds[1], xyz[1]);
-					bounds[2] = std::min(bounds[2], xyz[2]);
-					bounds[3] = std::max(bounds[3], xyz[0]);
-					bounds[4] = std::max(bounds[4], xyz[1]);
-					bounds[5] = std::max(bounds[5], xyz[2]);
-				}
-				if (draw.vertexCount == 0) {
-					std::memset(bounds, 0, sizeof(bounds));
-				}
-				std::memcpy(info.aabb, bounds, sizeof(bounds));
+                                float bounds[6] = {1e30F, 1e30F, 1e30F, -1e30F, -1e30F, -1e30F};
+                                const auto* vertexBytes = mesh->vertices.data();
+                                for (int32_t v = 0; v < draw.vertexCount; v++) {
+                                        float xyz[3];
+                                        std::memcpy(xyz, vertexBytes + static_cast<size_t>(v) * VERTEX_BYTES, sizeof(xyz));
+                                        bounds[0] = std::min(bounds[0], xyz[0]);
+                                        bounds[1] = std::min(bounds[1], xyz[1]);
+                                        bounds[2] = std::min(bounds[2], xyz[2]);
+                                        bounds[3] = std::max(bounds[3], xyz[0]);
+                                        bounds[4] = std::max(bounds[4], xyz[1]);
+                                        bounds[5] = std::max(bounds[5], xyz[2]);
+                                }
+                                if (draw.vertexCount == 0) {
+                                        std::memset(bounds, 0, sizeof(bounds));
+                                }
+                                std::memcpy(info.aabb, bounds, sizeof(bounds));
 
-				meshIndex[info.meshId] = mesh;
-				if (recorder != nullptr) {
-					recorder->uploadMesh(info.meshId, *mesh);
-				}
-				groupMeshesScratch.push_back(std::move(info));
-			}
-			wr_obj_result_free(result);
-		};
+                                meshIndex[info.meshId] = mesh;
+                                if (recorder != nullptr) {
+                                        recorder->uploadMesh(info.meshId, *mesh);
+                                }
+                                groupMeshesScratch.push_back(std::move(info));
+                        }
+                        wr_obj_result_free(result);
+                };
 
-		const char* mtlText = hasMtl ? mtlCombined.c_str() : nullptr;
-		const int32_t mtlTextLen = static_cast<int32_t>(mtlCombined.size());
-		if (splitModel) {
-			WrObjGroupList* groups = wr_obj_groups_load(objText, objTextLen);
-			if (groups != nullptr) {
-				for (int32_t g = 0; g < groups->count; g++) {
-					GroupBuild groupBuild;
-					groupBuild.name = groups->entries[g].name;
-					groupMeshesScratch.clear();
-					buildOne(wr_obj_builder_create_group(objText, objTextLen, mtlText, mtlTextLen,
-						keyTextureHandles.data(), keyColorSet.data(), static_cast<int32_t>(keyTextureHandles.size()),
-						hasMtl ? 1 : 0, flipTextureV ? 1 : 0,
-						groups->entries[g].name, -1), groupBuild.name);
-					if (!groupMeshesScratch.empty()) {
-						groupBuild.modelId = nextModelId++;
-						groupBuild.meshInfos = std::move(groupMeshesScratch);
-						for (const MeshInfo& info : groupBuild.meshInfos) {
-							groupBuild.meshes.push_back(meshIndex[info.meshId]);
-						}
-						groupBuilds.push_back(std::move(groupBuild));
-					}
-				}
-				wr_obj_groups_free(groups);
-			}
-		} else {
-			GroupBuild groupBuild;
-			groupBuild.name = "default";
-			groupMeshesScratch.clear();
-			buildOne(wr_obj_builder_create(objText, objTextLen, mtlText, mtlTextLen,
-				keyTextureHandles.data(), keyColorSet.data(), static_cast<int32_t>(keyTextureHandles.size()),
-				hasMtl ? 1 : 0, flipTextureV ? 1 : 0), groupBuild.name);
-			if (!groupMeshesScratch.empty()) {
-				groupBuild.modelId = nextModelId++;
-				groupBuild.meshInfos = std::move(groupMeshesScratch);
-				for (const MeshInfo& info : groupBuild.meshInfos) {
-					groupBuild.meshes.push_back(meshIndex[info.meshId]);
-				}
-				groupBuilds.push_back(std::move(groupBuild));
-			}
-		}
-		wr_obj_keys_free(keys);
+                const char* mtlText = hasMtl ? mtlCombined.c_str() : nullptr;
+                const int32_t mtlTextLen = static_cast<int32_t>(mtlCombined.size());
+                if (splitModel) {
+                        WrObjGroupList* groups = wr_obj_groups_load(objText, objTextLen);
+                        if (groups != nullptr) {
+                                for (int32_t g = 0; g < groups->count; g++) {
+                                        GroupBuild groupBuild;
+                                        groupBuild.name = groups->entries[g].name;
+                                        groupMeshesScratch.clear();
+                                        buildOne(wr_obj_builder_create_group(objText, objTextLen, mtlText, mtlTextLen,
+                                                keyTextureHandles.data(), keyColorSet.data(), static_cast<int32_t>(keyTextureHandles.size()),
+                                                hasMtl ? 1 : 0, flipTextureV ? 1 : 0,
+                                                groups->entries[g].name, -1), groupBuild.name);
+                                        if (!groupMeshesScratch.empty()) {
+                                                groupBuild.modelId = nextModelId++;
+                                                groupBuild.meshInfos = std::move(groupMeshesScratch);
+                                                for (const MeshInfo& info : groupBuild.meshInfos) {
+                                                        groupBuild.meshes.push_back(meshIndex[info.meshId]);
+                                                }
+                                                groupBuilds.push_back(std::move(groupBuild));
+                                        }
+                                }
+                                wr_obj_groups_free(groups);
+                        }
+                } else {
+                        GroupBuild groupBuild;
+                        groupBuild.name = ""; // javagl parity: addModel("", ...) for the non-split build
+                        groupMeshesScratch.clear();
+                        buildOne(wr_obj_builder_create(objText, objTextLen, mtlText, mtlTextLen,
+                                keyTextureHandles.data(), keyColorSet.data(), static_cast<int32_t>(keyTextureHandles.size()),
+                                hasMtl ? 1 : 0, flipTextureV ? 1 : 0), groupBuild.name);
+                        if (!groupMeshesScratch.empty()) {
+                                groupBuild.modelId = nextModelId++;
+                                groupBuild.meshInfos = std::move(groupMeshesScratch);
+                                for (const MeshInfo& info : groupBuild.meshInfos) {
+                                        groupBuild.meshes.push_back(meshIndex[info.meshId]);
+                                }
+                                groupBuilds.push_back(std::move(groupBuild));
+                        }
+                }
+                wr_obj_keys_free(keys);
 
-		// reply: requestId, groupCount, per group {name, modelId, meshCount, meshes...}
-		std::vector<uint8_t> payload;
-		Writer w{payload};
-		w.write(requestId);
-		const uint32_t groupCount = static_cast<uint32_t>(groupBuilds.size());
-		w.write(groupCount);
-		for (uint32_t g = 0; g < groupCount; g++) {
-			const GroupBuild& groupBuild = groupBuilds[g];
-			const uint32_t groupNameLength = static_cast<uint32_t>(groupBuild.name.size());
-			w.write(groupNameLength);
-			w.blob(groupBuild.name.data(), groupNameLength);
-			w.write(groupBuild.modelId);
-			const uint32_t meshCount = static_cast<uint32_t>(groupBuild.meshInfos.size());
-			w.write(meshCount);
-			for (uint32_t i = 0; i < meshCount; i++) {
-				const MeshInfo& info = groupBuild.meshInfos[i];
-				w.write(info.meshId);
-				w.write(info.vertexCount);
-				w.write(info.indexCount);
-				w.blob(info.aabb, sizeof(info.aabb));
-				w.write<uint32_t>(info.kd[0]);
-				w.write<uint32_t>(info.kd[1]);
-				w.write<uint32_t>(info.kd[2]);
-				w.write<uint32_t>(info.kd[3]);
-				const uint32_t nameByteCount = static_cast<uint32_t>(info.name.size());
-				w.write(nameByteCount);
-				w.blob(info.name.data(), nameByteCount);
-			}
-			auto model = std::make_unique<ModelEntry>();
-			model->modelId = groupBuild.modelId;
-			model->meshInfos = groupBuild.meshInfos;
-			model->meshes = groupBuild.meshes;
-			models[groupBuild.modelId] = std::move(model);
-		}
-		publishResult(RES_MODELS, payload);
-		region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
-		return true;
-	}
+                // reply: requestId, groupCount, per group {name, modelId, meshCount, meshes...}
+                std::vector<uint8_t> payload;
+                Writer w{payload};
+                w.write(requestId);
+                const uint32_t groupCount = static_cast<uint32_t>(groupBuilds.size());
+                w.write(groupCount);
+                for (uint32_t g = 0; g < groupCount; g++) {
+                        const GroupBuild& groupBuild = groupBuilds[g];
+                        const uint32_t groupNameLength = static_cast<uint32_t>(groupBuild.name.size());
+                        w.write(groupNameLength);
+                        w.blob(groupBuild.name.data(), groupNameLength);
+                        w.write(groupBuild.modelId);
+                        const uint32_t meshCount = static_cast<uint32_t>(groupBuild.meshInfos.size());
+                        w.write(meshCount);
+                        for (uint32_t i = 0; i < meshCount; i++) {
+                                const MeshInfo& info = groupBuild.meshInfos[i];
+                                w.write(info.meshId);
+                                w.write(info.vertexCount);
+                                w.write(info.indexCount);
+                                w.blob(info.aabb, sizeof(info.aabb));
+                                w.write<uint32_t>(info.kd[0]);
+                                w.write<uint32_t>(info.kd[1]);
+                                w.write<uint32_t>(info.kd[2]);
+                                w.write<uint32_t>(info.kd[3]);
+                                const uint32_t nameByteCount = static_cast<uint32_t>(info.name.size());
+                                w.write(nameByteCount);
+                                w.blob(info.name.data(), nameByteCount);
+                        }
+                        auto model = std::make_unique<ModelEntry>();
+                        model->modelId = groupBuild.modelId;
+                        model->meshInfos = groupBuild.meshInfos;
+                        model->meshes = groupBuild.meshes;
+                        models[groupBuild.modelId] = std::move(model);
+                }
+                publishResult(RES_MODELS, payload);
+                region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
+                return true;
+        }
 
-	// NewOptimizedModelGroup.merge semantics: translate + optional flip. The
+        // NewOptimizedModelGroup.merge semantics: translate + optional flip. The
         // flip mirrors x/z of positions and normals and swaps winding, matching
         // the Java path's per-vertex modify() plus the culling behaviour it
         // produces. Identity transforms alias the source GPU data — no copy.
@@ -491,14 +492,11 @@ struct Server::Impl {
                         }
                         models.erase(it);
                 }
-                // flow-control ack with zero meshes so Java can reuse request ids
-                std::vector<uint8_t> payload;
-                Writer w{payload};
-                w.write(requestId);
-                w.write<uint32_t>(0);
-                w.write<uint32_t>(0);
-                publishResult(RES_MODELS, payload);
-                region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
+                // No results-queue echo: Java's request ids are monotonic, so a
+                // flow-control reply would only fill results.bin with messages
+                // nobody consumes (a full queue then wedges every later reply
+                // behind publishResult's 2-second drain wait). The generic
+                // buildAck that processBuilds writes per message is the handshake.
                 return !reader.overflow;
         }
 };
@@ -548,6 +546,7 @@ void Server::shutdown() {
         impl_->meshIndex.clear();
         impl_->shaders.clear();
         impl_->region = Region{};
+        impl_->shutdownRequested.store(false, std::memory_order_release);
         impl_->booted = false;
 }
 
@@ -585,7 +584,12 @@ int64_t Server::processBuilds() {
                 std::memcpy(&size, payloadArea + readPos + 4, sizeof(uint32_t));
                 const uint32_t total = MESSAGE_HEADER_SIZE + roundUp8(size);
                 if (size > capacity || readPos + total > writePos) {
+                        // A malformed record would otherwise be re-read on every pass and
+                        // wedge the queue (and every Java publish waiting for its ack)
+                        // permanently: skip to the write position, count it as an error,
+                        // and let the stream drain.
                         impl_->setError(ERR_INCONSISTENT);
+                        header->readPos.store(writePos, std::memory_order_release);
                         return -1;
                 }
                 Reader reader{payloadArea + readPos + MESSAGE_HEADER_SIZE, size, 0};
@@ -606,12 +610,24 @@ int64_t Server::processBuilds() {
                         case MSG_FREE_MODELS:
                                 ok = impl_->handleFreeModels(reader);
                                 break;
+                        case MSG_SHUTDOWN:
+                                // Flag only: tearing the server down takes the region mutex,
+                                // which processBuilds already holds, so the poller performs the
+                                // actual teardown after this pass, outside every lock. The
+                                // per-message ack below is Java's signal that the request landed.
+                                impl_->shutdownRequested.store(true, std::memory_order_release);
+                                ok = true;
+                                break;
                         default:
                                 ok = false;
                                 break;
                 }
                 if (!ok) {
+                        // Advance past the poisoned message for the same reason as the
+                        // malformed-header guard above; the error flag still reports it.
                         impl_->setError(reader.overflow ? ERR_INCONSISTENT : ERR_VULKAN);
+                        header->readPos.store(readPos + total, std::memory_order_release);
+                        region.control()->buildAck.fetch_add(1, std::memory_order_release);
                         return -1;
                 }
                 readPos += total;
@@ -620,6 +636,10 @@ int64_t Server::processBuilds() {
                 region.control()->buildAck.fetch_add(1, std::memory_order_release);
         }
         return processed;
+}
+
+bool Server::shutdownRequested() const {
+        return impl_->shutdownRequested.load(std::memory_order_acquire);
 }
 
 int64_t Server::processFrame() {

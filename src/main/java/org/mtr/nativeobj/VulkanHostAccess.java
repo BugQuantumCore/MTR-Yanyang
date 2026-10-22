@@ -28,7 +28,7 @@ final class VulkanHostAccess {
         private @Nullable Method getVkDevice;
         private @Nullable Field instanceField;
         private @Nullable Method getGraphicsQueue;
-        private @Nullable Method queueHandle;
+        private @Nullable Method queueHandleGetter;
         private @Nullable Method getRenderer;
         private @Nullable Field currentCmdBufferField;
         private @Nullable Method getBoundRenderPass;
@@ -85,8 +85,8 @@ final class VulkanHostAccess {
                                 logFail("graphics queue is not initialised yet");
                                 return false;
                         }
-                        queueHandle = graphicsQueue.getClass().getMethod("queue");
-                        final Object vkQueue = queueHandle.invoke(graphicsQueue);
+                        queueHandleGetter = graphicsQueue.getClass().getMethod("queue");
+                        final Object vkQueue = queueHandleGetter.invoke(graphicsQueue);
                         if (vkQueue == null) {
                                 logFail("queue handle is null");
                                 return false;
@@ -103,7 +103,7 @@ final class VulkanHostAccess {
                                 // fall back to the family enum's ordinal on the concrete queue class
                                 final Field familyField = graphicsQueue.getClass().getDeclaredField("family");
                                 familyField.setAccessible(true);
-                                queueFamilyIndex = ((Enum<?>) familyField.get(graphicsQueue)).ordinal();
+                                resolvedQueueFamily = ((Enum<?>) familyField.get(graphicsQueue)).ordinal();
                         }
 
                         // renderer + command buffer + render pass

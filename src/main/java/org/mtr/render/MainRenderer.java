@@ -152,8 +152,11 @@ public class MainRenderer {
                 }
 
                 // Idempotent, auto-detected: brings up the native Vulkan pipeline when
-                // VulkanMod is driving the frame; a no-op on the GL path.
+                // VulkanMod is driving the frame; a no-op on the GL path. Also
+                // finalises a deferred teardown on this, the only thread that
+                // ever unmaps the exchange region.
                 org.mtr.nativeobj.NativeRuntime.initialise();
+                org.mtr.nativeobj.NativeRuntime.tickTeardown();
 
                 final long millisElapsed = getMillisElapsed();
                 timerMillis += millisElapsed;
@@ -350,10 +353,11 @@ public class MainRenderer {
                         nativeRecorder = null;
                 }
                 modelRenders.forEach((newOptimizedModel, modelsForRenderStage) -> modelsForRenderStage.forEach((renderStage, renderDetails) -> {
-                        if (nativeRecorder != null && newOptimizedModel.getNativeModel() != null) {
+                        final org.mtr.nativeobj.NativeModel nativeModel = newOptimizedModel.getNativeModel();
+                        if (nativeRecorder != null && nativeModel != null) {
                                 renderDetails.forEach(renderDetailsEntry -> {
                                         renderDetailsEntry.left().transform(matrixStack, offset);
-                                        nativeRecorder.queue(newOptimizedModel.getNativeModel(), matrixStack.last().pose(),
+                                        nativeRecorder.queue(nativeModel, matrixStack.last().pose(),
                                                 renderStage.isFullBrightness ? 1 : (float) renderDetailsEntry.rightInt() / 0xF);
                                         matrixStack.popPose();
                                 });

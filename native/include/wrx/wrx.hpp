@@ -117,6 +117,13 @@ inline constexpr uint32_t MSG_LOAD_SHADERS = 2;
 inline constexpr uint32_t MSG_LOAD_OBJ = 3;
 inline constexpr uint32_t MSG_INSTANCE = 4;
 inline constexpr uint32_t MSG_FREE_MODELS = 5;
+// Shutdown request through the queue itself (used by the shared-memory
+// transport on JDKs without the FFM API, where no wr_shutdown downcall can
+// exist): sets the server's shutdown-requested flag; the poller observes it
+// after the current processBuilds pass and performs Server::shutdown outside
+// every lock. The generic per-message build ack doubles as the handshake, so
+// Java can unmap its side safely once buildAck reaches the sent sequence.
+inline constexpr uint32_t MSG_SHUTDOWN = 6;
 
 // results.bin message types
 inline constexpr uint32_t RES_MODELS = 1;   // reply to LOAD_OBJ
@@ -201,16 +208,23 @@ inline constexpr uint32_t FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + sizeof(Fr
 //   u32 objByteCount, bytes...
 //   u32 mtlCount, per mtl: u32 nameByteCount, bytes, u32 contentByteCount, bytes
 //
-// Reply RES_MODELS:
-//   u32 requestId, u32 modelId, u32 meshCount
-//   per mesh: u32 meshId, u32 vertexCount, u32 indexCount, float aabb[6],
-//            u8 kdR, kdG, kdB, kdA, u32 nameByteCount, name bytes...
+// Reply RES_MODELS (one reply covers the whole document):
+//   u32 requestId, u32 groupCount, per group {
+//     u32 nameByteCount, name bytes, u32 modelId, u32 meshCount,
+//     per mesh: u32 meshId, u32 vertexCount, u32 indexCount, float aabb[6],
+//              u32 kdR, u32 kdG, u32 kdB, u32 kdA (each 0..255),
+//              u32 nameByteCount, name bytes (material key incl. options)
+//   }
+//   The non-split build uses the same group name as the javagl loader's
+//   addModel("", ...) call: the empty string.
 //
 // INSTANCE request: u32 requestId, u32 sourceModelId, u32 flip, f32 dx, dy, dz
-// Reply RES_INSTANCE: u32 requestId, u32 instanceModelId, float aabb[6]
+// Reply RES_INSTANCE: u32 requestId, u32 instanceModelId, u32 meshCount,
+//   per mesh { u32 meshId, float aabb[6] } — one mesh per source material; a
+//   placed model may therefore own several mesh ids (Java keeps them all).
 //
-// FREE_MODELS: u32 count, u32 modelIds...
-// Reply RES_MODELS with meshCount 0 echoes requestId for flow control.
+// FREE_MODELS: u32 requestId, u32 count, u32 modelIds...
+// No reply: request ids are monotonic, so no flow-control echo is needed.
 // ---------------------------------------------------------------------------
 
 struct MeshInfo {
@@ -310,6 +324,10 @@ public:
 
         // Drain every pending build message. Returns the processed count or -1.
         int64_t processBuilds();
+
+        // Set by the MSG_SHUTDOWN handler; the poller (or an FFM submitter)
+        // observes it after the current pass and performs shutdown() lock-free.
+        bool shutdownRequested() const;
 
         // Record the latest published frame if any (0 = nothing new, 1 = recorded).
         int64_t processFrame();

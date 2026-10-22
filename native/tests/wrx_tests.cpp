@@ -347,9 +347,13 @@ int main() {
                                 check(server2.liveModelCount() == 0, "models freed");
                                 check(server2.liveMeshCount() == 0, "mesh index drained (no leak)");
 
+                                // No results-queue echo for FREE any more: request ids
+                                // are monotonic, and an unconsumed echo would fill
+                                // results.bin (a full queue wedges every later
+                                // reply behind publishResult's drain wait).
                                 std::vector<ResultReader> freeResults;
                                 consumeResults(testRegion->region, freeResults);
-                                check(freeResults.size() == 1, "free ack present");
+                                check(freeResults.empty(), "no free echo on the results queue");
                         }
                         server2.shutdown();
                         check(server2.liveMeshCount() == 0, "shutdown clean");
@@ -398,6 +402,41 @@ int main() {
                         server.processFrame();
                         check(testRegion->region.control()->frameAck.load() == 3, "corrupt frame acked");
                         server.shutdown();
+                }
+        }
+
+        std::printf("wrx: queue-initiated shutdown (MSG_SHUTDOWN)\n");
+        {
+                auto testRegion = createRegion("shutdown");
+                check(testRegion != nullptr, "shutdown region opens");
+                if (testRegion != nullptr) {
+                        std::ofstream(testRegion->directory / wrx::CONFIG_FILE) << "protocol=1\ndirectory=" << testRegion->directory.string() << "\n";
+                        wrx::Server server;
+                        check(server.boot((testRegion->directory / wrx::CONFIG_FILE).string()), "shutdown server boots");
+                        // a live model so the shutdown path has something to free
+                        MessageWriter w;
+                        w.u32(900);
+                        w.u32(1 << 0); // splitModel
+                        w.str(BASIC_OBJ);
+                        w.u32(1); // one mtl
+                        w.str("body");
+                        w.str("newmtl body\nKd 0.5 0.25 1.0\nd 1\nmap_Kd textures/body.png\n");
+                        check(publishBuild(testRegion->region, wrx::MSG_LOAD_OBJ, w.bytes), "shutdown-path LOAD published");
+                        check(server.processBuilds() == 1, "shutdown-path LOAD processed");
+                        check(server.liveModelCount() == 1, "shutdown-path model live");
+                        check(!server.shutdownRequested(), "no shutdown flag yet");
+
+                        // the queue shutdown request: acked like any message, flag set
+                        check(publishBuild(testRegion->region, wrx::MSG_SHUTDOWN, {}), "MSG_SHUTDOWN published");
+                        const uint64_t ackBefore = testRegion->region.control()->buildAck.load();
+                        check(server.processBuilds() == 1, "MSG_SHUTDOWN processed");
+                        check(testRegion->region.control()->buildAck.load() == ackBefore + 1, "MSG_SHUTDOWN acked");
+                        check(server.shutdownRequested(), "shutdown flag set");
+
+                        // the poller's post-loop action: shut down outside every lock
+                        server.shutdown();
+                        check(server.liveModelCount() == 0, "shutdown freed all models");
+                        check(!server.shutdownRequested(), "shutdown flag cleared for a re-boot");
                 }
         }
 

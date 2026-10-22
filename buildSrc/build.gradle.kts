@@ -1,4 +1,8 @@
 repositories {
+	// CI builds Transport-Simulation-Core from the Yanyang-Technology-Group
+	// fork and publishes it here (publishToMavenLocal) so the build tools
+	// resolve without GitHub Packages credentials.
+	mavenLocal()
 	mavenCentral()
 	maven { url = uri("https://jitpack.io") }
 	maven {

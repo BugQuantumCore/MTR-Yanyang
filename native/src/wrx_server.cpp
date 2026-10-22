@@ -68,6 +68,15 @@ void Poller::run() {
                         const int64_t frames = server_->processFrame();
                         server_->pulse();
                         didWork = builds > 0 || frames > 0;
+                        // A MSG_SHUTDOWN request sets the server's flag from inside
+                        // processBuilds (which holds the region lock, so the handler
+                        // cannot tear anything down inline). Perform the actual
+                        // shutdown here, outside every lock, then leave for good —
+                        // a poller that kept running against a shut-down server would
+                        // spin on processBuilds returning -1 forever.
+                        if (server_->shutdownRequested()) {
+                                break;
+                        }
                 }
                 if (didWork) {
                         sleep = HOT_SLEEP;
@@ -75,6 +84,15 @@ void Poller::run() {
                         sleep = sleep * 2 > COLD_SLEEP ? COLD_SLEEP : sleep * 2;
                 }
                 std::this_thread::sleep_for(sleep);
+        }
+
+        // Queue-initiated teardown: outside every lock, so Server::shutdown can
+        // take the region mutex and unmap safely. Java has already seen the build
+        // ack of the MSG_SHUTDOWN request and only closes its own mappings after
+        // observing the control page's shutdown flag, so nothing on the C++ side
+        // is still touching the region files at this point except this thread.
+        if (server_ != nullptr && server_->shutdownRequested()) {
+                server_->shutdown();
         }
 }
 

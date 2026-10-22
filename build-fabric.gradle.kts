@@ -8,14 +8,18 @@ import java.util.zip.ZipFile
 plugins {
 	id("net.fabricmc.fabric-loom-remap")
 	id("dev.kikugie.fletching-table.fabric") version "0.1.0-alpha.23"
-	id("io.freefair.lombok") version "+"
-	id("com.gradleup.shadow") version "+"
+	id("io.freefair.lombok") version "9.8.2"
+	id("com.gradleup.shadow") version "9.6.1"
 }
 
 base.archivesName = property("mod.id") as String
 version = "${property("mod.version")}+${sc.current.version}-fabric"
 
 repositories {
+	// CI builds Transport-Simulation-Core from the Yanyang-Technology-Group
+	// fork and publishes it here (publishToMavenLocal) so the mod resolves
+	// its TSC dependency without GitHub Packages credentials.
+	mavenLocal()
 	mavenCentral()
 	maven { url = uri("https://repo.codemc.org/repository/maven-public") } // Occlusion Culling
 	maven { url = uri("https://repo.essential.gg/repository/maven-public") } // Elementa and UniversalCraft
@@ -45,21 +49,25 @@ configurations {
 // ---------------------------------------------------------------------------
 // Native Vulkan OBJ pipeline packaging. CI drops the platform libraries under
 // natives/<platform>/wrvk.* and the compiled SPIR-V under
-// native/shaders/spirv/*.spv; both end up at the jar root
-// (native/<platform>/wrvk.*, shaders/spirv/*.spv) exactly where
-// org.mtr.nativeobj.NativeRuntime and WrxRegion expect them. Without a
-// populated natives directory the mod still builds and runs — the native
-// path simply never activates (pure-GL development builds).
+// native/shaders/spirv/*.spv. The jar layout must match
+// org.mtr.nativeobj.NativeRuntime's resource paths exactly:
+//   native/<platform>/<library>   (e.g. native/linux-x64/libwrvk.so)
+//   shaders/spirv/*.spv
+// Without a populated natives directory the mod still builds and runs — the
+// native path simply never activates (pure-GL development builds).
 // ---------------------------------------------------------------------------
 val nativeResources = layout.buildDirectory.dir("native-resources")
 val nativeSources = File(project.rootDir, "natives")
 val shaderSources = File(project.rootDir, "native/shaders/spirv")
 
 val processNativesTask = tasks.register("processNatives", Copy::class) {
-	from(nativeSources)
 	into(nativeResources)
-	from(shaderSources)
-	into(nativeResources.map { it.dir("shaders/spirv") })
+	from(nativeSources) {
+		into("native")
+	}
+	from(shaderSources) {
+		into("shaders/spirv")
+	}
 	onlyIf { nativeSources.isDirectory || shaderSources.isDirectory }
 }
 
@@ -71,6 +79,14 @@ sourceSets {
 
 tasks.named("processResources") {
 	dependsOn(processNativesTask)
+}
+
+// The native-resources directory is a source-set resource root, so the sources
+// jar sees it as an input; declare the producer explicitly and keep the
+// binaries out of the sources artefact.
+tasks.matching { it.name == "sourcesJar" }.configureEach {
+	dependsOn(processNativesTask)
+	(this as Jar).exclude("native/**", "shaders/spirv/**")
 }
 
 java {
@@ -196,6 +212,11 @@ tasks {
 	withType<JavaCompile>().configureEach {
 		options.compilerArgs.addAll(
 			listOf(
+				// JDK 23+ javac disables implicit annotation processing, which silently
+				// skips Lombok and fails the build with "cannot find symbol" errors on
+				// every generated getter/builder. -proc:full restores the JDK 21
+				// behaviour (and is accepted by javac 21 as well).
+				"-proc:full",
 				"-Xlint:all",
 				"-Xlint:-serial",     // No Java serialization
 				"-Xlint:-processing", // Lombok annotation processor noise

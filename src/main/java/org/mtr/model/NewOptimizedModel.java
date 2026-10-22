@@ -6,6 +6,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
 import org.joml.Matrix4f;
 import org.jspecify.annotations.Nullable;
+import org.mtr.nativeobj.NativeModel;
 
 import java.util.function.Consumer;
 
@@ -43,7 +44,7 @@ public final class NewOptimizedModel {
 	 * draw through the native frame recorder instead of issuing GL commands.
 	 */
 	@Nullable
-	private final org.mtr.nativeobj.NativeModel nativeModel;
+	private final NativeModel nativeModel;
 
 	/**
 	 * Reusable model-view matrix scratch — render is single-threaded on the GL thread, so
@@ -81,7 +82,7 @@ public final class NewOptimizedModel {
 		this(texture, drawMode, callback, null);
 	}
 
-	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable org.mtr.nativeobj.NativeModel nativeModel) {
+	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel) {
 		this.vertexBuffer = callback == null ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
 		this.texture = texture;
 		this.drawMode = drawMode;
@@ -90,7 +91,7 @@ public final class NewOptimizedModel {
 
 	/** The native mesh handle, or null when this model renders through MC's GL path. */
 	@Nullable
-	public org.mtr.nativeobj.NativeModel getNativeModel() {
+	public NativeModel getNativeModel() {
 		return nativeModel;
 	}
 

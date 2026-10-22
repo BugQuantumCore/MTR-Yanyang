@@ -1,0 +1,7 @@
+{
+  "options.mtr.java_cpp_communication_method": "Java と C++ の通信方式",
+  "options.mtr.java_cpp_communication_method.shared_memory": "共有メモリ",
+  "options.mtr.java_cpp_communication_method.shared_memory.description": "性能は良好ですが、稀に安定性の問題が発生する可能性があります",
+  "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "比較的良好な性能です。JDK 22 以降が必要です"
+}

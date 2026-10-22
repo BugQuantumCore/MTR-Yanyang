@@ -7,15 +7,17 @@ import java.util.zip.ZipFile
 
 plugins {
 	id("net.neoforged.moddev")
-	id("dev.kikugie.fletching-table.neoforge") version "+"
-	id("io.freefair.lombok") version "+"
-	id("com.gradleup.shadow") version "+"
+	id("dev.kikugie.fletching-table.neoforge") version "0.1.0-alpha.23"
+	id("io.freefair.lombok") version "9.8.2"
+	id("com.gradleup.shadow") version "9.6.1"
 }
 
 base.archivesName = property("mod.id") as String
 version = "${property("mod.version")}+${sc.current.version}-neoforge"
 
 repositories {
+	// CI publishes the Yanyang TSC fork here; see build-fabric.gradle.kts.
+	mavenLocal()
 	mavenCentral()
 	maven { url = uri("https://repo.codemc.org/repository/maven-public") } // Occlusion Culling
 	maven { url = uri("https://repo.essential.gg/repository/maven-public") } // Elementa and UniversalCraft
@@ -159,6 +161,11 @@ tasks {
 	withType<JavaCompile>().configureEach {
 		options.compilerArgs.addAll(
 			listOf(
+				// JDK 23+ javac disables implicit annotation processing, which silently
+				// skips Lombok and fails the build with "cannot find symbol" errors on
+				// every generated getter/builder. -proc:full restores the JDK 21
+				// behaviour (and is accepted by javac 21 as well).
+				"-proc:full",
 				"-Xlint:all",
 				"-Xlint:-serial",     // No Java serialization
 				"-Xlint:-processing", // Lombok annotation processor noise

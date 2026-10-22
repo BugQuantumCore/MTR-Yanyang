@@ -332,6 +332,11 @@ public final class MTRClient {
                                 webserver = null;
                         }
                         serverPort = 0;
+                        // The native Vulkan pipeline's exchange region, poller and
+                        // GPU meshes exist for one client session only: tear them
+                        // down here so a disconnect/reconnect cycle cannot stack
+                        // up libraries, mapped regions or meshes.
+                        org.mtr.nativeobj.NativeRuntime.shutdown();
                 });
 
                 EventRegistryClient.registerStartClientTick(() -> {

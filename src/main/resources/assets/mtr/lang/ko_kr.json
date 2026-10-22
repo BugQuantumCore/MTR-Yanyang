@@ -1,0 +1,7 @@
+{
+  "options.mtr.java_cpp_communication_method": "Java-C++ 통신 방식",
+  "options.mtr.java_cpp_communication_method.shared_memory": "공유 메모리",
+  "options.mtr.java_cpp_communication_method.shared_memory.description": "성능이 좋지만, 낮은 확률로 안정성 문제가 발생할 수 있습니다",
+  "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "성능이 비교적 좋으며, JDK 22 이상이 필요합니다"
+}

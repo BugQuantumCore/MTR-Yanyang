@@ -8,6 +8,8 @@ on:
       - 'buildSrc/**'
       - 'src/main/java/**'
       - 'build-fabric.gradle.kts'
+      - 'build-neoforge.gradle.kts'
+      - '.github/tsc-fork-ci.patch'
       - '.github/workflows/native_1.21.x.yml'
   pull_request:
     branches: [ '1.21.x' ]
@@ -16,6 +18,8 @@ on:
       - 'buildSrc/**'
       - 'src/main/java/**'
       - 'build-fabric.gradle.kts'
+      - 'build-neoforge.gradle.kts'
+      - '.github/tsc-fork-ci.patch'
       - '.github/workflows/native_1.21.x.yml'
   workflow_dispatch:
 
@@ -150,16 +154,21 @@ jobs:
     needs: assemble
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout MTR-YanYang
+      - name: Checkout MTR-Yanyang
         uses: actions/checkout@v4
         with:
           path: Minecraft-Transit-Railway
 
-      - name: Checkout Transport-Simulation-Core
+      - name: Checkout Transport-Simulation-Core (Yanyang fork)
         uses: actions/checkout@v4
         with:
           repository: Yanyang-Technology-Group/Transport-Simulation-Core
+          ref: '8d72d57'
           path: Transport-Simulation-Core
+
+      - name: Apply the TSC CI patches
+        run: git apply --3-way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
+        working-directory: ./Transport-Simulation-Core
 
       - name: Download natives
         uses: actions/download-artifact@v4
@@ -174,7 +183,13 @@ jobs:
           cp -r Minecraft-Transit-Railway/wr-vk-artifacts/native/shaders/spirv/. Minecraft-Transit-Railway/native/shaders/spirv/
           find Minecraft-Transit-Railway/natives -type f
 
-      - name: Set up JDK 25
+      - name: Set up JDK 21 (TSC toolchain)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up JDK 25 (mod toolchain)
         uses: actions/setup-java@v4
         with:
           java-version: '25'
@@ -185,17 +200,29 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Build (1.21.4)
+      - name: Publish Transport-Simulation-Core to mavenLocal
         run: |
-          ./gradlew :fabric:setupFiles :fabric:test :fabric:build \
-            -PmodLoader=fabric \
-            -PminecraftVersion=1.21.4 \
-            -Pgpr.user=\"${GPR_USER}\" -Pgpr.key=\"${GPR_KEY}\"
+          ./gradlew -p buildSrc publishToMavenLocal --console=plain
+          ./gradlew publishToMavenLocal --console=plain
+        working-directory: ./Transport-Simulation-Core
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
         working-directory: ./Minecraft-Transit-Railway
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GPR_USER: ${{ secrets.GPR_USER }}
-          GPR_KEY: ${{ secrets.GPR_KEY }}
+
+      - name: Build (1.21.4, natives injected)
+        run: |
+          ./gradlew :1.21.4-fabric:setupFiles :1.21.4-fabric:test :1.21.4-fabric:buildAndCollect \
+            --console=plain
+        working-directory: ./Minecraft-Transit-Railway
+
+      - name: Verify the packaged natives
+        # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
+        # native/<platform>/<library> and shaders/spirv/*.spv.
+        run: |
+          jar=$(ls Minecraft-Transit-Railway/build/release/*.jar | head -1)
+          echo "verifying $jar"
+          unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)|shaders/spirv/.*\.spv' || { echo 'natives or shaders missing from the jar'; exit 1; }
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4

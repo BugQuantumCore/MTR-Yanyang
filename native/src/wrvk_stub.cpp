@@ -46,7 +46,7 @@ uint32_t RecordingDispatch::createBuffer(uint64_t, const void* createInfo, uint6
 void RecordingDispatch::getBufferMemoryRequirements(uint64_t, uint64_t buffer, void* outRequirements) {
 	const auto it = buffers.find(buffer);
 	auto* requirements = static_cast<VkMemoryRequirements*>(outRequirements);
-	requirements->size = it == buffers.end() ? 0 : it->second.size + 15 & ~15ULL;
+	requirements->size = it == buffers.end() ? 0 : (it->second.size + 15) & ~15ULL;
 	requirements->alignment = 16;
 	requirements->memoryTypeBits = 1;
 }

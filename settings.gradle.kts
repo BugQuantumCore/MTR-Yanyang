@@ -10,7 +10,10 @@ pluginManagement {
 
 plugins {
 	id("dev.kikugie.stonecutter") version "0.10-alpha.8"
-	id("org.gradle.toolchains.foojay-resolver-convention") version "+"
+	id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+	// pinned: the dynamic "+" resolution needs a full portal metadata
+	// listing, which intermittently fails (and red CI runs proved it)
+	//(adoption): revisit when a newer resolver is required
 }
 
 stonecutter {

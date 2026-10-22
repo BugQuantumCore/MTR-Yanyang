@@ -40,3 +40,13 @@ Patreon.java
 mtr_custom_resources.json
 **/lang/*.json
 !en_us.json
+
+# native Vulkan OBJ pipeline: CI-injected platform libraries and local
+# build/test outputs never belong in the tree (CI rebuilds them per commit)
+natives/
+native/build-local/
+
+# website build outputs (generated during :fabric:setupFiles)
+website/node_modules/
+website/dist/
+website/.angular/

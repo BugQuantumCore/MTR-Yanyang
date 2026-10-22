@@ -71,17 +71,48 @@ public final class ObjModelLoader extends ModelLoaderBase {
 					// document straight out of the exchange region (Java writes the
 					// OBJ/MTL text into shared memory; the mesh never crosses back).
 					// Semantics mirror the javagl branch exactly, including the
-					// per-material option parsing, which stays on this side.
+					// per-material option parsing, which stays on this side. A native
+					// reply without any group means the native build failed (timeout,
+					// queue overflow, native error): fall through to the javagl parse
+					// so the model still renders instead of silently vanishing.
+					boolean handledNatively = false;
 					if (org.mtr.nativeobj.NativeRuntime.isActive()) {
 						final List<String[]> mtlFiles = new ObjectArrayList<>();
 						for (final String mtlFileName : sourceMtlFileNames(objString)) {
-							mtlFiles.add(new String[]{mtlFileName, mtlResolver.apply(formatFilePath(mtlFileName))});
+							try {
+								mtlFiles.add(new String[]{mtlFileName, mtlResolver.apply(formatFilePath(mtlFileName))});
+							} catch (Exception e) {
+								// same per-MTL tolerance as the javagl branch: one unreadable
+								// MTL must not take the whole model down
+								MTR.LOGGER.error("Failed to parse MTL file [{}] referenced by OBJ model", mtlFileName, e);
+							}
 						}
-						addNativeModels(objString, mtlFiles, textureResolver, splitModel, flipTextureV);
-						setModelLoaded();
-						return;
+						final org.mtr.nativeobj.NativeModelLoader.NativeBuild nativeBuild =
+							org.mtr.nativeobj.NativeModelLoader.INSTANCE.loadObj(objString, mtlFiles, splitModel, flipTextureV);
+						if (!nativeBuild.groups().isEmpty()) {
+							addNativeModels(nativeBuild, mtlFiles, textureResolver, splitModel, flipTextureV);
+							handledNatively = true;
+						}
 					}
-					final Obj sourceObj = ObjReader.read(IOUtils.toInputStream(objString, StandardCharsets.UTF_8));
+					if (!handledNatively) {
+						addModelJavagl(objString, mtlResolver, textureResolver, splitModel, flipTextureV);
+					}
+					setModelLoaded();
+				} catch (Exception e) {
+					MTR.LOGGER.error("Failed to parse OBJ model for texture [{}]", defaultTexture, e);
+				} finally {
+					parseFinished();
+				}
+			});
+		}
+	}
+
+	/**
+	 * The pure-Java parse path — the original javagl loader, factored out so
+	 * both the native failure fallback and the GL build use one implementation.
+	 */
+	private void addModelJavagl(String objString, Function<String, String> mtlResolver, Function<String, ResourceLocation> textureResolver, boolean splitModel, boolean flipTextureV) throws java.io.IOException {
+		final Obj sourceObj = ObjReader.read(IOUtils.toInputStream(objString, StandardCharsets.UTF_8));
 					final Object2ObjectOpenHashMap<String, Mtl> materials = new Object2ObjectOpenHashMap<>();
 					sourceObj.getMtlFileNames().forEach(mtlFileName -> {
 						try {
@@ -91,19 +122,10 @@ public final class ObjModelLoader extends ModelLoaderBase {
 						}
 					});
 
-					if (splitModel) {
-						ObjSplitting.splitByGroups(sourceObj).forEach((key, obj) -> addModel(key, loadModel(obj, materials, textureResolver, flipTextureV)));
-					} else {
-						addModel("", loadModel(sourceObj, materials, textureResolver, flipTextureV));
-					}
-
-					setModelLoaded();
-				} catch (Exception e) {
-					MTR.LOGGER.error("Failed to parse OBJ model for texture [{}]", defaultTexture, e);
-				} finally {
-					parseFinished();
-				}
-			});
+		if (splitModel) {
+			ObjSplitting.splitByGroups(sourceObj).forEach((key, obj) -> addModel(key, loadModel(obj, materials, textureResolver, flipTextureV)));
+		} else {
+			addModel("", loadModel(sourceObj, materials, textureResolver, flipTextureV));
 		}
 	}
 
@@ -230,14 +252,12 @@ public final class ObjModelLoader extends ModelLoaderBase {
 	 * same javagl code path, so a pack behaves identically whichever renderer
 	 * draws it.
 	 */
-	private void addNativeModels(String objString, List<String[]> mtlFiles, Function<String, ResourceLocation> textureResolver, boolean splitModel, boolean flipTextureV) {
-		final org.mtr.nativeobj.NativeModelLoader.NativeBuild build = org.mtr.nativeobj.NativeModelLoader.INSTANCE.loadObj(objString, mtlFiles, splitModel, flipTextureV);
+	private void addNativeModels(org.mtr.nativeobj.NativeModelLoader.NativeBuild build, List<String[]> mtlFiles, Function<String, ResourceLocation> textureResolver, boolean splitModel, boolean flipTextureV) {
 		for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Group group : build.groups()) {
 			final NewOptimizedModelGroup newOptimizedModelGroup = new NewOptimizedModelGroup();
 			for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Mesh mesh : group.meshes()) {
 				final Object2ObjectOpenHashMap<String, String> materialOptions = splitMaterialOptions(mesh.name());
 				final String materialGroupName = materialOptions.get("");
-				final boolean newFlipTextureV = flipTextureV || materialOptions.getOrDefault("flipv", "0").equals("1");
 
 				// material-name-as-texture branch mirrors the javagl loader's
 				// three-way rule: with MTLs present the map_Kd was already
@@ -251,10 +271,13 @@ public final class ObjModelLoader extends ModelLoaderBase {
 				final ResourceLocation resolvedTexture = texture == null ? defaultTexture : texture;
 				// flipv is baked natively (per-material via the key table), so
 				// only the stage needs to travel with the draw item
+				// the raw stage follows the javagl semantics: null entries are rescued
+				// to the placement default by merge() and dropped by build(), exactly
+				// like the GL channel — never coerced here
 				final org.mtr.resource.RenderStage stage = getRenderStage(materialOptions.get("#"));
 				newOptimizedModelGroup.addNative(stage, resolvedTexture,
 					new org.mtr.nativeobj.NativeModel(group.modelId(), mesh.meshId(), resolvedTexture,
-						stage == null ? org.mtr.resource.RenderStage.INTERIOR : stage, mesh.colorPacked(), mesh.aabb()));
+						stage, mesh.colorPacked(), mesh.aabb()));
 			}
 			addModel(group.name(), newOptimizedModelGroup);
 		}

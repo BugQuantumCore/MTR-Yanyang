@@ -1,6 +1,7 @@
 package org.mtr.nativeobj;
 
 import net.minecraft.resources.ResourceLocation;
+import org.jspecify.annotations.Nullable;
 import org.mtr.resource.RenderStage;
 
 /**
@@ -12,36 +13,44 @@ import org.mtr.resource.RenderStage;
  */
 public final class NativeModel {
 
-	public final int modelId;
-	public final int meshId;
-	public final ResourceLocation texture;
-	public final RenderStage renderStage;
-	public final int colorPacked; // r << 24 | g << 16 | b << 8 | a (1.20.x packing)
-	public final float[] aabb;
+        public final int modelId;
+        public final int meshId;
+        public final ResourceLocation texture;
+        /**
+         * The stage this mesh was built for. {@code null} follows the javagl
+         * pipeline's semantics exactly: an un-staged entry is rescued to the
+         * placement default by {@code NewOptimizedModelGroup.merge}, and is
+         * dropped by {@code build} if it never merged. A queued draw always
+         * carries a non-null stage.
+         */
+        @Nullable
+        public final RenderStage renderStage;
+        public final int colorPacked; // r << 24 | g << 16 | b << 8 | a (1.20.x packing)
+        public final float[] aabb;
 
-	NativeModel(int modelId, int meshId, ResourceLocation texture, RenderStage renderStage, int colorPacked, float[] aabb) {
-		this.modelId = modelId;
-		this.meshId = meshId;
-		this.texture = texture;
-		this.renderStage = renderStage;
-		this.colorPacked = colorPacked;
-		this.aabb = aabb;
-	}
+        public NativeModel(int modelId, int meshId, ResourceLocation texture, @Nullable RenderStage renderStage, int colorPacked, float[] aabb) {
+                this.modelId = modelId;
+                this.meshId = meshId;
+                this.texture = texture;
+                this.renderStage = renderStage;
+                this.colorPacked = colorPacked;
+                this.aabb = aabb;
+        }
 
-	/**
-	 * The colour the draw item multiplies into the shader, exactly the chain
-	 * the Java path computes: the material's Kd times the fork's scalar
-	 * brightness ({@code light / 0xF} or full bright).
-	 */
-	public int colorFor(float lightMultiplier) {
-		final int r = clampToByte(((colorPacked >>> 24) & 0xFF) / 255.0F * lightMultiplier);
-		final int g = clampToByte(((colorPacked >>> 16) & 0xFF) / 255.0F * lightMultiplier);
-		final int b = clampToByte(((colorPacked >>> 8) & 0xFF) / 255.0F * lightMultiplier);
-		final int a = colorPacked & 0xFF;
-		return r << 24 | g << 16 | b << 8 | a;
-	}
+        /**
+         * The colour the draw item multiplies into the shader, exactly the chain
+         * the Java path computes: the material's Kd times the fork's scalar
+         * brightness ({@code light / 0xF} or full bright).
+         */
+        public int colorFor(float lightMultiplier) {
+                final int r = clampToByte(((colorPacked >>> 24) & 0xFF) / 255.0F * lightMultiplier);
+                final int g = clampToByte(((colorPacked >>> 16) & 0xFF) / 255.0F * lightMultiplier);
+                final int b = clampToByte(((colorPacked >>> 8) & 0xFF) / 255.0F * lightMultiplier);
+                final int a = colorPacked & 0xFF;
+                return r << 24 | g << 16 | b << 8 | a;
+        }
 
-	private static int clampToByte(float value) {
-		return Math.max(0, Math.min(255, Math.round(value * 255.0F)));
-	}
+        private static int clampToByte(float value) {
+                return Math.max(0, Math.min(255, Math.round(value * 255.0F)));
+        }
 }

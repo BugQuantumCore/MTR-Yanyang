@@ -1,0 +1,7 @@
+{
+  "options.mtr.java_cpp_communication_method": "Способ связи Java и C++",
+  "options.mtr.java_cpp_communication_method.shared_memory": "Разделяемая память",
+  "options.mtr.java_cpp_communication_method.shared_memory.description": "Высокая производительность, но с небольшой вероятностью проблем со стабильностью",
+  "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "Хорошая производительность, требуется JDK 22 или новее"
+}

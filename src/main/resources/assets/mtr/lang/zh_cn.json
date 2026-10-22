@@ -1,0 +1,7 @@
+{
+  "options.mtr.java_cpp_communication_method": "Java 与 C++ 通信方式",
+  "options.mtr.java_cpp_communication_method.shared_memory": "共享内存",
+  "options.mtr.java_cpp_communication_method.shared_memory.description": "性能好，但小概率出现稳定性问题",
+  "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "性能较好，需 JDK 22 以上"
+}

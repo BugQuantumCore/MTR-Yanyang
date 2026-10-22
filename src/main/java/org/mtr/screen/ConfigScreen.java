@@ -111,6 +111,7 @@ public final class ConfigScreen extends SingleTabBackgroundScreenBase {
                         client.cycleNativeCommMethod();
                         methodButton.setText(client.getNativeCommMethod().translationKey.getString());
                         Config.save();
+                        org.mtr.MTR.LOGGER.info("[wrvk] Java-C++ communication method set to {}; it takes effect the next time the client starts", client.getNativeCommMethod());
                 });
 
                 GuiHelper.createLabel(contentContainer, client.getNativeCommMethod().descriptionKey.getString());

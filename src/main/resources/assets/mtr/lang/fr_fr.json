@@ -1,0 +1,7 @@
+{
+  "options.mtr.java_cpp_communication_method": "Méthode de communication Java-C++",
+  "options.mtr.java_cpp_communication_method.shared_memory": "Mémoire partagée",
+  "options.mtr.java_cpp_communication_method.shared_memory.description": "Bonne performance, avec une petite chance de problèmes de stabilité",
+  "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "Bonnes performances, nécessite JDK 22 ou supérieur"
+}
