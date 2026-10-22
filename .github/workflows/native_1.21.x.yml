@@ -159,13 +159,15 @@ jobs:
 
       - name: Configure (iOS)
         if: matrix.cross == 'ios'
-        # CMAKE_OSX_SYSROOT=iphoneos selects the device SDK explicitly (the
-        # default resolution normally picks it, but be deterministic).
+        # CMAKE_OSX_SYSROOT=iphoneos selects the device SDK explicitly;
+        # the deployment target 12.0 keeps the dylib loadable on older
+        # devices (the linker default would stamp the SDK version).
         run: >
           cmake -S native -B native/build -DWRVK_BUILD_TESTS=OFF
           -DCMAKE_SYSTEM_NAME=iOS
           -DCMAKE_OSX_SYSROOT=iphoneos
           -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
           -DWRXR_TARGET=aarch64-apple-ios
 
       - name: Build
@@ -199,6 +201,9 @@ jobs:
 
       - name: Sign and verify the iOS library
         if: matrix.cross == 'ios'
+        # Xcode 15's otool prints the NUMERIC build-version platform
+        # ("platform 2"; 1=MACOS 2=IOS 7=IOSSIMULATOR 8=MACCATALYST)
+        # unless -v is passed; accept both spellings.
         run: |
           set -e
           codesign --force --sign - native/build/libwrvk.dylib
@@ -208,11 +213,11 @@ jobs:
           otool -L native/build/libwrvk.dylib
           echo "=== lipo ==="
           lipo -info native/build/libwrvk.dylib
-          echo "=== load commands (platform/version) ==="
-          otool -l native/build/libwrvk.dylib | grep -B1 -A5 -E "LC_BUILD_VERSION|LC_VERSION_MIN"
+          echo "=== load commands (platform/version, verbose) ==="
+          otool -lv native/build/libwrvk.dylib | grep -B1 -A5 -E "LC_BUILD_VERSION|LC_VERSION_MIN"
           file native/build/libwrvk.dylib
           lipo -info native/build/libwrvk.dylib | grep -q arm64 || { echo "not arm64"; exit 1; }
-          otool -l native/build/libwrvk.dylib | grep -q "platform IOS" \
+          otool -l native/build/libwrvk.dylib | grep -Eq "platform (IOS|2)" \
             || { echo "not an iOS-platform dylib (see the load commands above)"; exit 1; }
 
       - name: Upload library
