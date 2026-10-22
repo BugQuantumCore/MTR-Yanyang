@@ -163,7 +163,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Yanyang-Technology-Group/Transport-Simulation-Core
-          ref: '8d72d57'
+          ref: '8d72d57f8efe594efed9d26e90859e88fd05ed94'  # Yanyang TSC master 8d72d57, pinned for the committed patch
           path: Transport-Simulation-Core
 
       - name: Apply the TSC CI patches
