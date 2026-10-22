@@ -401,7 +401,9 @@ jobs:
         # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
         # native/<platform>/<library> and shaders/spirv/*.spv in every
         # release jar for every shipped platform, and their absence from the
-        # sources jars.
+        # sources jars. The library FILE name carries the platform prefix —
+        # wrvk.dll on Windows, libwrvk.so/.dylib everywhere else — so the
+        # assertion must accept the optional "lib".
         run: |
           set -e
           cd Minecraft-Transit-Railway/wr-vk-release
@@ -410,7 +412,7 @@ jobs:
             jar=$(ls "$project"/*.jar | grep -v sources | head -1)
             echo "verifying $jar"
             for platform in $platforms; do
-              unzip -l "$jar" | grep -q "native/$platform/wrvk\.\(dll\|so\|dylib\)" \
+              unzip -l "$jar" | grep -qE "native/$platform/(lib)?wrvk\.(dll|so|dylib)" \
                 || { echo "native library for $platform missing from $jar"; exit 1; }
             done
             unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
