@@ -1,0 +1,97 @@
+name: Release 1.21.x (manual)
+
+# Publishes the jars a completed Native Vulkan OBJ pipeline run produced:
+# downloads the run's artifacts (no rebuild, no local bandwidth), re-checks
+# the 8-platform jar contract, then drafts a GitHub release with the four
+# mod jars + the all-platform natives zip. Draft → verify via API → publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'The native workflow run id whose artifacts to publish'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag (e.g. YYMTR-4.1.0-beta.3)'
+        required: true
+        type: string
+      title:
+        description: 'Release title'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes (markdown); a short default is used when empty'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    name: draft-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the release jars
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run-id }}
+          name: YYMTR-release-jars
+          path: jars
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download the natives bundle
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run-id }}
+          name: wrvk-natives
+          path: natives-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Flatten assets and re-verify the 8-platform contract
+        run: |
+          set -e
+          mkdir -p assets
+          find jars -name '*.jar' -not -name '*sources*' -exec cp {} assets/ \;
+          platforms="windows-x64 windows-arm64 linux-x64 linux-arm64 macos-arm64 android-arm64 ios-arm64 ipados-arm64"
+          [ "$(find assets -name '*.jar' | wc -l)" -eq 4 ] || { find assets -type f; echo "expected exactly 4 release jars"; exit 1; }
+          for jar in assets/*.jar; do
+            echo "re-verifying $jar"
+            for platform in $platforms; do
+              unzip -l "$jar" | grep -qE "native/$platform/(lib)?wrvk\.(dll|so|dylib)" \
+                || { echo "native library for $platform missing from $jar"; exit 1; }
+            done
+            unzip -l "$jar" | grep -qE 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
+          done
+          cd natives-artifact
+          zip -qr ../assets/wrvk-natives-all-platforms.zip natives native
+          cd ..
+          sha256sum assets/*.jar assets/*.zip > assets.sha256
+          cat assets.sha256
+
+      - name: Write the release notes
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$NOTES" ]; then
+            printf '%s' "$NOTES" > notes.md
+          else
+            printf '%s\n' \
+              'See the commit history for the full changelog.' \
+              '' \
+              'Bundled native platforms: windows-x64, windows-arm64, linux-x64, linux-arm64, macos-arm64, android-arm64, ios-arm64, ipados-arm64.' > notes.md
+          fi
+
+      - name: Create the draft release and upload the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ inputs.title }}
+        run: |
+          set -e
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE" --notes-file notes.md assets/*
+          echo "draft created:"
+          gh release view "$TAG" --json name,isDraft,assets
