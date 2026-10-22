@@ -201,17 +201,6 @@ jobs:
           # Angular CLI 22 (both websites) requires node >=22.22.3 / >=24.15
           node-version: '24'
 
-      - name: Build the TSC website explicitly
-        # The embedded npm build inside setupWebserver works, but doing it as a
-        # workflow step surfaces npm/ng output directly in the job log and keeps
-        # the gradle step to pure publishing (the embedded path then finds
-        # website/dist/website/browser and skips itself).
-        run: |
-          cd Transport-Simulation-Core/website
-          npm install --no-audit --no-fund
-          npm run build
-          test -f dist/website/browser/index.html
-
       - name: Publish Transport-Simulation-Core to mavenLocal
         run: |
           ./gradlew -p buildSrc publishToMavenLocal --console=plain
