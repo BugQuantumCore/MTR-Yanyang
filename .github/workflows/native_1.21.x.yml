@@ -221,10 +221,17 @@ jobs:
         run: chmod +x ./gradlew
         working-directory: ./Minecraft-Transit-Railway
 
-      - name: Build (1.21.4, natives injected)
+      - name: Build (natives injected, 1.21.1 + 1.21.4, fabric + neoforge)
         run: |
-          ./gradlew :1.21.4-fabric:setupFiles :1.21.4-fabric:test :1.21.4-fabric:buildAndCollect \
-            --console=plain
+          for project in 1.21.1-fabric 1.21.1-neoforge 1.21.4-fabric 1.21.4-neoforge; do
+            echo "=== :$project ==="
+            ./gradlew ":$project:setupFiles" ":$project:test" ":$project:buildAndCollect" --console=plain || exit 1
+            # buildAndCollect accumulates into build/release; move each product
+            # set aside so the next iteration starts clean
+            mkdir -p "wr-vk-release/$project"
+            cp build/release/*.jar "wr-vk-release/$project/"
+            rm -f build/release/*.jar
+          done
         working-directory: ./Minecraft-Transit-Railway
 
       - name: Verify the packaged natives (all four targets)
