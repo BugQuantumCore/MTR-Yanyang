@@ -197,6 +197,13 @@ tasks {
                 relocate("gg.essential", "org.mtr.libraries.gg.essential")
                 relocate("kotlin.", "org.mtr.libraries.kotlin")
                 relocate("org.jetbrains", "org.mtr.libraries.org.jetbrains")
+                // Two kotlin-stdlib versions live on this classpath (the
+                // loader's language-kotlin line and the bundled line), so the
+                // fat jar would get duplicate META-INF/*.kotlin_module entries
+                // and shadow's zip writer aborts. The module metadata is only
+                // read by the Kotlin compiler — and stale anyway once the
+                // classes are relocated — so drop every copy.
+                exclude("META-INF/*.kotlin_module")
 
                 dependsOn(verifyTransportSimulationCoreTask)
         }
