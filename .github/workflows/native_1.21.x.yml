@@ -167,7 +167,7 @@ jobs:
           path: Transport-Simulation-Core
 
       - name: Apply the TSC CI patches
-        run: git apply --3-way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
+        run: git apply --3way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
         working-directory: ./Transport-Simulation-Core
 
       - name: Download natives

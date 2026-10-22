@@ -32,7 +32,7 @@ jobs:
       - name: Apply the TSC CI patches
         # Publishes the build tools under the artifact id MTR resolves and
         # replaces Project.exec (removed in Gradle 9) for the website build.
-        run: git apply --3-way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
+        run: git apply --3way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
         working-directory: ./Transport-Simulation-Core
 
       - name: Set up JDK 21 (TSC toolchain)
