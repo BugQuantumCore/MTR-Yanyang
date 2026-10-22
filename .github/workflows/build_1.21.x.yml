@@ -9,12 +9,16 @@ on:
 
 jobs:
   build-mod:
-    name: build (${{ matrix.minecraftVersion }})
+    name: build (${{ matrix.loader }} ${{ matrix.minecraftVersion }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        minecraftVersion: [ '1.21.1', '1.21.4' ]
+        include:
+          - { minecraftVersion: '1.21.1', loader: 'fabric' }
+          - { minecraftVersion: '1.21.1', loader: 'neoforge' }
+          - { minecraftVersion: '1.21.4', loader: 'fabric' }
+          - { minecraftVersion: '1.21.4', loader: 'neoforge' }
     steps:
       - name: Checkout MTR-Yanyang
         uses: actions/checkout@v4
@@ -72,13 +76,13 @@ jobs:
         # workflow's ":fabric:" targets never existed on this branch. The
         # chiseled project names are the first thing `gradlew projects` shows.
         run: |
-          ./gradlew :${{ matrix.minecraftVersion }}-fabric:setupFiles :${{ matrix.minecraftVersion }}-fabric:test :${{ matrix.minecraftVersion }}-fabric:buildAndCollect \
+          ./gradlew :${{ matrix.minecraftVersion }}-${{ matrix.loader }}:setupFiles :${{ matrix.minecraftVersion }}-${{ matrix.loader }}:test :${{ matrix.minecraftVersion }}-${{ matrix.loader }}:buildAndCollect \
             --console=plain
         working-directory: ./Minecraft-Transit-Railway
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: YYMTR-fabric-${{ matrix.minecraftVersion }}
+          name: YYMTR-${{ matrix.loader }}-${{ matrix.minecraftVersion }}
           path: Minecraft-Transit-Railway/build/release/*.jar
           if-no-files-found: error

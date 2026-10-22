@@ -1,21 +1,31 @@
 # Native Vulkan OBJ pipeline (1.21.x)
 
 The 1.20.x `wrgl` (OpenGL flat pass) pipeline has been rebuilt for 1.21.x as
-**wrvk**: the same battle-tested `wrobj` parser/builder, a new memory-exchange
-layer, and a Vulkan draw path that records into **VulkanMod's** frame.
+**wrvk**: the same battle-tested `wrobj` parser/builder, a **Rust + C++**
+memory-exchange core, and a C++ Vulkan draw path that records into
+**VulkanMod's** frame.
+
+The exchange transport is Rust (`rust/wrxr`, zero external dependencies):
+region mapping, the control page, the bump queues, the seqlocked frame slot,
+the poller thread and the `wr_*` C ABI. The C++ half (`wrcore_domain.cpp`)
+owns the model registry and calls into `wrobj`/`wrvk`; the two halves talk
+through the `wrcore_*` C ABI in `include/wrcore/wrcore.h`. Byte layouts stay
+defined once — `include/wrx/wrx.hpp` is mirrored by `rust/wrxr/src/protocol.rs`
+and by Java (`org.mtr.nativeobj.WrxRegion`).
 
 ## Architecture
 
 ```
-Java (org.mtr.nativeobj)                    C++ (native/)
-┌──────────────────────────┐               ┌──────────────────────────────┐
-│ ObjModelLoader ──write──▶ wrx.conf + 4 mapped files ──▶ wrx::Server       │
-│                          │  (shared memory; no JNI)    │  ├─ wrobj parse/build
-│ MainRenderer drain ─────▶ frame slot (seqlock) ───────▶│  ├─ mesh store + upload
-│                          │                            │  └─ wrvk recorder
-│ NativeRuntime (detect,   │◀── results queue ──────────│     pipelines/descriptors/
-│  transports, registry)   │                            │     push constants (128 B)
-└──────────────────────────┘                            └──────────────────────────────┘
+Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
+┌─────────────────────┐   ┌──────────────────────────┐   ┌──────────────────────┐
+│ ObjModelLoader ─────┼──▶│ region + control page,   │──▶│ wrcore_domain:        │
+│                     │   │ bump queues, seqlocked   │   │  model/mesh registry, │
+│ MainRenderer drain ─┼──▶│ frame slot, poller,      │   │  reply payloads;      │
+│                     │   │ wr_* C ABI (no JNI)      │   │  wrobj parse/build;   │
+│ NativeRuntime ──────┼──▶│                          │──▶│ wrvk recorder:       │
+│ (detect, transports,│   │ (system.load ctor boot   │   │  pipelines/descriptors/│
+│  registry)          │   │  or wr_boot downcalls)   │   │  push constants (128 B)│
+└─────────────────────┘   └──────────────────────────┘   └──────────────────────┘
 ```
 
 * **Activation** — automatic: the pipeline only turns on when VulkanMod is
@@ -23,13 +33,15 @@ Java (org.mtr.nativeobj)                    C++ (native/)
   feature-detected through reflection; the fork's Java renderer stays exactly
   as-is everywhere else, including every GL-based install).
 * **Transports** — the "Java 与 C++ 通信方式" setting:
-  * *共享内存* (default): a C++ poller thread drains the queues; works on any
-    JDK (Unsafe-level access before JDK 22). Highest throughput, tiny bounded
-    wait per frame.
+  * *共享内存* (default): the Rust poller thread drains the queues; works on
+    any JDK (Unsafe-level access before JDK 22). Highest throughput, tiny
+    bounded wait per frame.
   * *Panama FFM* (JDK 22+): `Linker.downcallHandle` calls
     `wr_submit_builds`/`wr_submit_frame` directly — deterministic, no poller.
-* **Protocol** — see `include/wrx/wrx.hpp`; every constant is mirrored in
-  `org.mtr.nativeobj.WrxRegion`. Queue wraps are lossless (writer wraps only
+* **Protocol** — see `include/wrx/wrx.hpp`; mirrored in
+  `rust/wrxr/src/protocol.rs` and `org.mtr.nativeobj.WrxRegion`
+  (three sides, one contract — the Rust port caught and fixed one
+  absolute/relative offset drift during migration through its layout test). Queue wraps are lossless (writer wraps only
   after a full drain; the reader resets whenever it sees `readPos > writePos`).
 * **Draw semantics** — `FrameItem` IS the 128-byte push constant (colour + MV
   + inverse-transpose normal matrix), the frame UBO carries projection/fog/
@@ -45,8 +57,11 @@ Java (org.mtr.nativeobj)                    C++ (native/)
 
 ```bash
 native/build.sh wrobj_tests run   # 198 checks (parser/builder semantics)
-native/build.sh wrx_tests   run   # 37 checks (protocol round-trips, wraps)
 native/build.sh wrvk_tests  run   # 40 checks (command stream, leaks)
+native/build.sh wrctor_tests run  # 22 checks (dlopen ctor boot smoke)
+(cd native/rust/wrxr && cargo test --release --offline)
+                                   # 60+ checks (transport protocol round-trips,
+                                   #  poison advancement, wr_* ABI, poller)
 ```
 
 CI (`.github/workflows/native_1.21.x.yml`) builds the 3 desktop platforms with

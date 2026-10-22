@@ -14,8 +14,10 @@
 #
 # Tests (see native/build.sh for the CMake-free equivalents):
 #   wrobj_tests   the ported 1.20.x parser/builder suite (198 checks)
-#   wrx_tests     the exchange protocol round-trips (35 checks)
 #   wrvk_tests    the command-stream / leak suite (40 checks)
+#   wrctor_tests  the production boot flow against the real .so (22 checks)
+#   wrxr          the Rust transport suite (cargo test; 60+ checks,
+#                 including the ported exchange protocol round-trips)
 
 cmake_minimum_required(VERSION 3.16)
 
@@ -50,27 +52,64 @@ if(WIN32)
 endif()
 
 set(WRVK_SOURCES
+        src/wrcore_domain.cpp
         src/wrobj.cpp
         src/wrobj_parse.cpp
         src/wrobj_mesh.cpp
         src/wrobj_pipeline.cpp
-        src/wrx.cpp
-        src/wrx_region.cpp
-        src/wrx_server.cpp
         src/wrvk.cpp
         src/wrvk_loader.cpp
         src/wrvk_stub.cpp
         src/wrmain.cpp)
 
+# ---------------------------------------------------------------------------
+# The Rust transport core: build the staticlib with cargo (zero dependencies,
+# so --offline always works), then link it in exactly like another object
+# library. WRXR_SKIP_CPP_BUNDLE stops the crate's build script from also
+# compiling the C++ bundle — that exists for `cargo test` only.
+# ---------------------------------------------------------------------------
+find_program(CARGO_EXECUTABLE cargo)
+if(NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR "cargo is required to build the Rust transport core (rustup.rs)")
+endif()
+set(WRXR_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrxr/Cargo.toml)
+set(WRXR_TARGET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrxr/target)
+if(WIN32)
+        set(WRXR_STATICLIB ${WRXR_TARGET_DIR}/release/wrxr.lib)
+else()
+        set(WRXR_STATICLIB ${WRXR_TARGET_DIR}/release/libwrxr.a)
+endif()
+if(WIN32)
+        # The C++ objects are built against the static CRT (see the MSVC
+        # runtime selection above), so the Rust core must match: crt-static
+        # keeps one CRT in the DLL — required for the DllMain thread-start
+        # discipline documented in src/wrmain.cpp.
+        add_custom_target(wrxr_rust
+                COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
+                        "RUSTFLAGS=-C target-feature=+crt-static"
+                        cargo build --release --offline --manifest-path ${WRXR_MANIFEST}
+                BYPRODUCTS ${WRXR_STATICLIB}
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                COMMENT "building the Rust transport core (wrxr)")
+else()
+        add_custom_target(wrxr_rust
+                COMMAND ${CMAKE_COMMAND} -E env WRXR_SKIP_CPP_BUNDLE=1
+                        cargo build --release --offline --manifest-path ${WRXR_MANIFEST}
+                BYPRODUCTS ${WRXR_STATICLIB}
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                COMMENT "building the Rust transport core (wrxr)")
+endif()
+
 add_library(wrvk SHARED ${WRVK_SOURCES})
 target_include_directories(wrvk PRIVATE include)
 target_compile_options(wrvk PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>)
+add_dependencies(wrvk wrxr_rust)
 if(WIN32)
-    target_link_libraries(wrvk PRIVATE gdi32 user32)
+    target_link_libraries(wrvk PRIVATE gdi32 user32 ${WRXR_STATICLIB})
 else()
     find_package(Threads REQUIRED)
-    target_link_libraries(wrvk PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_libraries(wrvk PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -132,18 +171,35 @@ if(WRVK_BUILD_TESTS)
     list(REMOVE_ITEM WRVK_TEST_EXTRA src/wrobj.cpp src/wrobj_parse.cpp src/wrobj_mesh.cpp src/wrobj_pipeline.cpp)
 
     find_package(Threads REQUIRED)
-    add_executable(wrx_tests tests/wrx_tests.cpp ${WRVK_TEST_EXTRA})
-    target_include_directories(wrx_tests PRIVATE include)
-    target_link_libraries(wrx_tests PRIVATE wrobj_core Threads::Threads ${CMAKE_DL_LIBS})
-
     add_executable(wrvk_tests tests/wrvk_tests.cpp ${WRVK_TEST_EXTRA})
     target_include_directories(wrvk_tests PRIVATE include)
-    target_link_libraries(wrvk_tests PRIVATE wrobj_core Threads::Threads ${CMAKE_DL_LIBS})
+    add_dependencies(wrvk_tests wrxr_rust)
+    if(WIN32)
+            target_link_libraries(wrvk_tests PRIVATE wrobj_core gdi32 user32 ${WRXR_STATICLIB})
+    else()
+            target_link_libraries(wrvk_tests PRIVATE wrobj_core Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})
+    endif()
+
+    # The production boot flow against the real shared object: write the
+    # region files, place a library copy next to the conf, dlopen, and watch
+    # the constructor boot + poller + FFM entry points do their thing.
+    if(NOT WIN32)
+            add_executable(wrctor_tests tests/wrctor_tests.cpp)
+            target_include_directories(wrctor_tests PRIVATE include)
+            target_link_libraries(wrctor_tests PRIVATE ${CMAKE_DL_LIBS})
+            add_dependencies(wrctor_tests wrvk)
+    endif()
 
     # The golden .case files are generated by the Java differential test
     # (NativeObjGoldenTest) in CI; without them the suite still validates the
     # full parser semantics against its built-in expectations.
     add_test(NAME wrobj COMMAND wrobj_tests)
-    add_test(NAME wrx COMMAND wrx_tests)
     add_test(NAME wrvk COMMAND wrvk_tests)
+    if(NOT WIN32)
+            add_test(NAME wrctor COMMAND wrctor_tests $<TARGET_FILE:wrvk>)
+    endif()
+
+    # The Rust transport suite runs from the workflow (Linux job) with
+    # `cargo test --release --offline`; here it would duplicate the same
+    # compilation CMake just performed.
 endif()

@@ -1,23 +1,34 @@
 // SPDX-License-Identifier: MIT
 //
-// wrmain.cpp — the library's public C ABI and its constructor-time boot.
+// wrmain.cpp — the platform boot shim + the recorder's C++ home.
 //
-// Java loads the library with System.load. There is no JNI anywhere: the POSIX
-// constructor (or the Windows DllMain, with the loader-lock-safe pattern of
-// returning before the thread is needed) locates the wrx.conf sidecar next to
-// the library, boots the exchange server, and starts the poller thread when
-// the transport is shared memory. The Panama FFM transport instead drives the
-// same server through the wr_* entry points below, which take and return
-// plain integers so Linker.downcallHandle can call them without any native
-// metadata ceremony.
+// The transport, the queues, the control page and the wr_* entry points all
+// live in the Rust core now (native/rust/wrxr). What still has to be C++:
+//
+//   * the constructor-time boot entry: POSIX has __attribute__((constructor)),
+//     Windows has DllMain — this unit owns both, computes the directory the
+//     library was loaded from, and hands the wrx.conf path to the Rust core
+//     (wrxr_ctor_boot), which boots the server and starts the poller thread
+//     when the transport is shared memory;
+//   * the host-init callback: creating the Vulkan loader dispatch and the
+//     wrvk recorder are C++ objects, so the domain calls back into this unit
+//     from inside wrcore_init_vulkan;
+//   * recorder ownership: the recorder and dispatch live in unique_ptrs here
+//     and are torn down by wrmain_teardown_recorder, called from the Rust
+//     wr_shutdown after the domain has freed every mesh through the recorder.
+//
+// The keepalive table at the bottom forces the linker to pull every wr_*
+// object out of the Rust static archive so the shared library exports the
+// complete C ABI that Java's SymbolLookup expects.
 
 #include "wrx/wrx.hpp"
 #include "wrvk/wrvk.hpp"
+#include "wrcore/wrcore.h"
 
-#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
+#include <memory>
 #include <string>
 
 #if defined(_WIN32)
@@ -28,172 +39,179 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
-#include <pthread.h>
 #endif
+
+// defined in wrcore_domain.cpp — attaches the freshly created recorder so
+// wrcore_init_vulkan can wire it up (C++-only wiring, not part of the ABI)
+namespace wrcore {
+void attachRecorder(wrvk::WrvkRecorder* recorder);
+}
 
 namespace {
 
-std::atomic<bool> g_bootAttempted{false};
-std::atomic<bool> g_booted{false};
-std::mutex g_mutex;
-std::unique_ptr<wrvk::WrvkRecorder> g_recorder;
-std::string g_configPath;
-
-// Function-local static: the constructor-time boot can run before this
-// translation unit's namespace-scope objects are initialised, so the server
-// must never be one. First use constructs it, thread-safely.
-wrx::Server& theServer() {
-        static wrx::Server server;
-        return server;
-}
-
-std::string selfDirectory() {
-#if defined(_WIN32)
-        char path[MAX_PATH + 1]{};
-        GetModuleFileNameA(nullptr, path, MAX_PATH);
-        const std::string full(path);
-#else
-        Dl_info info{};
-        if (dladdr(reinterpret_cast<void*>(&selfDirectory), &info) == 0 || info.dli_fname == nullptr) {
-                return {};
-        }
-        const std::string full(info.dli_fname);
-#endif
-        const size_t slash = full.find_last_of("/\\");
-        return slash == std::string::npos ? std::string(".") : full.substr(0, slash);
-}
-
-// Read the transport flag (a shared-memory boot must start the poller; an FFM
-// boot must not, Java drives everything synchronously). Returns 1 for FFM.
-int transportIsFfm(const std::string& directory) {
-        FILE* file = std::fopen((directory + "/" + wrx::CONFIG_FILE).c_str(), "rb");
-        if (file == nullptr) {
-                return 0;
-        }
-        char buffer[512]{};
-        const size_t n = std::fread(buffer, 1, sizeof(buffer) - 1, file);
-        std::fclose(file);
-        buffer[n] = 0;
-        return std::strstr(buffer, "transport=ffm") != nullptr ? 1 : 0;
-}
-
 std::unique_ptr<wrvk::IVkDispatch> g_dispatchKeepAlive;
+std::unique_ptr<wrvk::WrvkRecorder> g_recorder;
 
-void hostInitCallback(const wrx::HostHandles& host, void*) {
-        // The Vulkan loader is resolved with the instance handle carried by the
-        // init message; if it or any symbol is missing, the recorder stays absent
-        // and the native path reports not-ready instead of crashing.
-        auto dispatch = wrvk::createRealDispatch("", host.instance);
-        if (dispatch != nullptr) {
-                g_recorder = std::make_unique<wrvk::WrvkRecorder>(*dispatch);
-                theServer().setRecorder(g_recorder.get());
-                g_dispatchKeepAlive = std::move(dispatch);
-        }
+// The Vulkan loader is resolved with the instance handle carried by the init
+// message; if it or any symbol is missing, the recorder stays absent and the
+// native path reports not-ready instead of crashing.
+extern "C" void wrmainHostInitTrampoline(const void* hostHandles, void*) {
+	const auto* host = static_cast<const wrx::HostHandles*>(hostHandles);
+	auto dispatch = wrvk::createRealDispatch("", host->instance);
+	if (dispatch != nullptr) {
+		g_recorder = std::make_unique<wrvk::WrvkRecorder>(*dispatch);
+		wrcore::attachRecorder(g_recorder.get());
+		g_dispatchKeepAlive = std::move(dispatch);
+	}
 }
 
 } // namespace
 
 extern "C" {
 
-// Boot with an explicit config path (Panama FFM entry point). Idempotent.
-int32_t wr_boot(const char* configPathUtf8) {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        g_bootAttempted.store(true, std::memory_order_relaxed);
-        if (g_booted.load(std::memory_order_relaxed)) {
-                return 0;
-        }
-        if (configPathUtf8 == nullptr) {
-                return -1;
-        }
-        g_configPath = configPathUtf8;
-        theServer().setHostInitCallback(&hostInitCallback, nullptr);
-        if (!theServer().boot(g_configPath)) {
-                return -2;
-        }
-        g_booted.store(true, std::memory_order_relaxed);
-        return 0;
+// Install the host-init trampoline into the domain (idempotent; the Rust
+// boot paths call this before booting so MSG_INIT_VULKAN can create the
+// recorder).
+void wrmain_install_host_init() {
+	wrcore_set_host_init_callback(&wrmainHostInitTrampoline, nullptr);
 }
 
-// Process pending build messages synchronously (Panama FFM transport).
-int32_t wr_submit_builds() {
-        return static_cast<int32_t>(theServer().processBuilds());
-}
-
-// Record the latest frame synchronously (Panama FFM transport).
-int32_t wr_submit_frame() {
-        return static_cast<int32_t>(theServer().processFrame());
-}
-
-// Liveness: the poller's heartbeat count, or -1 when not booted.
-int64_t wr_status() {
-        if (!g_booted.load(std::memory_order_relaxed)) {
-                return -1;
-        }
-        theServer().pulse();
-        return static_cast<int64_t>(theServer().booted() ? 1 : 0);
-}
-
-int32_t wr_shutdown() {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        if (!g_booted.load(std::memory_order_relaxed)) {
-                return 0;
-        }
-        wrx::Poller::instance().stop();
-        theServer().shutdown();
-        g_recorder.reset();
-        g_dispatchKeepAlive.reset();
-        g_booted.store(false, std::memory_order_relaxed);
-        return 0;
-}
-
-int32_t wr_abi_version() {
-        return static_cast<int32_t>(wrx::PROTOCOL_VERSION);
-}
-
-const char* wr_version_string() {
-        return "wrvk 1.0.0 (native Vulkan OBJ pipeline)";
+// Tear the recorder and its dispatch down (Rust wr_shutdown calls this AFTER
+// wrcore_shutdown_domain freed every mesh through the recorder, matching the
+// old C++ wr_shutdown order: Poller::stop -> Server::shutdown -> reset()).
+void wrmain_teardown_recorder() {
+	g_recorder.reset();
+	g_dispatchKeepAlive.reset();
 }
 
 } // extern "C"
 
-#if defined(_WIN32)
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
-        if (reason == DLL_PROCESS_ATTACH) {
-                // Windows loader-lock discipline: never wait on the new thread here.
-                // The poller thread is started detached; it touches only file mapping
-                // APIs and never loads libraries, which keeps the attach sequence
-                // deadlock-free with a static CRT. Boot always: Java wrote the
-                // wrx.conf sidecar before System.load; only the poller is
-                // transport-gated (FFM drives the wr_* entry points instead).
-                const std::string directory = selfDirectory();
-                if (!directory.empty() && theServer().boot(directory + "/" + wrx::CONFIG_FILE)) {
-                        g_booted.store(true, std::memory_order_relaxed);
-                        theServer().setHostInitCallback(&hostInitCallback, nullptr);
-                        if (transportIsFfm(directory) == 0) {
-                                wrx::Poller::instance().start(theServer());
-                        }
-                }
-        }
-        return TRUE;
+// ---------------------------------------------------------------------------
+// The Rust core's C ABI (defined in native/rust/wrxr/src/ffi.rs). Declared
+// before the platform boot so the constructor can hand over the conf path,
+// and referenced once more in the keepalive table at the bottom so the
+// linker pulls every symbol out of the Rust archive into the .so.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+// defined in the Rust core (wrxr)
+int32_t wr_boot(const char* configPathUtf8);
+int32_t wr_submit_builds();
+int32_t wr_submit_frame();
+int64_t wr_status();
+int32_t wr_shutdown();
+int32_t wr_abi_version();
+const char* wr_version_string();
+int32_t wrxr_ctor_boot(const char* configPathUtf8);
 }
+
+extern "C" const void* const wrKeepalive[] = {
+	reinterpret_cast<const void*>(&wr_boot),
+	reinterpret_cast<const void*>(&wr_submit_builds),
+	reinterpret_cast<const void*>(&wr_submit_frame),
+	reinterpret_cast<const void*>(&wr_status),
+	reinterpret_cast<const void*>(&wr_shutdown),
+	reinterpret_cast<const void*>(&wr_abi_version),
+	reinterpret_cast<const void*>(&wr_version_string),
+	reinterpret_cast<const void*>(&wrxr_ctor_boot),
+	reinterpret_cast<const void*>(&wrmain_install_host_init),
+	reinterpret_cast<const void*>(&wrmain_teardown_recorder),
+};
+
+// ---------------------------------------------------------------------------
+// Platform boot.
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+
+// The directory the library itself was loaded from (NOT the executable's —
+// Java extracts the library into a per-session temp directory and writes the
+// wrx.conf sidecar next to it, so the module handle is the only correct
+// source). Self-allocated buffer, freed by the caller through wrmainFree.
+extern "C" char* wrmainSelfDirectory(HINSTANCE module) {
+	char buffer[MAX_PATH + 1]{};
+	const DWORD length = GetModuleFileNameA(module, buffer, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH) {
+		return nullptr;
+	}
+	buffer[length] = 0;
+	std::string full(buffer);
+	const size_t slash = full.find_last_of("/\\");
+	if (slash == std::string::npos) {
+		return nullptr;
+	}
+	const std::string directory = full.substr(0, slash);
+	char* out = static_cast<char*>(std::malloc(directory.size() + 1));
+	if (out == nullptr) {
+		return nullptr;
+	}
+	std::memcpy(out, directory.data(), directory.size());
+	out[directory.size()] = 0;
+	return out;
+}
+
+extern "C" void wrmainFree(void* pointer) {
+	std::free(pointer);
+}
+
+extern "C" int32_t wrmainCtorBoot(HINSTANCE module) {
+	char* directory = wrmainSelfDirectory(module);
+	if (directory == nullptr) {
+		return -1;
+	}
+	std::string conf(directory);
+	wrmainFree(directory);
+	conf += "\\" + std::string(wrx::CONFIG_FILE);
+	return wrxr_ctor_boot(conf.c_str());
+}
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
+	if (reason == DLL_PROCESS_ATTACH) {
+		// Windows loader-lock discipline: never wait on the new thread here.
+		// The poller thread is started detached by the Rust core; it touches
+		// only file mapping APIs and never loads libraries, which keeps the
+		// attach sequence deadlock-free with a static CRT. Boot always:
+		// Java wrote the wrx.conf sidecar before System.load; only the
+		// poller is transport-gated (FFM drives the wr_* entry points).
+		wrmainCtorBoot(instance);
+	}
+	return TRUE;
+}
+
 #else
+
+// The directory the shared object itself was loaded from, via dladdr on this
+// translation unit's own code address.
+static std::string selfDirectory() {
+	Dl_info info{};
+	if (dladdr(reinterpret_cast<void*>(&selfDirectory), &info) == 0 || info.dli_fname == nullptr) {
+		return {};
+	}
+	const std::string full(info.dli_fname);
+	const size_t slash = full.find_last_of("/\\");
+	return slash == std::string::npos ? std::string(".") : full.substr(0, slash);
+}
+
 __attribute__((constructor)) static void wrConstructor() {
-	if (g_bootAttempted.exchange(true, std::memory_order_relaxed)) {
+	const std::string directory = selfDirectory();
+	if (directory.empty()) {
 		return;
 	}
 	// Boot always: Java wrote the wrx.conf sidecar before System.load, so
 	// the server comes up for both transports; only the poller is
 	// transport-gated (FFM submits through the wr_* entry points instead).
-	const std::string directory = selfDirectory();
-	if (directory.empty()) {
-		return;
-	}
-	if (theServer().boot(directory + "/" + wrx::CONFIG_FILE)) {
-		g_booted.store(true, std::memory_order_relaxed);
-		theServer().setHostInitCallback(&hostInitCallback, nullptr);
-		if (transportIsFfm(directory) == 0) {
-			wrx::Poller::instance().start(theServer());
-		}
-	}
+	// wrxr_ctor_boot latches: a second constructor run (a re-extracted
+	// library copy loaded into the same process) is a no-op.
+	(void)wrxr_ctor_boot((directory + "/" + wrx::CONFIG_FILE).c_str());
 }
+
 #endif
+
+// ---------------------------------------------------------------------------
+// Keepalive: force the linker to pull every Rust object that defines a wr_*
+// symbol into the shared library, so the exports Java's SymbolLookup
+// (libraryLookup → find) needs are always present in the final artifact.
+// Without a reference from a C++ translation unit, an unreferenced archive
+// member is never extracted, and wr_boot would silently vanish from the .so.
+// ---------------------------------------------------------------------------
+

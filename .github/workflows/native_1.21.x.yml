@@ -47,6 +47,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Rust
+        # CMake drives cargo for the Rust transport core (rust/wrxr); the
+        # runners ship a Rust toolchain but pin it explicitly for
+        # reproducibility.
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Configure
         run: cmake -S native -B native/build -DWRVK_BUILD_TESTS=ON
 
@@ -56,6 +62,10 @@ jobs:
       - name: Test
         working-directory: native/build
         run: ctest -C Release --output-on-failure
+
+      - name: Rust transport suite
+        if: matrix.name == 'linux-x64'
+        run: cargo test --release --offline --manifest-path native/rust/wrxr/Cargo.toml
 
       - name: Upload library
         uses: actions/upload-artifact@v4
@@ -217,23 +227,29 @@ jobs:
             --console=plain
         working-directory: ./Minecraft-Transit-Railway
 
-      - name: Verify the packaged natives
+      - name: Verify the packaged natives (all four targets)
         # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
-        # native/<platform>/<library> and shaders/spirv/*.spv in the release
-        # jar, and their absence from the sources jar. Note "-sources" sorts
-        # before ".jar" in ASCII, so filter instead of trusting glob order.
+        # native/<platform>/<library> and shaders/spirv/*.spv in every
+        # release jar, and their absence from the sources jars.
         run: |
-          jar=$(ls Minecraft-Transit-Railway/build/release/*.jar | grep -v sources | head -1)
-          echo "verifying $jar"
-          unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)' || { echo 'native libraries missing from the jar'; exit 1; }
-          unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo 'spirv shaders missing from the jar'; exit 1; }
-          sourcesJar=$(ls Minecraft-Transit-Railway/build/release/*sources*.jar | head -1)
-          if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo 'binaries leaked into the sources jar'; exit 1; fi
-          echo "native packaging contract verified in both jars"
+          cd Minecraft-Transit-Railway/wr-vk-release
+          for project in 1.21.1-fabric 1.21.1-neoforge 1.21.4-fabric 1.21.4-neoforge; do
+            jar=$(ls "$project"/*.jar | grep -v sources | head -1)
+            echo "verifying $jar"
+            unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)' || { echo "native libraries missing from $jar"; exit 1; }
+            unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
+            sourcesJar=$(ls "$project"/*sources*.jar | head -1)
+            if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo "binaries leaked into $sourcesJar"; exit 1; fi
+          done
+          echo "native packaging contract verified in all eight jars"
 
-      - name: Upload mod jar
+      - name: Upload mod jars
         uses: actions/upload-artifact@v4
         with:
-          name: YYMTR-fabric-1.21.4-native
-          path: Minecraft-Transit-Railway/build/release/*.jar
+          name: YYMTR-release-jars
+          path: |
+            Minecraft-Transit-Railway/wr-vk-release/1.21.1-fabric/*
+            Minecraft-Transit-Railway/wr-vk-release/1.21.1-neoforge/*
+            Minecraft-Transit-Railway/wr-vk-release/1.21.4-fabric/*
+            Minecraft-Transit-Railway/wr-vk-release/1.21.4-neoforge/*
           if-no-files-found: error

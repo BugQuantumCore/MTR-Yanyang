@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// wrx.hpp — the Java ↔ C++ exchange layer of the native Vulkan OBJ pipeline.
+// wrx.hpp — the byte-layout contract of the Java ↔ native exchange.
 //
 // Design (see docs/NATIVE_VULKAN.md for the full rationale):
 //
@@ -8,6 +8,11 @@
 //     for its constructor-time boot (POSIX) / DllMain boot (Windows); every byte
 //     exchanged with Java travels through memory-mapped files created by Java
 //     before the library loads.
+//
+//   * The transport that maps those files and drains the queues is the Rust
+//     core (native/rust/wrxr, protocol.rs mirrors this header byte for byte);
+//     the C++ side (wrcore_domain.cpp) owns the registry + wrobj + wrvk and
+//     answers through the wrcore_* C ABI.
 //   * Two transports share one protocol:
 //       - SHARED_MEMORY (default): a C++ poller thread drains the message
 //         queues and records frames; Java rings a sequence doorbell and waits
@@ -21,8 +26,8 @@
 //     the boundary.
 //
 // Byte layout contract (little-endian). Java mirrors every constant in
-// org.mtr.nativeobj.WrxLayout and the JUnit WrxLayoutTest round-trips both
-// sides of every message.
+// org.mtr.nativeobj.WrxRegion, and the Rust core mirrors them in
+// rust/wrxr/src/protocol.rs — three sides, one contract.
 
 #pragma once
 
@@ -120,7 +125,7 @@ inline constexpr uint32_t MSG_FREE_MODELS = 5;
 // Shutdown request through the queue itself (used by the shared-memory
 // transport on JDKs without the FFM API, where no wr_shutdown downcall can
 // exist): sets the server's shutdown-requested flag; the poller observes it
-// after the current processBuilds pass and performs Server::shutdown outside
+// after the current processBuilds pass and performs the shutdown outside
 // every lock. The generic per-message build ack doubles as the handshake, so
 // Java can unmap its side safely once buildAck reaches the sent sequence.
 inline constexpr uint32_t MSG_SHUTDOWN = 6;
@@ -256,152 +261,18 @@ struct HostHandles {
         bool valid;
 };
 
-// One "model" = a set of meshes from one LOAD_OBJ (a group/material split of
-// one OBJ document). Source models can be instanced (translated + mirrored)
-// without touching the source vertices.
-struct ModelInfo {
-        uint32_t modelId;
-        std::vector<MeshInfo> meshes;
-};
-
-struct RegionPaths {
-        std::string directory;
-        std::string controlPath;
-        std::string buildPath;
-        std::string resultsPath;
-        std::string framePath;
-};
-
 // ---------------------------------------------------------------------------
-// Region: the four mapped files + headers. Java creates and maps first; the
-// native side maps the same files (they are regular files on disk, so both
-// processes see the same pages — this is the "C++ reads Java's data directly"
-// channel).
+// GpuMesh — the GPU mesh referenced by draw items: wrobj's 24-byte vertex
+// layout, kept as raw bytes so the result of wr_obj_builder_build can be
+// adopted without a repack. Shared between a source model and its identity
+// instances; freed when the last referencing model is freed. (Lives at
+// namespace level — wrvk and the domain both use it; the transport side that
+// fills it is now the Rust core.)
 // ---------------------------------------------------------------------------
 
-class Region {
-public:
-        Region() = default;
-        static bool open(const RegionPaths& paths, Region& out);
-        ~Region();
-        Region(Region&& other) noexcept;
-        Region& operator=(Region&& other) noexcept;
-        Region(const Region&) = delete;
-        Region& operator=(const Region&) = delete;
-
-        ControlBlock* control() { return reinterpret_cast<ControlBlock*>(control_); }
-        BumpHeader* buildHeader() { return reinterpret_cast<BumpHeader*>(build_); }
-        BumpHeader* resultsHeader() { return reinterpret_cast<BumpHeader*>(results_); }
-        uint8_t* buildPayload() { return build_ + sizeof(BumpHeader); }
-        uint8_t* resultsPayload() { return results_ + sizeof(BumpHeader); }
-        uint8_t* framePayload() { return frame_; }
-        uint64_t frameSize() const { return frameSize_; }
-
-private:
-        void closeAll();
-
-        uint8_t* control_{nullptr};
-        uint8_t* build_{nullptr};
-        uint8_t* results_{nullptr};
-        uint8_t* frame_{nullptr};
-        uint64_t controlSize_{0}, buildSize_{0}, resultsSize_{0}, frameSize_{0};
-};
-
-// ---------------------------------------------------------------------------
-// Server: mesh store + message processing. One instance per process, shared
-// by the poller thread (shm transport) and the wr_* FFM entry points.
-// ---------------------------------------------------------------------------
-
-class Server {
-public:
-        Server();
-        ~Server();
-
-        // Boot from the wrx.conf sidecar; idempotent. Returns false on bad magic.
-        bool boot(const std::string& configPath);
-        void shutdown();
-        bool booted() const;
-
-        // Drain every pending build message. Returns the processed count or -1.
-        int64_t processBuilds();
-
-        // Set by the MSG_SHUTDOWN handler; the poller (or an FFM submitter)
-        // observes it after the current pass and performs shutdown() lock-free.
-        bool shutdownRequested() const;
-
-        // Record the latest published frame if any (0 = nothing new, 1 = recorded).
-        int64_t processFrame();
-
-        // Liveness pulse, visible in control->nativeHeartbeat on both transports.
-        void pulse();
-
-        // --- message handlers (public for the tests) ---
-        bool initVulkan(const uint8_t* data, uint32_t size);
-        bool loadShaders(const uint8_t* data, uint32_t size);
-        bool loadObj(const uint8_t* data, uint32_t size);
-        bool makeInstance(const uint8_t* data, uint32_t size);
-        bool freeModels(const uint8_t* data, uint32_t size);
-
-        // --- introspection for the tests and wrvk ---
-        const HostHandles& hostHandles() const { return host_; }
-        bool hasShader(uint32_t key) const;
-        uint32_t shaderSize(uint32_t key) const;
-        const uint8_t* shaderCode(uint32_t key) const;
-        size_t liveMeshCount() const;
-        size_t liveModelCount() const;
-
-        // The GPU mesh referenced by draw items: wrobj's 24-byte vertex layout,
-        // kept as raw bytes so the result of wr_obj_builder_build can be adopted
-        // without a repack. Shared between a source model and its identity
-        // instances; freed when the last referencing model is freed.
-        struct GpuMesh {
-                std::vector<uint8_t> vertices; // VERTEX_BYTES per vertex
-                std::vector<uint32_t> indices;
-        };
-        const GpuMesh* mesh(uint32_t meshId) const;
-
-        // wrvk attaches its recorder here once Vulkan is initialised.
-        void setRecorder(wrvk::WrvkRecorder* recorder);
-
-        // Called at MSG_INIT_VULKAN, after the handles are parsed but before the
-        // recorder is attached — the host boot creates the Vulkan loader dispatch
-        // and the recorder here (it needs the instance handle to resolve symbols).
-        void setHostInitCallback(void (*callback)(const HostHandles&, void* user), void* user);
-
-private:
-        struct Impl;
-        Impl* impl_;
-        HostHandles host_{};
-        wrvk::WrvkRecorder* recorder_{nullptr};
-        void (*hostInitCallback_)(const HostHandles&, void*){nullptr};
-        void* hostInitUser_{nullptr};
-        friend struct ServerInternals;
-};
-
-// Utility: parse the wrx.conf sidecar (key=value lines, UTF-8, LF or CRLF).
-RegionPaths parseConfig(const std::string& configPath, bool& okOut);
-
-// The shared-memory transport poller (see wrx_server.cpp). Started once per
-// process from the constructor-time boot when the transport is not FFM.
-class Poller {
-public:
-        static Poller& instance();
-        void start(Server& server);
-        void stop();
-        bool running() const { return running_.load(std::memory_order_relaxed); }
-
-private:
-        Poller();
-        ~Poller();
-        Poller(const Poller&) = delete;
-        Poller& operator=(const Poller&) = delete;
-        void run();
-
-        std::mutex mutex_;
-        std::thread thread_;
-        std::atomic<bool> running_{false};
-        std::atomic<bool> stopRequested_{false};
-        Server* server_{nullptr};
+struct GpuMesh {
+        std::vector<uint8_t> vertices; // VERTEX_BYTES per vertex
+        std::vector<uint32_t> indices;
 };
 
 } // namespace wrx

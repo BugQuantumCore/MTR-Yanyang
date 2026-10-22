@@ -417,7 +417,7 @@ void WrvkRecorder::uploadShader(uint32_t key, const uint8_t* code, uint32_t size
 // mesh upload / free
 // ---------------------------------------------------------------------------
 
-bool WrvkRecorder::uploadMesh(uint32_t meshId, const wrx::Server::GpuMesh& mesh) {
+bool WrvkRecorder::uploadMesh(uint32_t meshId, const wrx::GpuMesh& mesh) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->hostReady || impl_->fatal) {
                 return false;

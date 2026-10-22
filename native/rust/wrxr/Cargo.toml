@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+#
+# wrxr — the Rust transport core of the native Vulkan OBJ pipeline.
+#
+# Zero external dependencies on purpose: the crate must build offline, on
+# every CI runner and in the sandbox, with nothing but rustc + the system
+# C++ compiler (the latter only for the test bundle; see build.rs).
+
+[package]
+name = "wrxr"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "wrxr"
+# staticlib: linked into the final libwrvk.{so,dll,dylib} by CMake.
+# rlib: what `cargo test` binaries link (plus the C++ domain bundle).
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+strip = "symbols"
+lto = "thin"

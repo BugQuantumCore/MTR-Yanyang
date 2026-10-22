@@ -45,6 +45,8 @@ mtr_custom_resources.json
 # build/test outputs never belong in the tree (CI rebuilds them per commit)
 natives/
 native/build-local/
+native/build/
+native/rust/wrxr/target/
 
 # website build outputs (generated during :fabric:setupFiles)
 website/node_modules/

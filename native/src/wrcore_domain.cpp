@@ -1,35 +1,33 @@
 // SPDX-License-Identifier: MIT
 //
-// wrx.cpp — the mesh store and message processing of the exchange server.
+// wrcore_domain.cpp — the C++ half of the split exchange server.
 //
-// Every handler runs either on the shm poller thread or inside a wr_* FFM
-// downcall; the stores are guarded by one mutex because builds arrive from
-// Java worker threads while frames arrive from the render thread.
+// The Rust core (native/rust/wrxr) owns the transport: region mapping,
+// the control page, the build/results queues, the seqlocked frame slot, the
+// poller thread and the wr_* C ABI. This file owns what the messages DO:
+// the model/mesh registry, the wrobj OBJ builder calls, the recorder hooks
+// and the reply payloads. Everything here is driven exclusively through
+// the wrcore_* entry points in include/wrcore/wrcore.h, guarded by one
+// mutex, so the reply buffer stays valid between a handler and the Rust
+// publisher that drains it.
 //
-// Queue reset protocol (identical on both queues, mirrored):
-//   * the writer may only move its cursor back to zero when it observes
-//     readPos == writePos (fully drained), and it publishes the new writePos
-//     with release AFTER the bytes are in place;
-//   * the reader resets readPos to zero whenever it observes
-//     readPos > writePos (a wrap just happened), and re-evaluates.
-// Together these make the wrap lossless: the writer only reuses space the
-// reader has fully consumed, and the reader never misses a message published
-// across a wrap because the transient state is always detectable.
+// Semantics are a byte-for-byte port of the former wrx.cpp handlers,
+// including the per-model failure paths (which publish RES_ERROR, bump the
+// result sequence and still ack the message) versus the poison paths (which
+// publish nothing and break the stream).
 
+#include "wrcore/wrcore.h"
 #include "wrx/wrx.hpp"
 #include "wrobj/wrobj.hpp"
 #include "wrvk/wrvk.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <thread>
 #include <unordered_map>
-
-namespace wrx {
+#include <vector>
 
 namespace {
 
@@ -84,91 +82,79 @@ uint32_t roundUp8(uint32_t v) {
         return (v + 7) & ~7u;
 }
 
-} // namespace
+// ---------------------------------------------------------------------------
+// Core — the registry + handlers. A function-local static (thread-safe
+// init) so library boot order can never construct it too early.
+// ---------------------------------------------------------------------------
 
-struct Server::Impl {
+struct MeshEntry {
+        std::shared_ptr<wrx::GpuMesh> mesh;
+};
+
+struct ModelEntry {
+        uint32_t modelId;
+        std::vector<wrx::MeshInfo> meshInfos;
+        std::vector<std::shared_ptr<wrx::GpuMesh>> meshes;
+};
+
+struct Core {
         std::mutex mutex;
-        Region region;
-        bool booted{false};
-        std::atomic<bool> shutdownRequested{false};
-
-        struct ModelEntry {
-                uint32_t modelId;
-                std::vector<MeshInfo> meshInfos;
-                std::vector<std::shared_ptr<GpuMesh>> meshes;
-        };
 
         std::unordered_map<uint32_t, std::unique_ptr<ModelEntry>> models;
-        std::unordered_map<uint32_t, std::shared_ptr<GpuMesh>> meshIndex;
+        std::unordered_map<uint32_t, std::shared_ptr<wrx::GpuMesh>> meshIndex;
         uint32_t nextModelId{1};
         uint32_t nextMeshId{1};
 
-        std::unordered_map<uint32_t, std::vector<uint8_t>> shaders;
-
         wrvk::WrvkRecorder* recorder{nullptr};
 
-        void setError(uint32_t code) {
-                region.control()->errorCode.store(code, std::memory_order_release);
-                region.control()->flags.fetch_or(FLAG_ERROR, std::memory_order_release);
+        WrcoreHostInit hostInitCallback{nullptr};
+        void* hostInitUser{nullptr};
+        wrx::HostHandles host_{};
+
+        std::vector<uint8_t> reply; // reused per handler; see the contract in wrcore.h
+
+        WrcoreReply finish(int32_t status, uint32_t errorCode) {
+                WrcoreReply out{};
+                out.status = status;
+                out.errorCode = errorCode;
+                out.resultType = 0;
+                out.bumpResultSeq = 0;
+                out.vulkanReady = 0;
+                out.resultPtr = nullptr;
+                out.resultLen = 0;
+                return out;
         }
 
-        // Publish one results message (C++ is the writer of results.bin).
-        bool publishResult(uint32_t type, const std::vector<uint8_t>& payload) {
-                BumpHeader* header = region.resultsHeader();
-                const uint64_t capacity = header->capacity.load(std::memory_order_relaxed);
-                uint64_t writePos = header->writePos.load(std::memory_order_relaxed);
-                const uint32_t total = MESSAGE_HEADER_SIZE + roundUp8(static_cast<uint32_t>(payload.size()));
-
-                if (writePos + total > capacity) {
-                        // Wait for a full drain, then wrap. Bounded: a stalled Java
-                        // consumer is an anomaly; surface it via the error flag.
-                        bool drained = false;
-                        for (int i = 0; i < 4000; ++i) {
-                                if (header->readPos.load(std::memory_order_acquire) == writePos) {
-                                        drained = true;
-                                        break;
-                                }
-                                std::this_thread::sleep_for(std::chrono::microseconds(500));
-                        }
-                        if (!drained) {
-                                setError(ERR_TIMEOUT);
-                                return false;
-                        }
-                        writePos = 0;
-                }
-
-                uint8_t* payloadArea = region.resultsPayload();
-                std::memcpy(payloadArea + writePos, &type, sizeof(uint32_t));
-                const uint32_t payloadSize = static_cast<uint32_t>(payload.size());
-                std::memcpy(payloadArea + writePos + 4, &payloadSize, sizeof(uint32_t));
-                if (!payload.empty()) {
-                        std::memcpy(payloadArea + writePos + MESSAGE_HEADER_SIZE, payload.data(), payloadSize);
-                        if (total != MESSAGE_HEADER_SIZE + payloadSize) {
-                                std::memset(payloadArea + writePos + MESSAGE_HEADER_SIZE + payloadSize, 0, total - MESSAGE_HEADER_SIZE - payloadSize);
-                        }
-                }
-                header->writePos.store(writePos + total, std::memory_order_release);
-                return true;
+        WrcoreReply finishResult(int32_t status, uint32_t errorCode, uint32_t resultType, bool bump) {
+                WrcoreReply out = finish(status, errorCode);
+                out.resultType = resultType;
+                out.bumpResultSeq = bump ? 1u : 0u;
+                out.resultPtr = reply.empty() ? nullptr : reply.data();
+                out.resultLen = reply.size();
+                return out;
         }
 
-        void publishError(uint32_t requestId, uint32_t code) {
-                std::vector<uint8_t> payload;
-                Writer w{payload};
+        // The old publishError: requestId, code, u16 zero-length message.
+        void buildErrorReply(uint32_t requestId, uint32_t code) {
+                reply.clear();
+                Writer w{reply};
                 w.write(requestId);
                 w.write(code);
                 const uint16_t messageLength = 0;
                 w.blob(&messageLength, sizeof(messageLength));
-                publishResult(RES_ERROR, payload);
         }
 
-        bool handleLoadObj(Reader& reader) {
+        // --- LOAD_OBJ -----------------------------------------------------------
+        // Port of the old Impl::handleLoadObj. All registry and wrobj work is
+        // identical; publishing the reply is now the caller's (Rust's) job.
+        bool handleLoadObj(Reader& reader, WrcoreReply& out) {
                 const uint32_t requestId = reader.read<uint32_t>();
                 const uint32_t flags = reader.read<uint32_t>();
                 const uint32_t objByteCount = reader.read<uint32_t>();
                 const uint8_t* objBytes = nullptr;
                 uint32_t objLen = 0;
                 if (!reader.bytes(objByteCount, objBytes, objLen)) {
-                        setError(ERR_INCONSISTENT);
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
                         return false;
                 }
                 const uint32_t mtlCount = reader.read<uint32_t>();
@@ -193,7 +179,7 @@ struct Server::Impl {
                         mtlCombined.append("\n\n", 2);
                 }
                 if (reader.overflow) {
-                        setError(ERR_INCONSISTENT);
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
                         return false;
                 }
 
@@ -209,8 +195,8 @@ struct Server::Impl {
                         hasMtl ? mtlCombined.c_str() : nullptr,
                         static_cast<int32_t>(mtlCombined.size()), flipTextureV ? 1 : 0);
                 if (keys == nullptr) {
-                        publishError(requestId, ERR_INCONSISTENT);
-                        region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
+                        buildErrorReply(requestId, wrx::ERR_INCONSISTENT);
+                        out = finishResult(WRCORE_OK, 0, wrx::RES_ERROR, true);
                         return true; // per-model failure, not a protocol failure
                 }
 
@@ -226,12 +212,12 @@ struct Server::Impl {
                 // writeCache). One model entry per group, one name in the reply.
                 struct GroupBuild {
                         std::string name;
-                        std::vector<MeshInfo> meshInfos;
-                        std::vector<std::shared_ptr<GpuMesh>> meshes;
+                        std::vector<wrx::MeshInfo> meshInfos;
+                        std::vector<std::shared_ptr<wrx::GpuMesh>> meshes;
                         uint32_t modelId{0};
                 };
                 std::vector<GroupBuild> groupBuilds;
-                std::vector<MeshInfo> groupMeshesScratch;
+                std::vector<wrx::MeshInfo> groupMeshesScratch;
 
                 const auto buildOne = [&](WrObjBuilder* builder, const std::string& groupName) {
                         if (builder == nullptr) {
@@ -249,15 +235,15 @@ struct Server::Impl {
                         const auto* draws = static_cast<const WrObjResultDraw*>(result->drawData);
                         for (int32_t d = 0; d < result->drawCount; d++) {
                                 const WrObjResultDraw& draw = draws[d];
-                                auto mesh = std::make_shared<GpuMesh>();
+                                auto mesh = std::make_shared<wrx::GpuMesh>();
                                 const auto* source = static_cast<const uint8_t*>(result->vertexData);
-                                mesh->vertices.assign(source + draw.vertexOffset * VERTEX_BYTES,
-                                        source + (draw.vertexOffset + draw.vertexCount) * VERTEX_BYTES);
+                                mesh->vertices.assign(source + draw.vertexOffset * wrx::VERTEX_BYTES,
+                                        source + (draw.vertexOffset + draw.vertexCount) * wrx::VERTEX_BYTES);
                                 const auto* sourceIndices = static_cast<const uint32_t*>(result->indexData);
                                 mesh->indices.assign(sourceIndices + draw.indexOffset,
                                         sourceIndices + draw.indexOffset + draw.indexCount);
 
-                                MeshInfo info{};
+                                wrx::MeshInfo info{};
                                 info.meshId = nextMeshId++;
                                 info.vertexCount = static_cast<uint32_t>(draw.vertexCount);
                                 info.indexCount = static_cast<uint32_t>(draw.indexCount);
@@ -271,7 +257,7 @@ struct Server::Impl {
                                 const auto* vertexBytes = mesh->vertices.data();
                                 for (int32_t v = 0; v < draw.vertexCount; v++) {
                                         float xyz[3];
-                                        std::memcpy(xyz, vertexBytes + static_cast<size_t>(v) * VERTEX_BYTES, sizeof(xyz));
+                                        std::memcpy(xyz, vertexBytes + static_cast<size_t>(v) * wrx::VERTEX_BYTES, sizeof(xyz));
                                         bounds[0] = std::min(bounds[0], xyz[0]);
                                         bounds[1] = std::min(bounds[1], xyz[1]);
                                         bounds[2] = std::min(bounds[2], xyz[2]);
@@ -309,7 +295,7 @@ struct Server::Impl {
                                         if (!groupMeshesScratch.empty()) {
                                                 groupBuild.modelId = nextModelId++;
                                                 groupBuild.meshInfos = std::move(groupMeshesScratch);
-                                                for (const MeshInfo& info : groupBuild.meshInfos) {
+                                                for (const wrx::MeshInfo& info : groupBuild.meshInfos) {
                                                         groupBuild.meshes.push_back(meshIndex[info.meshId]);
                                                 }
                                                 groupBuilds.push_back(std::move(groupBuild));
@@ -327,7 +313,7 @@ struct Server::Impl {
                         if (!groupMeshesScratch.empty()) {
                                 groupBuild.modelId = nextModelId++;
                                 groupBuild.meshInfos = std::move(groupMeshesScratch);
-                                for (const MeshInfo& info : groupBuild.meshInfos) {
+                                for (const wrx::MeshInfo& info : groupBuild.meshInfos) {
                                         groupBuild.meshes.push_back(meshIndex[info.meshId]);
                                 }
                                 groupBuilds.push_back(std::move(groupBuild));
@@ -336,8 +322,8 @@ struct Server::Impl {
                 wr_obj_keys_free(keys);
 
                 // reply: requestId, groupCount, per group {name, modelId, meshCount, meshes...}
-                std::vector<uint8_t> payload;
-                Writer w{payload};
+                reply.clear();
+                Writer w{reply};
                 w.write(requestId);
                 const uint32_t groupCount = static_cast<uint32_t>(groupBuilds.size());
                 w.write(groupCount);
@@ -350,7 +336,7 @@ struct Server::Impl {
                         const uint32_t meshCount = static_cast<uint32_t>(groupBuild.meshInfos.size());
                         w.write(meshCount);
                         for (uint32_t i = 0; i < meshCount; i++) {
-                                const MeshInfo& info = groupBuild.meshInfos[i];
+                                const wrx::MeshInfo& info = groupBuild.meshInfos[i];
                                 w.write(info.meshId);
                                 w.write(info.vertexCount);
                                 w.write(info.indexCount);
@@ -369,16 +355,16 @@ struct Server::Impl {
                         model->meshes = groupBuild.meshes;
                         models[groupBuild.modelId] = std::move(model);
                 }
-                publishResult(RES_MODELS, payload);
-                region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
+                out = finishResult(WRCORE_OK, 0, wrx::RES_MODELS, true);
                 return true;
         }
 
+        // --- INSTANCE -----------------------------------------------------------
         // NewOptimizedModelGroup.merge semantics: translate + optional flip. The
         // flip mirrors x/z of positions and normals and swaps winding, matching
         // the Java path's per-vertex modify() plus the culling behaviour it
         // produces. Identity transforms alias the source GPU data — no copy.
-        bool handleInstance(Reader& reader) {
+        bool handleInstance(Reader& reader, WrcoreReply& out) {
                 const uint32_t requestId = reader.read<uint32_t>();
                 const uint32_t sourceModelId = reader.read<uint32_t>();
                 const uint32_t flipFlag = reader.read<uint32_t>();
@@ -390,8 +376,8 @@ struct Server::Impl {
 
                 const auto it = models.find(sourceModelId);
                 if (reader.overflow || it == models.end()) {
-                        publishError(requestId, ERR_INCONSISTENT);
-                        region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
+                        buildErrorReply(requestId, wrx::ERR_INCONSISTENT);
+                        out = finishResult(reader.overflow ? WRCORE_POISON : WRCORE_OK, 0, wrx::RES_ERROR, true);
                         return !reader.overflow;
                 }
 
@@ -402,14 +388,14 @@ struct Server::Impl {
                 model->meshes.reserve(source.meshes.size());
 
                 for (size_t i = 0; i < source.meshes.size(); i++) {
-                        const GpuMesh& src = *source.meshes[i];
-                        auto mesh = identity ? source.meshes[i] : std::make_shared<GpuMesh>();
+                        const wrx::GpuMesh& src = *source.meshes[i];
+                        auto mesh = identity ? source.meshes[i] : std::make_shared<wrx::GpuMesh>();
                         if (!identity) {
                                 mesh->vertices = src.vertices;
                                 mesh->indices = src.indices;
-                                const size_t vertexCount = src.vertices.size() / VERTEX_BYTES;
+                                const size_t vertexCount = src.vertices.size() / wrx::VERTEX_BYTES;
                                 for (size_t v = 0; v < vertexCount; v++) {
-                                        uint8_t* vertex = mesh->vertices.data() + v * VERTEX_BYTES;
+                                        uint8_t* vertex = mesh->vertices.data() + v * wrx::VERTEX_BYTES;
                                         float xyz[3];
                                         std::memcpy(xyz, vertex, sizeof(xyz));
                                         xyz[0] = (flip ? -xyz[0] : xyz[0]) + dx;
@@ -457,8 +443,8 @@ struct Server::Impl {
                         meshIndex[meshId] = std::move(mesh);
                 }
 
-                std::vector<uint8_t> payload;
-                Writer w{payload};
+                reply.clear();
+                Writer w{reply};
                 w.write(requestId);
                 w.write(model->modelId);
                 const uint32_t meshCount = static_cast<uint32_t>(model->meshInfos.size());
@@ -467,14 +453,15 @@ struct Server::Impl {
                         w.write(model->meshInfos[i].meshId);
                         w.blob(model->meshInfos[i].aabb, sizeof(model->meshInfos[i].aabb));
                 }
-                publishResult(RES_INSTANCE, payload);
+                out = finishResult(WRCORE_OK, 0, wrx::RES_INSTANCE, true);
                 models[model->modelId] = std::move(model);
-                region.control()->buildResultSeq.fetch_add(1, std::memory_order_release);
                 return true;
         }
 
-        bool handleFreeModels(Reader& reader) {
+        // --- FREE_MODELS --------------------------------------------------------
+        bool handleFreeModels(Reader& reader, WrcoreReply& out) {
                 const uint32_t requestId = reader.read<uint32_t>();
+                (void)requestId;
                 const uint32_t count = reader.read<uint32_t>();
                 for (uint32_t i = 0; i < count && !reader.overflow; i++) {
                         const uint32_t modelId = reader.read<uint32_t>();
@@ -495,247 +482,64 @@ struct Server::Impl {
                 // No results-queue echo: Java's request ids are monotonic, so a
                 // flow-control reply would only fill results.bin with messages
                 // nobody consumes (a full queue then wedges every later reply
-                // behind publishResult's 2-second drain wait). The generic
-                // buildAck that processBuilds writes per message is the handshake.
-                return !reader.overflow;
+                // behind the publisher's 2-second drain wait). The generic
+                // buildAck that the Rust processBuilds writes per message is the
+                // handshake.
+                if (reader.overflow) {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                out = finish(WRCORE_OK, 0);
+                return true;
         }
 };
 
-// ---------------------------------------------------------------------------
-// Server public surface
-// ---------------------------------------------------------------------------
-
-Server::Server() : impl_(new Impl) {
+Core& core() {
+        static Core instance;
+        return instance;
 }
 
-Server::~Server() {
-        delete impl_;
-}
+} // namespace
 
-bool Server::boot(const std::string& configPath) {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (impl_->booted) {
-                return true;
-        }
-        bool configOk = false;
-        const RegionPaths paths = parseConfig(configPath, configOk);
-        if (!configOk) {
-                return false;
-        }
-        if (!Region::open(paths, impl_->region)) {
-                return false;
-        }
-        impl_->booted = true;
-        return true;
-}
+extern "C" {
 
-void Server::shutdown() {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return;
-        }
-        impl_->region.control()->flags.fetch_or(FLAG_SHUTDOWN, std::memory_order_release);
-        if (impl_->recorder != nullptr) {
-                for (const auto& entry : impl_->models) {
-                        for (const auto& info : entry.second->meshInfos) {
-                                impl_->recorder->freeMesh(info.meshId);
-                        }
-                }
-        }
-        impl_->models.clear();
-        impl_->meshIndex.clear();
-        impl_->shaders.clear();
-        impl_->region = Region{};
-        impl_->shutdownRequested.store(false, std::memory_order_release);
-        impl_->booted = false;
-}
-
-void Server::setRecorder(wrvk::WrvkRecorder* recorder) {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        impl_->recorder = recorder;
-        recorder_ = recorder;
-}
-
-bool Server::booted() const {
-        return impl_->booted;
-}
-
-int64_t Server::processBuilds() {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return -1;
-        }
-        Region& region = impl_->region;
-        BumpHeader* header = region.buildHeader();
-        uint64_t readPos = header->readPos.load(std::memory_order_relaxed);
-        uint64_t writePos = header->writePos.load(std::memory_order_acquire);
-        if (readPos > writePos) {
-                // the writer wrapped; restart from the new generation
-                readPos = 0;
-                header->readPos.store(0, std::memory_order_release);
-        }
-        int64_t processed = 0;
-        const uint64_t capacity = header->capacity.load(std::memory_order_relaxed);
-        uint8_t* payloadArea = region.buildPayload();
-        while (readPos + MESSAGE_HEADER_SIZE <= writePos) {
-                uint32_t type = 0;
-                uint32_t size = 0;
-                std::memcpy(&type, payloadArea + readPos, sizeof(uint32_t));
-                std::memcpy(&size, payloadArea + readPos + 4, sizeof(uint32_t));
-                const uint32_t total = MESSAGE_HEADER_SIZE + roundUp8(size);
-                if (size > capacity || readPos + total > writePos) {
-                        // A malformed record would otherwise be re-read on every pass and
-                        // wedge the queue (and every Java publish waiting for its ack)
-                        // permanently: skip to the write position, count it as an error,
-                        // and let the stream drain.
-                        impl_->setError(ERR_INCONSISTENT);
-                        header->readPos.store(writePos, std::memory_order_release);
-                        return -1;
-                }
-                Reader reader{payloadArea + readPos + MESSAGE_HEADER_SIZE, size, 0};
-                bool ok;
-                switch (type) {
-                        case MSG_INIT_VULKAN:
-                                ok = initVulkan(reader.data, reader.size);
-                                break;
-                        case MSG_LOAD_SHADERS:
-                                ok = loadShaders(reader.data, reader.size);
-                                break;
-                        case MSG_LOAD_OBJ:
-                                ok = impl_->handleLoadObj(reader);
-                                break;
-                        case MSG_INSTANCE:
-                                ok = impl_->handleInstance(reader);
-                                break;
-                        case MSG_FREE_MODELS:
-                                ok = impl_->handleFreeModels(reader);
-                                break;
-                        case MSG_SHUTDOWN:
-                                // Flag only: tearing the server down takes the region mutex,
-                                // which processBuilds already holds, so the poller performs the
-                                // actual teardown after this pass, outside every lock. The
-                                // per-message ack below is Java's signal that the request landed.
-                                impl_->shutdownRequested.store(true, std::memory_order_release);
-                                ok = true;
-                                break;
-                        default:
-                                ok = false;
-                                break;
-                }
-                if (!ok) {
-                        // Advance past the poisoned message for the same reason as the
-                        // malformed-header guard above; the error flag still reports it.
-                        impl_->setError(reader.overflow ? ERR_INCONSISTENT : ERR_VULKAN);
-                        header->readPos.store(readPos + total, std::memory_order_release);
-                        region.control()->buildAck.fetch_add(1, std::memory_order_release);
-                        return -1;
-                }
-                readPos += total;
-                processed++;
-                header->readPos.store(readPos, std::memory_order_release);
-                region.control()->buildAck.fetch_add(1, std::memory_order_release);
-        }
-        return processed;
-}
-
-bool Server::shutdownRequested() const {
-        return impl_->shutdownRequested.load(std::memory_order_acquire);
-}
-
-int64_t Server::processFrame() {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return -1;
-        }
-        ControlBlock* control = impl_->region.control();
-        const uint64_t frameSeq = control->frameSeq.load(std::memory_order_acquire);
-        if (frameSeq == control->frameAck.load(std::memory_order_relaxed)) {
-                return 0;
-        }
-
-        uint8_t* frame = impl_->region.framePayload();
-        FrameHeader header;
-        bool stable = false;
-        for (int attempt = 0; attempt < 200 && !stable; attempt++) {
-                uint64_t seq = 0;
-                std::memcpy(&seq, frame, sizeof(uint64_t));
-                if ((seq & 1) != 0) {
-                        std::this_thread::sleep_for(std::chrono::microseconds(25));
-                        continue;
-                }
-                std::memcpy(&header, frame + 8, sizeof(FrameHeader));
-                if (header.magic != FRAME_MAGIC || header.itemCount > FRAME_MAX_ITEMS || header.textureCount > FRAME_MAX_TEXTURES) {
-                        break;
-                }
-                const uint64_t needed = 8 + FRAME_ITEMS_OFF_BASE +
-                        static_cast<uint64_t>(header.itemCount) * sizeof(FrameItem);
-                if (needed > impl_->region.frameSize()) {
-                        break;
-                }
-                std::vector<uint8_t> rest(static_cast<size_t>(needed) - 8 - sizeof(FrameHeader));
-                if (!rest.empty()) {
-                        std::memcpy(rest.data(), frame + 8 + sizeof(FrameHeader), rest.size());
-                }
-                uint64_t recheck = 0;
-                std::memcpy(&recheck, frame, sizeof(uint64_t));
-                if (recheck == seq) {
-                        const bool recorded = recorder_ != nullptr && recorder_->recordFrame(header,
-                                frame + 8 + FRAME_TEXTURE_COUNT_OFF,
-                                frame + 8 + FRAME_ITEMS_OFF_BASE);
-                        if (recorded) {
-                                control->frameAck.store(frameSeq, std::memory_order_release);
-                                return 1;
-                        }
-                        stable = true; // stop retrying; fall through to the error path
-                }
-        }
-        control->frameErrorCount.fetch_add(1, std::memory_order_relaxed);
-        control->frameAck.store(frameSeq, std::memory_order_release);
-        return 0;
-}
-
-void Server::pulse() {
-        if (impl_->booted) {
-                impl_->region.control()->nativeHeartbeat.fetch_add(1, std::memory_order_relaxed);
-        }
-}
-
-void Server::setHostInitCallback(void (*callback)(const HostHandles&, void*), void* user) {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        hostInitCallback_ = callback;
-        hostInitUser_ = user;
-}
-
-bool Server::initVulkan(const uint8_t* data, uint32_t size) {
+WrcoreReply wrcore_init_vulkan(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
         Reader reader{data, size, 0};
-        host_.instance = reader.read<uint64_t>();
-        host_.physicalDevice = reader.read<uint64_t>();
-        host_.device = reader.read<uint64_t>();
-        host_.queue = reader.read<uint64_t>();
-        host_.renderPass = reader.read<uint64_t>();
-        host_.queueFamily = reader.read<uint32_t>();
-        host_.colorFormat = reader.read<uint32_t>();
-        host_.depthFormat = reader.read<uint32_t>();
-        host_.sampleCount = reader.read<uint32_t>();
-        host_.maxPushConstants = reader.read<uint32_t>();
-        host_.valid = !reader.overflow;
-        if (host_.valid) {
-                if (hostInitCallback_ != nullptr) {
-                        hostInitCallback_(host_, hostInitUser_);
-                }
-                if (recorder_ != nullptr) {
-                        recorder_->attachHost(host_);
-                        impl_->region.control()->flags.fetch_or(FLAG_VULKAN_READY, std::memory_order_release);
-                }
+        wrx::HostHandles& host = c.host_;
+        host.instance = reader.read<uint64_t>();
+        host.physicalDevice = reader.read<uint64_t>();
+        host.device = reader.read<uint64_t>();
+        host.queue = reader.read<uint64_t>();
+        host.renderPass = reader.read<uint64_t>();
+        host.queueFamily = reader.read<uint32_t>();
+        host.colorFormat = reader.read<uint32_t>();
+        host.depthFormat = reader.read<uint32_t>();
+        host.sampleCount = reader.read<uint32_t>();
+        host.maxPushConstants = reader.read<uint32_t>();
+        host.valid = !reader.overflow;
+        if (!host.valid) {
+                return c.finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
         }
-        return host_.valid;
+        if (c.hostInitCallback != nullptr) {
+                c.hostInitCallback(&host, c.hostInitUser);
+        }
+        if (c.recorder != nullptr) {
+                c.recorder->attachHost(host);
+        }
+        WrcoreReply out = c.finish(WRCORE_OK, 0);
+        out.vulkanReady = c.recorder != nullptr ? 1u : 0u;
+        return out;
 }
 
-bool Server::loadShaders(const uint8_t* data, uint32_t size) {
+WrcoreReply wrcore_load_shaders(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
         Reader reader{data, size, 0};
         const uint32_t count = reader.read<uint32_t>();
         if (reader.overflow || count > 16) {
-                return false;
+                return c.finish(WRCORE_POISON, reader.overflow ? wrx::ERR_INCONSISTENT : wrx::ERR_VULKAN);
         }
         for (uint32_t i = 0; i < count && !reader.overflow; i++) {
                 const uint32_t key = reader.read<uint32_t>();
@@ -743,68 +547,97 @@ bool Server::loadShaders(const uint8_t* data, uint32_t size) {
                 const uint8_t* bytes = nullptr;
                 uint32_t byteLen = 0;
                 if (!reader.bytes(byteCount, bytes, byteLen) || byteLen < 16 || (byteLen & 3) != 0) {
-                        return false;
+                        return c.finish(WRCORE_POISON, reader.overflow ? wrx::ERR_INCONSISTENT : wrx::ERR_VULKAN);
                 }
-                if (recorder_ != nullptr) {
-                        recorder_->uploadShader(key, bytes, byteLen);
+                if (c.recorder != nullptr) {
+                        c.recorder->uploadShader(key, bytes, byteLen);
                 }
-                impl_->shaders[key] = std::vector<uint8_t>(bytes, bytes + byteLen);
         }
-        return !reader.overflow;
+        if (reader.overflow) {
+                return c.finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+        }
+        return c.finish(WRCORE_OK, 0);
 }
 
-bool Server::loadObj(const uint8_t* data, uint32_t size) {
+WrcoreReply wrcore_load_obj(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
         Reader reader{data, size, 0};
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return false;
-        }
-        return impl_->handleLoadObj(reader);
+        WrcoreReply out{};
+        c.handleLoadObj(reader, out);
+        return out;
 }
 
-bool Server::makeInstance(const uint8_t* data, uint32_t size) {
+WrcoreReply wrcore_make_instance(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
         Reader reader{data, size, 0};
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return false;
-        }
-        return impl_->handleInstance(reader);
+        WrcoreReply out{};
+        c.handleInstance(reader, out);
+        return out;
 }
 
-bool Server::freeModels(const uint8_t* data, uint32_t size) {
+WrcoreReply wrcore_free_models(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
         Reader reader{data, size, 0};
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->booted) {
-                return false;
+        WrcoreReply out{};
+        c.handleFreeModels(reader, out);
+        return out;
+}
+
+int32_t wrcore_record_frame(const void* header, const uint8_t* textures, const uint8_t* items) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        if (c.recorder == nullptr) {
+                return 0;
         }
-        return impl_->handleFreeModels(reader);
+        const auto* frameHeader = static_cast<const wrx::FrameHeader*>(header);
+        return c.recorder->recordFrame(*frameHeader, textures, items) ? 1 : 0;
 }
 
-bool Server::hasShader(uint32_t key) const {
-        return impl_->shaders.count(key) != 0;
+void wrcore_set_host_init_callback(WrcoreHostInit callback, void* user) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        c.hostInitCallback = callback;
+        c.hostInitUser = user;
 }
 
-uint32_t Server::shaderSize(uint32_t key) const {
-        const auto it = impl_->shaders.find(key);
-        return it == impl_->shaders.end() ? 0 : static_cast<uint32_t>(it->second.size());
+void wrcore_shutdown_domain(void) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        if (c.recorder != nullptr) {
+                for (const auto& entry : c.models) {
+                        for (const auto& info : entry.second->meshInfos) {
+                                c.recorder->freeMesh(info.meshId);
+                        }
+                }
+        }
+        c.models.clear();
+        c.meshIndex.clear();
 }
 
-const uint8_t* Server::shaderCode(uint32_t key) const {
-        const auto it = impl_->shaders.find(key);
-        return it == impl_->shaders.end() ? nullptr : it->second.data();
+uint32_t wrcore_live_models(void) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        return static_cast<uint32_t>(c.models.size());
 }
 
-size_t Server::liveMeshCount() const {
-        return impl_->meshIndex.size();
+uint32_t wrcore_live_meshes(void) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        return static_cast<uint32_t>(c.meshIndex.size());
 }
 
-size_t Server::liveModelCount() const {
-        return impl_->models.size();
-}
+} // extern "C"
 
-const Server::GpuMesh* Server::mesh(uint32_t meshId) const {
-        const auto it = impl_->meshIndex.find(meshId);
-        return it == impl_->meshIndex.end() ? nullptr : it->second.get();
+// wrvk attaches its recorder here once Vulkan is initialised (called from
+// wrmain.cpp's host-init trampoline after it creates the dispatch and the
+// recorder). Not part of the Rust ABI — C++-only wiring.
+namespace wrcore {
+void attachRecorder(wrvk::WrvkRecorder* recorder) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        c.recorder = recorder;
 }
-
-} // namespace wrx
+} // namespace wrcore

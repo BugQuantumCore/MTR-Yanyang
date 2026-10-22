@@ -215,7 +215,7 @@ public:
         bool recordFrame(const wrx::FrameHeader& header, const uint8_t* textures, const uint8_t* items);
 
         // Mesh upload/retire hooks; the server calls these at build time.
-        bool uploadMesh(uint32_t meshId, const wrx::Server::GpuMesh& mesh);
+        bool uploadMesh(uint32_t meshId, const wrx::GpuMesh& mesh);
         void freeMesh(uint32_t meshId); // deferred until the device is idle
 
         // Test introspection

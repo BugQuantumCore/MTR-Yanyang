@@ -117,7 +117,7 @@ int main() {
                 header.fogEnd = 200.0F;
 
                 // one mesh, two items sharing it through two textures
-                wrx::Server::GpuMesh mesh;
+                wrx::GpuMesh mesh;
                 mesh.vertices.resize(3 * wrx::VERTEX_BYTES);
                 mesh.indices = {0, 1, 2};
                 recorder.uploadMesh(7, mesh);
@@ -195,7 +195,7 @@ int main() {
                 wrvk::WrvkRecorder recorder(dispatch);
                 recorder.attachHost(fakeHost());
                 dispatch.failAllocation = true;
-                wrx::Server::GpuMesh mesh;
+                wrx::GpuMesh mesh;
                 mesh.vertices.resize(3 * wrx::VERTEX_BYTES);
                 mesh.indices = {0, 1, 2};
                 check(!recorder.uploadMesh(1, mesh), "upload fails cleanly");
