@@ -198,7 +198,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Angular CLI 22 (both websites) requires node >=22.22.3 / >=24.15
+          node-version: '24'
 
       - name: Build the TSC website explicitly
         # The embedded npm build inside setupWebserver works, but doing it as a
