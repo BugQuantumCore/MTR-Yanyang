@@ -219,11 +219,17 @@ jobs:
 
       - name: Verify the packaged natives
         # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
-        # native/<platform>/<library> and shaders/spirv/*.spv.
+        # native/<platform>/<library> and shaders/spirv/*.spv in the release
+        # jar, and their absence from the sources jar. Note "-sources" sorts
+        # before ".jar" in ASCII, so filter instead of trusting glob order.
         run: |
-          jar=$(ls Minecraft-Transit-Railway/build/release/*.jar | head -1)
+          jar=$(ls Minecraft-Transit-Railway/build/release/*.jar | grep -v sources | head -1)
           echo "verifying $jar"
-          unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)|shaders/spirv/.*\.spv' || { echo 'natives or shaders missing from the jar'; exit 1; }
+          unzip -l "$jar" | grep -E 'native/.+/wrvk\.(dll|so|dylib)' || { echo 'native libraries missing from the jar'; exit 1; }
+          unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo 'spirv shaders missing from the jar'; exit 1; }
+          sourcesJar=$(ls Minecraft-Transit-Railway/build/release/*sources*.jar | head -1)
+          if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo 'binaries leaked into the sources jar'; exit 1; fi
+          echo "native packaging contract verified in both jars"
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4
