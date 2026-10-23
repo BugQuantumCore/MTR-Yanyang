@@ -117,6 +117,19 @@ public final class NativeRuntime {
                         // fails, do not retry this session (per-frame callers).
                         bootAttempted = true;
 
+                        // Beryl replaces every entity-family vanilla shader with its own
+                        // G-buffer pipelines and drives the frame through its own render
+                        // passes. Recording MTR geometry straight into VulkanMod's command
+                        // buffer (the native path) would bypass Beryl entirely — unshaded,
+                        // and against render passes the native pipeline was never built
+                        // for. The Java renderer, with the VulkanFrameState per-draw
+                        // bridge, draws MTR models through Beryl's own pipelines instead:
+                        // correctly positioned AND shaded by Beryl.
+                        if (org.mtr.client.VulkanCompat.isBerylActive()) {
+                                MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder is bypassed so Beryl can shade MTR geometry through its own pipelines (Java renderer active)");
+                                return;
+                        }
+
                         final VulkanHostAccess host = VulkanHostAccess.resolve();
                         if (host == null) {
                                 return; // already logged

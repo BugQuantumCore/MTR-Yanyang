@@ -34,8 +34,12 @@ final class VulkanHostAccess {
         private @Nullable Method getBoundRenderPass;
         private @Nullable Method getMainPass;
         private @Nullable Method renderPassId;
-        private @Nullable Method swapChainGetter;
+        private @Nullable Object swapChain;
         private @Nullable Field swapChainFormat;
+        /** VulkanMod 0.6.x: AbstractTexture GL id → VkGlTexture → VulkanImage. */
+        private @Nullable Method vkGlTextureGetTexture;
+        private @Nullable Method vkGlTextureGetVulkanImage;
+        /** VulkanMod ≤ 0.5.x: mixin-injected AbstractTexture.getVulkanImage(). */
         private @Nullable Method textureGetVulkanImage;
         private @Nullable Method imageGetId;
         private @Nullable Method imageGetView;
@@ -85,7 +89,15 @@ final class VulkanHostAccess {
                                 logFail("graphics queue is not initialised yet");
                                 return false;
                         }
-                        queueHandleGetter = graphicsQueue.getClass().getMethod("queue");
+                        // The queue handle accessor moved between VulkanMod generations:
+                        // 0.6.x calls it vkQueue(), 0.4.x/0.5.x called it queue(). Resolve
+                        // whichever this build exposes — verified against the actual
+                        // 0.6.7+1.21.1 and 1.21-branch sources.
+                        queueHandleGetter = resolveQueueHandle(graphicsQueue.getClass());
+                        if (queueHandleGetter == null) {
+                                logFail("no VkQueue accessor (vkQueue/queue/getQueue) on " + graphicsQueue.getClass().getName());
+                                return false;
+                        }
                         final Object vkQueue = queueHandleGetter.invoke(graphicsQueue);
                         if (vkQueue == null) {
                                 logFail("queue handle is null");
@@ -117,23 +129,48 @@ final class VulkanHostAccess {
                         final Class<?> renderPassClass = Class.forName("net.vulkanmod.vulkan.framebuffer.RenderPass");
                         renderPassId = renderPassClass.getMethod("getId");
 
-                        // swapchain colour format (for pipeline compatibility logging only)
+                        // swapchain colour format (for pipeline compatibility logging only);
+                        // Vulkan.getSwapChain() up to 0.5.x, Renderer.getInstance().getSwapChain()
+                        // from 0.6.x — resolve whichever this build exposes
                         try {
-                                swapChainGetter = vulkanClass.getMethod("getSwapChain");
-                                final Class<?> swapChainClass = Class.forName("net.vulkanmod.vulkan.framebuffer.SwapChain");
-                                swapChainFormat = swapChainClass.getDeclaredField("format");
-                                swapChainFormat.setAccessible(true);
-                        } catch (ReflectiveOperationException ignored) {
-                                swapChainGetter = null;
+                                try {
+                                        swapChain = vulkanClass.getMethod("getSwapChain").invoke(null);
+                                } catch (NoSuchMethodException noVulkanGetter) {
+                                        final Class<?> rendererClassForSwapChain = Class.forName("net.vulkanmod.vulkan.Renderer");
+                                        final Object rendererForSwapChain = rendererClassForSwapChain.getMethod("getInstance").invoke(null);
+                                        swapChain = rendererClassForSwapChain.getMethod("getSwapChain").invoke(rendererForSwapChain);
+                                }
+                                if (swapChain != null) {
+                                        swapChainFormat = findFieldInHierarchy(swapChain.getClass(), "format");
+                                }
+                        } catch (ReflectiveOperationException | RuntimeException ignored) {
+                                swapChain = null;
                                 swapChainFormat = null;
                         }
 
-                        // textures: AbstractTexture -> getVulkanImage() (mixin-injected) -> VulkanImage
-                        textureGetVulkanImage = AbstractTexture.class.getMethod("getVulkanImage");
+                        // textures: two generations of API. 0.6.x routes through the GL
+                        // emulation layer (AbstractTexture GL id → VkGlTexture.getTexture(int)
+                        // → getVulkanImage()); ≤ 0.5.x exposes a mixin-injected
+                        // AbstractTexture.getVulkanImage() directly.
                         final Class<?> vulkanImageClass = Class.forName("net.vulkanmod.vulkan.texture.VulkanImage");
                         imageGetId = vulkanImageClass.getMethod("getId");
                         imageGetView = vulkanImageClass.getMethod("getImageView");
                         imageGetSampler = vulkanImageClass.getMethod("getSampler");
+                        try {
+                                final Class<?> vkGlTextureClass = Class.forName("net.vulkanmod.gl.VkGlTexture");
+                                vkGlTextureGetTexture = vkGlTextureClass.getMethod("getTexture", int.class);
+                                vkGlTextureGetVulkanImage = vkGlTextureClass.getMethod("getVulkanImage");
+                        } catch (ReflectiveOperationException noVkGlTexture) {
+                                vkGlTextureGetTexture = null;
+                                vkGlTextureGetVulkanImage = null;
+                        }
+                        if (vkGlTextureGetTexture == null) {
+                                try {
+                                        textureGetVulkanImage = AbstractTexture.class.getMethod("getVulkanImage");
+                                } catch (ReflectiveOperationException noOldTextureApi) {
+                                        textureGetVulkanImage = null;
+                                }
+                        }
 
                         // directional light state (exactly what VulkanMod's patched shaders sample)
                         final Class<?> vRenderSystem = Class.forName("net.vulkanmod.vulkan.VRenderSystem");
@@ -156,6 +193,44 @@ final class VulkanHostAccess {
 
         private void logFail(String message) {
                 MTR.LOGGER.error("[wrvk] Vulkan handle resolution failed: {}", message);
+        }
+
+        /**
+         * Find the public no-arg method on the queue class that returns the LWJGL
+         * {@code VkQueue} handle. Candidates cover the accessor names used across
+         * VulkanMod generations ({@code vkQueue} in 0.6.x, {@code queue} in 0.4.x/0.5.x);
+         * a candidate only counts when its return type is an LWJGL pointer (has a
+         * {@code long address()} method).
+         */
+        @Nullable
+        private static Method resolveQueueHandle(Class<?> queueClass) {
+                for (final String name : new String[]{"vkQueue", "queue", "getQueue"}) {
+                        try {
+                                final Method method = queueClass.getMethod(name);
+                                method.getReturnType().getMethod("address");
+                                return method;
+                        } catch (NoSuchMethodException ignored) {
+                        }
+                }
+                return null;
+        }
+
+        /**
+         * Locate a (possibly inherited) field by name, walking up the hierarchy —
+         * e.g. VulkanMod 0.6.x keeps {@code SwapChain.format} on the
+         * {@code Framebuffer} base class.
+         */
+        @Nullable
+        private static Field findFieldInHierarchy(Class<?> clazz, String name) {
+                for (Class<?> current = clazz; current != null; current = current.getSuperclass()) {
+                        try {
+                                final Field field = current.getDeclaredField(name);
+                                field.setAccessible(true);
+                                return field;
+                        } catch (NoSuchFieldException ignored) {
+                        }
+                }
+                return null;
         }
 
         // resolved handles, captured once at resolve() time
@@ -237,15 +312,16 @@ final class VulkanHostAccess {
                                 return 0;
                         }
                         return (Long) renderPassId.invoke(renderPass);
-                } catch (ReflectiveOperationException e) {
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                        // RuntimeException covers a getMainPass() fallback that returns
+                        // something other than a RenderPass on newer VulkanMod builds
                         return 0;
                 }
         }
 
         int colorFormat() {
                 try {
-                        final Object swapChain = swapChainGetter.invoke(null);
-                        return swapChainFormat == null || swapChain == null ? 37 : swapChainFormat.getInt(swapChain);
+                        return swapChain == null || swapChainFormat == null ? 37 : swapChainFormat.getInt(swapChain);
                 } catch (ReflectiveOperationException e) {
                         return 37; // B8G8R8A8_UNORM, the overwhelmingly common swapchain format
                 }
@@ -297,7 +373,21 @@ final class VulkanHostAccess {
                         if (abstractTexture == null) {
                                 return new long[3];
                         }
-                        final Object vulkanImage = textureGetVulkanImage.invoke(abstractTexture);
+                        final Object vulkanImage;
+                        if (vkGlTextureGetTexture != null) {
+                                // VulkanMod 0.5.x+: route through the GL texture emulation layer.
+                                // getId() is a direct (loom-remapped) call, no reflection needed.
+                                final Object glTexture = vkGlTextureGetTexture.invoke(null, abstractTexture.getId());
+                                if (glTexture == null) {
+                                        return new long[3];
+                                }
+                                vulkanImage = vkGlTextureGetVulkanImage.invoke(glTexture);
+                        } else if (textureGetVulkanImage != null) {
+                                // VulkanMod ≤ 0.5.x: mixin-injected accessor on the texture itself.
+                                vulkanImage = textureGetVulkanImage.invoke(abstractTexture);
+                        } else {
+                                return new long[3];
+                        }
                         if (vulkanImage == null) {
                                 return new long[3];
                         }

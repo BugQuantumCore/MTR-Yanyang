@@ -7,6 +7,7 @@ import net.minecraft.resources.ResourceLocation;
 import org.joml.Matrix4f;
 import org.jspecify.annotations.Nullable;
 import org.mtr.nativeobj.NativeModel;
+import org.mtr.render.VulkanFrameState;
 
 import java.util.function.Consumer;
 
@@ -114,17 +115,29 @@ public final class NewOptimizedModel {
 			return;
 		}
 		if (vertexBuffer != null && shaderProgram != null) {
+			// Full per-instance model-view: camera view (RenderSystem snapshot) * pose.
+			// The vanilla uniform channel below is what the pure-GL path and VulkanMod's
+			// translated legacy pipelines read; pipelines that redirect the vanilla
+			// shader (Beryl) instead read the VRenderSystem globals synced by
+			// VulkanFrameState around the draw.
+			MODEL_VIEW_SCRATCH.set(RenderSystem.getModelViewMatrix()).mul(matrix4f);
+			final float[] colorModulator = colorModulatorFor(lightMultiplier);
 			if (shaderProgram.MODEL_VIEW_MATRIX != null) {
-				// Reuse the static scratch matrix instead of `new Matrix4f(...)` per draw call.
-				MODEL_VIEW_SCRATCH.set(RenderSystem.getModelViewMatrix()).mul(matrix4f);
 				shaderProgram.MODEL_VIEW_MATRIX.set(MODEL_VIEW_SCRATCH);
 				shaderProgram.MODEL_VIEW_MATRIX.upload();
 			}
 			if (shaderProgram.COLOR_MODULATOR != null) {
-				shaderProgram.COLOR_MODULATOR.set(colorModulatorFor(lightMultiplier));
+				shaderProgram.COLOR_MODULATOR.set(colorModulator);
 				shaderProgram.COLOR_MODULATOR.upload();
 			}
+			final boolean vulkanBridge = VulkanFrameState.isActive();
+			if (vulkanBridge) {
+				VulkanFrameState.beginInstance(MODEL_VIEW_SCRATCH, colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
+			}
 			vertexBuffer.draw();
+			if (vulkanBridge) {
+				VulkanFrameState.endInstance();
+			}
 		}
 	}
 
