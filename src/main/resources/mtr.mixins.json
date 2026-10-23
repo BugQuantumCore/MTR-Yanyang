@@ -1,15 +1,18 @@
 {
-	"required": true,
-	"package": "org.mtr.mixin",
-	"compatibilityLevel": "JAVA_21",
-	"minVersion": "0.8",
-	"mixins": [
-		"PlayerTeleportationStateAccessor"
-	],
-	"client": [
-		"TextFieldSelectionEndAccessor"
-	],
-	"injectors": {
-		"defaultRequire": 1
-	}
+        "required": true,
+        "package": "org.mtr.mixin",
+        "compatibilityLevel": "JAVA_21",
+        "minVersion": "0.8",
+        "mixins": [
+                "PlayerTeleportationStateAccessor"
+        ],
+        "client": [
+                "TextFieldSelectionEndAccessor",
+                "UniversalCraftBlendStateMixin",
+                "UniversalCraftManagedGlStateMixin",
+                "UniversalCraftScissorStateMixin"
+        ],
+        "injectors": {
+                "defaultRequire": 1
+        }
 }
