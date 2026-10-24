@@ -17,9 +17,9 @@
 
 use wrxr::protocol::*;
 use wrxr::server::testkit::*;
-use wrxr::shmem::{atomic32, atomic64, write_u32, write_u64};
+use wrxr::shmem::{atomic32, atomic64, read_u32, write_u32, write_u64};
 use wrxr::ffi::{wr_boot, wr_submit_builds, wr_submit_frame, wr_status, wr_shutdown, wr_abi_version, wr_version_string, wrxr_ctor_boot};
-use wrxr::domain::{wrcore_live_models, wrcore_live_meshes};
+use wrxr::domain::{wrcore_live_models, wrcore_live_meshes, wrcore_live_textures};
 use core::sync::atomic::Ordering;
 
 static CHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -66,6 +66,16 @@ impl<'a> ResultReader<'a> {
                 f32::from_bits(self.u32())
         }
 
+        fn u16(&mut self) -> u16 {
+                if self.pos + 2 > self.data.len() {
+                        self.overflow = true;
+                        return 0;
+                }
+                let value = u16::from_le_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
+                self.pos += 2;
+                value
+        }
+
         fn str(&mut self) -> String {
                 let length = self.u32() as usize;
                 if self.pos + length > self.data.len() {
@@ -91,7 +101,7 @@ fn config_parsing() {
                 let config = region.directory.join("wrx.conf");
                 std::fs::write(
                         &config,
-                        format!("protocol=1\ndirectory={}\n", region.directory.display()),
+                        format!("protocol={}\ndirectory={}\n", PROTOCOL_VERSION, region.directory.display()),
                 )
                 .unwrap();
                 let parsed = wrxr::shmem::parse_config_file(&config);
@@ -110,7 +120,7 @@ fn config_parsing() {
                 let config = region.directory.join("wrx.conf");
                 std::fs::write(
                         &config,
-                        format!("protocol=1\ntransport=ffm\ndirectory={}\n", region.directory.display()),
+                        format!("protocol={}\ntransport=ffm\ndirectory={}\n", PROTOCOL_VERSION, region.directory.display()),
                 )
                 .unwrap();
                 let parsed = wrxr::shmem::parse_config_file(&config);
@@ -121,9 +131,10 @@ fn config_parsing() {
                 let config = region.directory.join("wrx.conf");
                 std::fs::write(
                         &config,
-                        format!("protocol=2\ndirectory={}\n", region.directory.display()),
+                        format!("protocol=1\ndirectory={}\n", region.directory.display()),
                 )
                 .unwrap();
+                // a stale v1 sidecar must be rejected now that the protocol is 2
                 check(wrxr::shmem::parse_config_file(&config).is_none(), "wrong protocol rejected");
         }
         check(wrxr::shmem::parse_config_file(std::path::Path::new("/nonexistent/wrx.conf")).is_none(), "missing config rejected");
@@ -406,7 +417,9 @@ fn poison_advancement_and_unknown_types() {
         check(server.process_builds() == -1, "unknown type poisons the pass");
         unsafe {
                 check(atomic32(region.control.base(), OFF_CONTROL_ERROR_CODE).load(Ordering::Relaxed) == ERR_VULKAN, "unknown type reports ERR_VULKAN");
-                check(atomic64(build, OFF_CONTROL_BUILD_ACK).load(Ordering::Relaxed) == 2, "poisoned message still acked");
+                // The malformed-header (skip-to-write-cursor) path does NOT ack,
+                // so the count is: recovery LOAD + the poisoned unknown type = 2.
+                check(atomic64(region.control.base(), OFF_CONTROL_BUILD_ACK).load(Ordering::Relaxed) == 2, "poisoned message still acked");
         }
 
         // truncated INSTANCE (overflow): publishes its error reply, bumps the
@@ -479,9 +492,12 @@ fn wr_c_abi_and_poller_lifecycle() {
         check(wr_submit_frame() == 0, "FFM frame submitted");
         check(control_u64(&region_ffm, OFF_CONTROL_FRAME_ACK) == 1, "FFM frame acked");
 
-        // a bad config path fails cleanly and does not unboot
+        // a bad config path cannot unboot or wedge the latched server: the
+        // ctor boot already latched BOOTED, so wr_boot short-circuits to 0
+        // without ever looking at the path (the -2 path only exists before
+        // the first successful boot)
         let bad = std::ffi::CString::new("/nonexistent/wrx.conf").unwrap();
-        check(wr_boot(bad.as_ptr()) == -2, "wr_boot with a bad config returns -2");
+        check(wr_boot(bad.as_ptr()) == 0, "wr_boot with a bad config is a latched no-op");
         check(wr_status() == 1, "server still booted after a bad wr_boot");
 
         // ---- phase 2: shutdown, then re-boot on a transport=shm region ----
@@ -550,4 +566,366 @@ fn wr_c_abi_and_poller_lifecycle() {
         // final cleanup: joins the exited poller and resets everything
         check(wr_shutdown() == 0, "final wr_shutdown clean");
         check(wr_status() == -1, "status -1 after the final shutdown");
+}
+
+/// Like testkit::consume_results, but keeps RES_ERROR payloads so a test can
+/// decode the requestId/error code of a failed request.
+fn consume_results_raw(region: &TestRegion) -> Vec<(u32, Vec<u8>)> {
+        let results = region.results.base();
+        let mut read_pos = unsafe { atomic64(results, OFF_BUMP_READ_POS).load(Ordering::Relaxed) };
+        let write_pos = unsafe { atomic64(results, OFF_BUMP_WRITE_POS).load(Ordering::Relaxed) };
+        if read_pos > write_pos {
+                read_pos = 0;
+                unsafe { atomic64(results, OFF_BUMP_READ_POS).store(0, Ordering::Release) };
+        }
+        let mut out = Vec::new();
+        let area = unsafe { results.add(BUMP_HEADER_SIZE) };
+        while read_pos + MESSAGE_HEADER_SIZE as u64 <= write_pos {
+                let result_type = unsafe { read_u32(area.add(read_pos as usize)) };
+                let size = unsafe { read_u32(area.add(read_pos as usize + 4)) };
+                let padded = round_up8(size);
+                let mut payload = vec![0u8; size as usize];
+                if size > 0 {
+                        unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                        area.add(read_pos as usize + MESSAGE_HEADER_SIZE),
+                                        payload.as_mut_ptr(),
+                                        size as usize,
+                                );
+                        }
+                }
+                read_pos += MESSAGE_HEADER_SIZE as u64 + padded as u64;
+                unsafe { atomic64(results, OFF_BUMP_READ_POS).store(read_pos, Ordering::Release) };
+                unsafe {
+                        atomic64(region.control.base(), OFF_CONTROL_BUILD_RESULT_ACK)
+                                .fetch_add(1, Ordering::Release);
+                }
+                out.push((result_type, payload));
+        }
+        out
+}
+
+/// One 24-byte GPU-layout vertex: f32 x, y, z, u, v + snorm8 normal (0,0,1) + pad.
+fn gpu_vertex(x: f32, y: f32, z: f32, u: f32, v: f32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(VERTEX_BYTES);
+        for value in [x, y, z, u, v] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[127, 0, 0, 0]);
+        bytes
+}
+
+#[test]
+fn upload_texture_and_free_texture_roundtrip() {
+        let _guard = serial();
+        println!("wrxr: UPLOAD_TEXTURE / FREE_TEXTURE round trip");
+        let Some(region) = create_region("texture") else {
+                check(false, "texture region opens");
+                return;
+        };
+        check(true, "texture region opens");
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        check(server.boot_with_config(config.to_str().unwrap()), "texture server boots");
+
+        // UPLOAD_TEXTURE: key 7, 2x2 RGBA = 16 pixel bytes. No recorder is
+        // attached, so the registry tracks the entry but the recorder upload
+        // is skipped — the same no-recorder semantics the mesh path has.
+        let result_seq_before = control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ);
+        let mut upload = MessageWriter::default();
+        upload.u32(7); // key
+        upload.u32(2); // width
+        upload.u32(2); // height
+        upload.u32(0); // flags
+        upload.blob(&[0x11u8; 16]); // RGBA pixels
+        check(publish_build(&region, MSG_UPLOAD_TEXTURE, &upload.bytes), "UPLOAD_TEXTURE published");
+        check(server.process_builds() == 1, "UPLOAD_TEXTURE processed");
+        check(unsafe { wrcore_live_textures() } == 1, "texture registered");
+
+        // No results-queue echo — the quiet FREE_MODELS convention.
+        check(consume_results(&region).unwrap().is_empty(), "no UPLOAD_TEXTURE echo");
+        check(
+                control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ) == result_seq_before,
+                "result sequence did not move for UPLOAD_TEXTURE",
+        );
+
+        // FREE_TEXTURE: one key, quiet again.
+        let mut free = MessageWriter::default();
+        free.u32(1);
+        free.u32(7);
+        check(publish_build(&region, MSG_FREE_TEXTURE, &free.bytes), "FREE_TEXTURE published");
+        check(server.process_builds() == 1, "FREE_TEXTURE processed");
+        check(unsafe { wrcore_live_textures() } == 0, "texture freed");
+        check(consume_results(&region).unwrap().is_empty(), "no FREE_TEXTURE echo");
+        check(
+                control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ) == result_seq_before,
+                "result sequence did not move for FREE_TEXTURE",
+        );
+
+        // count == 0 is a no-op.
+        let mut empty = MessageWriter::default();
+        empty.u32(0);
+        check(publish_build(&region, MSG_FREE_TEXTURE, &empty.bytes), "empty FREE_TEXTURE published");
+        check(server.process_builds() == 1, "empty FREE_TEXTURE processed");
+        check(unsafe { wrcore_live_textures() } == 0, "registry untouched by the no-op");
+
+        // A malformed size (payload shorter than 16 + w*h*4) poisons the pass
+        // exactly like the other truncated messages.
+        let mut malformed = MessageWriter::default();
+        malformed.u32(9); // key
+        malformed.u32(2); // width
+        malformed.u32(2); // height
+        malformed.u32(0); // flags
+        malformed.blob(&[0x22u8; 8]); // only 8 of the 16 pixel bytes
+        check(publish_build(&region, MSG_UPLOAD_TEXTURE, &malformed.bytes), "malformed UPLOAD_TEXTURE published");
+        check(server.process_builds() == -1, "malformed UPLOAD_TEXTURE poisons the pass");
+        unsafe {
+                check(atomic32(region.control.base(), OFF_CONTROL_FLAGS).load(Ordering::Relaxed) & FLAG_ERROR != 0, "error flag set");
+        }
+        check(unsafe { wrcore_live_textures() } == 0, "malformed upload registered nothing");
+
+        server.shutdown();
+        check(unsafe { wrcore_live_textures() } == 0, "shutdown drained the texture registry");
+}
+
+#[test]
+fn upload_mesh_round_trip() {
+        let _guard = serial();
+        println!("wrxr: UPLOAD_MESH round trip (quad)");
+        let Some(region) = create_region("mesh") else {
+                check(false, "mesh region opens");
+                return;
+        };
+        check(true, "mesh region opens");
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        check(server.boot_with_config(config.to_str().unwrap()), "mesh server boots");
+
+        // One quad: corners (0,0,0), (1,0,0), (1,1,0), (0,1,0) — the AABB
+        // must come back as {0,0,0, 1,1,0}.
+        let request_id = 500u32;
+        let mut mesh = MessageWriter::default();
+        mesh.u32(request_id);
+        mesh.u32(7); // textureKey
+        mesh.u32(0); // stage
+        mesh.u32(1); // mode = quads
+        mesh.u32(4); // vertexCount
+        mesh.blob(&[0xFF, 0xFF, 0xFF, 0xFF]); // kd = white
+        mesh.blob(&gpu_vertex(0.0, 0.0, 0.0, 0.0, 0.0));
+        mesh.blob(&gpu_vertex(1.0, 0.0, 0.0, 1.0, 0.0));
+        mesh.blob(&gpu_vertex(1.0, 1.0, 0.0, 1.0, 1.0));
+        mesh.blob(&gpu_vertex(0.0, 1.0, 0.0, 0.0, 1.0));
+        check(publish_build(&region, MSG_UPLOAD_MESH, &mesh.bytes), "UPLOAD_MESH published");
+        check(server.process_builds() == 1, "UPLOAD_MESH processed");
+        check(unsafe { wrcore_live_models() } == 1, "uploaded mesh owns one model");
+        check(unsafe { wrcore_live_meshes() } == 1, "uploaded mesh owns one mesh");
+
+        let results = consume_results(&region);
+        check(results.is_some(), "mesh result consumed");
+        let results = results.unwrap();
+        check(results.len() == 1, "one mesh result batch");
+        check(results[0].0 == RES_INSTANCE, "mesh result is RES_INSTANCE");
+        let mut reader = ResultReader { data: &results[0].1, pos: 0, overflow: false };
+        check(reader.u32() == request_id, "mesh requestId echoed");
+        let model_id = reader.u32();
+        let mesh_count = reader.u32();
+        check(model_id != 0, "mesh model allocated");
+        check(mesh_count == 1, "mesh count is one");
+        let mesh_id = reader.u32();
+        check(mesh_id != 0, "mesh id allocated");
+        let mut aabb = [0f32; 6];
+        for value in aabb.iter_mut() {
+                *value = reader.f32();
+        }
+        check(aabb == [0.0, 0.0, 0.0, 1.0, 1.0, 0.0], "aabb spans the quad");
+        check(!reader.overflow, "mesh payload fully consumed");
+
+        // The model frees through the normal FREE_MODELS path.
+        let mut free_message = MessageWriter::default();
+        free_message.u32(request_id + 1);
+        free_message.u32(1);
+        free_message.u32(model_id);
+        check(publish_build(&region, MSG_FREE_MODELS, &free_message.bytes), "mesh model FREE published");
+        check(server.process_builds() == 1, "mesh model FREE processed");
+        check(unsafe { wrcore_live_models() } == 0, "mesh model freed");
+        check(unsafe { wrcore_live_meshes() } == 0, "mesh index drained");
+
+        server.shutdown();
+}
+
+#[test]
+fn upload_mesh_rejects_bad_counts() {
+        let _guard = serial();
+        println!("wrxr: UPLOAD_MESH validation (quad count not divisible by 4)");
+        let Some(region) = create_region("mesh-bad") else {
+                check(false, "bad-mesh region opens");
+                return;
+        };
+        check(true, "bad-mesh region opens");
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        check(server.boot_with_config(config.to_str().unwrap()), "bad-mesh server boots");
+
+        // mode = quads but vertexCount = 3: a well-formed message that fails
+        // validation. The LOAD_OBJ convention for per-request failures
+        // applies — RES_ERROR carrying the requestId, acked normally (the
+        // stream itself is not poisoned), result sequence bumped.
+        let request_id = 600u32;
+        let mut mesh = MessageWriter::default();
+        mesh.u32(request_id);
+        mesh.u32(7); // textureKey
+        mesh.u32(0); // stage
+        mesh.u32(1); // mode = quads
+        mesh.u32(3); // vertexCount — NOT divisible by 4
+        mesh.blob(&[0xFF, 0xFF, 0xFF, 0xFF]); // kd
+        mesh.blob(&gpu_vertex(0.0, 0.0, 0.0, 0.0, 0.0));
+        mesh.blob(&gpu_vertex(1.0, 0.0, 0.0, 1.0, 0.0));
+        mesh.blob(&gpu_vertex(1.0, 1.0, 0.0, 1.0, 1.0));
+        check(publish_build(&region, MSG_UPLOAD_MESH, &mesh.bytes), "bad UPLOAD_MESH published");
+
+        let result_seq_before = control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ);
+        check(server.process_builds() == 1, "bad UPLOAD_MESH acked (per-request failure)");
+        check(
+                control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ) == result_seq_before + 1,
+                "result sequence bumped for the rejection",
+        );
+        check(unsafe { wrcore_live_models() } == 0, "no model allocated for the rejected mesh");
+        check(unsafe { wrcore_live_meshes() } == 0, "no mesh allocated for the rejected mesh");
+
+        let results = consume_results_raw(&region);
+        check(results.len() == 1, "one rejection batch");
+        check(results[0].0 == RES_ERROR, "rejection is RES_ERROR");
+        let mut reader = ResultReader { data: &results[0].1, pos: 0, overflow: false };
+        check(reader.u32() == request_id, "rejection requestId echoed");
+        check(reader.u32() == ERR_INCONSISTENT, "rejection code is ERR_INCONSISTENT");
+        check(reader.u16() == 0, "rejection message is empty");
+        check(!reader.overflow, "rejection payload fully consumed");
+
+        // A truncated UPLOAD_MESH (vertex bytes missing) poisons the stream
+        // AND still publishes its error reply — the INSTANCE convention.
+        let before_seq = control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ);
+        let mut truncated = MessageWriter::default();
+        truncated.u32(request_id + 1);
+        truncated.u32(7);
+        truncated.u32(0);
+        truncated.u32(0); // mode = triangles
+        truncated.u32(3); // vertexCount
+        truncated.blob(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        truncated.blob(&gpu_vertex(0.0, 0.0, 0.0, 0.0, 0.0)); // 1 of 3 vertices
+        check(publish_build(&region, MSG_UPLOAD_MESH, &truncated.bytes), "truncated UPLOAD_MESH published");
+        check(server.process_builds() == -1, "truncated UPLOAD_MESH poisons the pass");
+        check(
+                control_u64(&region, OFF_CONTROL_BUILD_RESULT_SEQ) == before_seq + 1,
+                "truncated upload still bumped the result sequence",
+        );
+        let results = consume_results_raw(&region);
+        check(results.len() == 1 && results[0].0 == RES_ERROR, "truncated upload replied RES_ERROR");
+        let mut reader = ResultReader { data: &results[0].1, pos: 0, overflow: false };
+        check(reader.u32() == request_id + 1, "truncated requestId echoed");
+
+        server.shutdown();
+}
+
+#[test]
+fn v2_frame_submission() {
+        let _guard = serial();
+        println!("wrxr: v2 frame submission (externals + raw-pose items)");
+        let Some(region) = create_region("frame-v2") else {
+                check(false, "v2 frame region opens");
+                return;
+        };
+        check(true, "v2 frame region opens");
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        check(server.boot_with_config(config.to_str().unwrap()), "v2 frame server boots");
+
+        let frame = region.frame.base();
+        // A full v2 frame: 1 external + 2 items, written back-to-back
+        // (externals at FRAME_EXTERNAL_OFF, items immediately after — the
+        // same layout the Java writer emits).
+        unsafe {
+                write_u64(frame, 0);
+                let header = frame.add(FRAME_HEADER_OFF);
+                write_u32(header, FRAME_MAGIC);
+                write_u32(header.add(4), 2); // itemCount
+                write_u32(header.add(8), 1); // externalTextureCount
+                write_u32(header.add(12), 0); // reserved0
+
+                let external = frame.add(FRAME_EXTERNAL_OFF);
+                write_u32(external, 7); // key
+                write_u32(external.add(4), 0); // reserved
+                write_u64(external.add(8), 0x1111); // image
+                write_u64(external.add(16), 0x2222); // view
+                write_u64(external.add(24), 0x3333); // sampler
+
+                let items = frame.add(FRAME_EXTERNAL_OFF + core::mem::size_of::<FrameExternal>());
+                for item_index in 0..2usize {
+                        let item = items.add(item_index * core::mem::size_of::<FrameItem>());
+                        write_u32(item, 1); // meshId
+                        write_u32(item.add(4), 7); // textureKey (the external override)
+                        write_u32(item.add(8), 0); // stage
+                        write_u32(item.add(12), 0x00F0_00F0); // raw packed light
+                        let pose = item.add(16).cast::<f32>();
+                        for column in 0..4usize {
+                                for row in 0..4usize {
+                                        // identity pose, column-major
+                                        core::ptr::write_unaligned(pose.add(column * 4 + row), if column == row { 1.0 } else { 0.0 });
+                                }
+                        }
+                }
+        }
+        publish_frame(&region, 0);
+        // No recorder is attached, so the frame cannot be recorded — the
+        // established convention: acked, error counted, never wedged. The
+        // frame passed the v2 header/budget/contiguous-snapshot checks on
+        // the way to the (recorder-less) record call.
+        check(server.process_frame() == 0, "v2 frame handled without a recorder");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 1, "v2 frame acked");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ERROR_COUNT) >= 1, "v2 frame error counted without recorder");
+
+        // Malformed variants are rejected by the header checks, with the
+        // same never-wedge semantics: the OLD v1 magic ("FRM1", which a v1
+        // writer would still emit), an over-budget external count
+        // (65 > FRAME_MAX_EXTERNAL) and an over-budget item count
+        // (65537 > FRAME_MAX_ITEMS).
+        let errors_before = control_u64(&region, OFF_CONTROL_FRAME_ERROR_COUNT);
+        const FRAME_MAGIC_V1: u32 = 0x4652_4D31; // "FRM1" — must be rejected by the v2 reader
+        unsafe {
+                write_u32(frame.add(FRAME_HEADER_OFF), FRAME_MAGIC_V1);
+        }
+        publish_frame(&region, 1);
+        check(server.process_frame() == 0, "old v1 magic frame handled");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 2, "old v1 magic frame acked");
+
+        unsafe {
+                write_u32(frame.add(FRAME_HEADER_OFF), FRAME_MAGIC);
+                write_u32(frame.add(FRAME_HEADER_OFF + 8), FRAME_MAX_EXTERNAL as u32 + 1);
+        }
+        publish_frame(&region, 2);
+        check(server.process_frame() == 0, "external-count overflow handled");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 3, "external-count overflow acked");
+
+        unsafe {
+                write_u32(frame.add(FRAME_HEADER_OFF + 8), 1);
+                write_u32(frame.add(FRAME_HEADER_OFF + 4), FRAME_MAX_ITEMS as u32 + 1);
+        }
+        publish_frame(&region, 3);
+        check(server.process_frame() == 0, "item-count overflow handled");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 4, "item-count overflow acked");
+        check(
+                control_u64(&region, OFF_CONTROL_FRAME_ERROR_COUNT) >= errors_before + 3,
+                "every rejected frame counted an error",
+        );
+
+        // A maximal frame (64 externals + 65536 items) fits the region
+        // budget exactly — the bounds check must not add slack.
+        unsafe {
+                write_u32(frame.add(FRAME_HEADER_OFF + 4), FRAME_MAX_ITEMS as u32);
+                write_u32(frame.add(FRAME_HEADER_OFF + 8), FRAME_MAX_EXTERNAL as u32);
+        }
+        publish_frame(&region, 4);
+        check(server.process_frame() == 0, "maximal v2 frame handled");
+        check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 5, "maximal v2 frame acked");
+
+        server.shutdown();
 }

@@ -47,6 +47,8 @@ natives/
 native/build-local/
 native/build/
 native/build-cross/
+native/build-cmake/
+native/build-verify/
 native/rust/wrxr/target/
 
 # website build outputs (generated during :fabric:setupFiles)

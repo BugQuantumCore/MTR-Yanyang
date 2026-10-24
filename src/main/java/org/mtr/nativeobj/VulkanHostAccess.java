@@ -46,6 +46,14 @@ final class VulkanHostAccess {
         private @Nullable Method imageGetSampler;
         private @Nullable Field lightDirection0;
         private @Nullable Field lightDirection1;
+        /**
+         * The MappedBuffers’ backing ByteBuffers, resolved once at resolve()
+         * time — the per-frame light reads are then two direct getFloat calls
+         * instead of a reflection chain (VulkanMod mutates the buffer contents
+         * in place; the buffer object itself is stable for the session).
+         */
+        private @Nullable ByteBuffer light0Buffer;
+        private @Nullable ByteBuffer light1Buffer;
 
         private VulkanHostAccess() {
         }
@@ -172,10 +180,14 @@ final class VulkanHostAccess {
                                 }
                         }
 
-                        // directional light state (exactly what VulkanMod's patched shaders sample)
+                        // directional light state (exactly what VulkanMod's patched shaders sample);
+                        // the backing ByteBuffers are resolved once here so the per-frame
+                        // reads skip the reflection chain entirely
                         final Class<?> vRenderSystem = Class.forName("net.vulkanmod.vulkan.VRenderSystem");
                         lightDirection0 = vRenderSystem.getField("lightDirection0");
                         lightDirection1 = vRenderSystem.getField("lightDirection1");
+                        light0Buffer = mappedBufferOf(lightDirection0);
+                        light1Buffer = mappedBufferOf(lightDirection1);
 
                         // instance handle: Vulkan.instance is private; resolved lazily through
                         // instanceHandle() because the physical device + device are all the
@@ -329,22 +341,38 @@ final class VulkanHostAccess {
 
         /** {x, y, z} view-space light direction 0, or the vanilla overworld default. */
         float[] lightDirection0() {
-                return readLightDirection(lightDirection0, new float[]{0.2F, 1.0F, -0.7F});
+                return readLightDirection(light0Buffer, new float[]{0.2F, 1.0F, -0.7F});
         }
 
         float[] lightDirection1() {
-                return readLightDirection(lightDirection1, new float[]{-0.2F, 1.0F, 0.7F});
+                return readLightDirection(light1Buffer, new float[]{-0.2F, 1.0F, 0.7F});
         }
 
-        private float[] readLightDirection(@Nullable Field field, float[] fallback) {
+        /**
+         * Resolve the MappedBuffer’s backing ByteBuffer once; a null result
+         * (missing field, wrong type, anything) falls back to the vanilla
+         * default directions forever after.
+         */
+        @Nullable
+        private static ByteBuffer mappedBufferOf(@Nullable Field field) {
                 if (field == null) {
-                        return normalise(fallback);
+                        return null;
                 }
                 try {
                         final Object mappedBuffer = field.get(null);
-                        final ByteBuffer buffer = (ByteBuffer) field.getType().getField("buffer").get(mappedBuffer);
-                        return normalise(new float[]{buffer.getFloat(0), buffer.getFloat(4), buffer.getFloat(8)});
+                        return (ByteBuffer) field.getType().getField("buffer").get(mappedBuffer);
                 } catch (ReflectiveOperationException | RuntimeException e) {
+                        return null;
+                }
+        }
+
+        private static float[] readLightDirection(@Nullable ByteBuffer buffer, float[] fallback) {
+                if (buffer == null) {
+                        return normalise(fallback);
+                }
+                try {
+                        return normalise(new float[]{buffer.getFloat(0), buffer.getFloat(4), buffer.getFloat(8)});
+                } catch (RuntimeException e) {
                         return normalise(fallback);
                 }
         }

@@ -53,10 +53,30 @@ public final class NewOptimizedModelGroup {
                 final Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<NewOptimizedModel>> newOptimizedModels = new Object2ObjectOpenHashMap<>(RenderStage.values().length);
                 storedVertexConsumersForRenderStageAndTexture.forEach((renderStage, storedVertexConsumerForTexture) -> {
                         if (renderStage != null) {
-                                storedVertexConsumerForTexture.forEach((texture, storedVertexDataList) -> newOptimizedModels
-                                        .computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
-                                        .add(new NewOptimizedModel(texture, drawMode, storedVertexDataList.isEmpty() ? null : vertexConsumer -> StoredVertexData.apply(storedVertexDataList, vertexConsumer)))
-                                );
+                                storedVertexConsumerForTexture.forEach((texture, storedVertexDataList) -> {
+                                        // Protocol v2 native conversion: when the native pipeline is
+                                        // active and the vertex list is a whole number of primitives,
+                                        // the geometry is uploaded as one native GPU mesh
+                                        // (MSG_UPLOAD_MESH) and the entry never becomes Java vertex
+                                        // data — every later draw is a raw pose append. build() can run
+                                        // repeatedly on one group (per-position vehicle door models),
+                                        // so the conversion must not mutate the group — the native
+                                        // model is wrapped directly, exactly like the nativeEntries
+                                        // loop below (a null upload falls back to the GL path).
+                                        final int stride = drawMode == VertexFormat.Mode.QUADS ? 4 : drawMode == VertexFormat.Mode.TRIANGLES ? 3 : 0;
+                                        if (org.mtr.nativeobj.NativeRuntime.isActive() && stride != 0 && !storedVertexDataList.isEmpty() && storedVertexDataList.size() % stride == 0) {
+                                                final int textureKey = org.mtr.nativeobj.NativeTextureManager.INSTANCE.register(texture);
+                                                final NativeModel nativeModel = NativeModelLoader.INSTANCE.uploadMesh(texture, textureKey, renderStage, stride == 4, storedVertexDataList);
+                                                if (nativeModel != null) {
+                                                        newOptimizedModels.computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
+                                                                        .add(new NewOptimizedModel(texture, drawMode, null, nativeModel));
+                                                        return;
+                                                }
+                                        }
+                                        newOptimizedModels
+                                                        .computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
+                                                        .add(new NewOptimizedModel(texture, drawMode, storedVertexDataList.isEmpty() ? null : vertexConsumer -> StoredVertexData.apply(storedVertexDataList, vertexConsumer)));
+                                });
                         }
                 });
                 for (final NativeEntry entry : nativeEntries) {

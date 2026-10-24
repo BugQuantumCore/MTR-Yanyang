@@ -19,8 +19,9 @@
 //     every lock, after the pass that acked it;
 //   * the frame slot is read through a snapshot: copy, re-check the
 //     sequence, then record from the copy — never from the live mapping
-//     (this also fixes the old code's full-frame copy of the fixed texture
-//     area: only textureCount*40 + itemCount*128 bytes are snapshotted).
+//     (v2: only externalTextureCount*32 + itemCount*80 bytes are
+//     snapshotted, and the variable-length externals are contiguous with
+//     the items).
 //
 // Every wr_* entry point and the poller go through this one Mutex; the
 // domain (C++) has its own lock, so the reply buffer contract in wrcore.h
@@ -258,31 +259,35 @@ impl WrxServer {
                         let header: FrameHeader = unsafe { core::ptr::read_unaligned(frame.add(FRAME_HEADER_OFF).cast()) };
                         if header.magic != FRAME_MAGIC
                                 || header.item_count as usize > FRAME_MAX_ITEMS
-                                || header.texture_count as usize > FRAME_MAX_TEXTURES
+                                || header.external_texture_count as usize > FRAME_MAX_EXTERNAL
                         {
                                 break;
                         }
-                        let needed = 8u64
-                                + FRAME_ITEMS_OFF_BASE as u64
-                                + header.item_count as u64 * core::mem::size_of::<FrameItem>() as u64;
+                        let external_bytes = header.external_texture_count as usize * core::mem::size_of::<FrameExternal>();
+                        let item_bytes = header.item_count as usize * core::mem::size_of::<FrameItem>();
+                        // Bounds from the ACTUAL counts (the externals are
+                        // variable-length, so the fixed FRAME_ITEMS_OFF_BASE is only
+                        // the region budget, never this frame's end). A maximal frame
+                        // (64 externals + 65536 items) ends exactly at the region
+                        // size, so this check must not add slack.
+                        let needed = FRAME_EXTERNAL_OFF as u64 + external_bytes as u64 + item_bytes as u64;
                         if needed > frame_size as u64 {
                                 break;
                         }
 
-                        // Snapshot ONLY what the recorder reads (textureCount*40 +
-                        // itemCount*128), verify the sequence, then record from the copy.
-                        // The old C++ path copied the whole fixed texture area (40 KiB)
-                        // per frame and then passed the LIVE mapping to the recorder —
-                        // both are fixed here in one move.
-                        let texture_bytes = header.texture_count as usize * core::mem::size_of::<FrameTexture>();
-                        let item_bytes = header.item_count as usize * core::mem::size_of::<FrameItem>();
+                        // Snapshot ONLY what the recorder reads (externalTextureCount*32 +
+                        // itemCount*80), verify the sequence, then record from the copy.
+                        // The externals are CONTIGUOUS with the items — the Java writer
+                        // emits them back-to-back — so both copy from one span starting
+                        // at FRAME_EXTERNAL_OFF, and the items sit at external_bytes into
+                        // the snapshot.
                         inner.frame_snapshot.clear();
-                        inner.frame_snapshot.resize(texture_bytes + item_bytes, 0);
+                        inner.frame_snapshot.resize(external_bytes + item_bytes, 0);
                         unsafe {
                                 std::ptr::copy_nonoverlapping(
-                                        frame.add(FRAME_TEXTURE_OFF),
+                                        frame.add(FRAME_EXTERNAL_OFF),
                                         inner.frame_snapshot.as_mut_ptr(),
-                                        texture_bytes + item_bytes,
+                                        external_bytes + item_bytes,
                                 );
                         }
                         let recheck = unsafe { read_u64(frame) };
@@ -292,7 +297,7 @@ impl WrxServer {
                                         wrcore_record_frame(
                                                 &header as *const FrameHeader as *const core::ffi::c_void,
                                                 snapshot,
-                                                snapshot.add(texture_bytes),
+                                                snapshot.add(external_bytes),
                                         )
                                 } == 1;
                                 if recorded_now {
@@ -377,6 +382,9 @@ fn dispatch_build(inner: &mut Inner, message_type: u32, data: *const u8, size: u
                 MSG_LOAD_OBJ => unsafe { wrcore_load_obj(data, size) },
                 MSG_INSTANCE => unsafe { wrcore_make_instance(data, size) },
                 MSG_FREE_MODELS => unsafe { wrcore_free_models(data, size) },
+                MSG_UPLOAD_TEXTURE => unsafe { wrcore_upload_texture(data, size) },
+                MSG_FREE_TEXTURE => unsafe { wrcore_free_texture(data, size) },
+                MSG_UPLOAD_MESH => unsafe { wrcore_upload_mesh(data, size) },
                 MSG_SHUTDOWN => {
                         // Flag only: tearing the server down takes the same mutex this
                         // pass holds, so the poller performs the actual teardown after
@@ -454,6 +462,12 @@ pub fn start_poller(server: &'static WrxServer) {
         POLLER_STOP.store(false, Ordering::Relaxed);
         let thread = std::thread::spawn(move || poller_loop(server));
         *handle = Some(thread);
+        // Publish FLAG_POLLER_STARTED synchronously (the doc comment's "make
+        // it real costs one atomic" — set at spawn time so a caller checking
+        // right after start_poller never races the thread's first loop).
+        // No-op unless the server is booted; the callers only start the
+        // poller after a successful boot.
+        server.set_poller_flag(true);
 }
 
 /// Stop and join the poller (like Poller::stop). Idempotent.
@@ -555,9 +569,12 @@ pub mod testkit {
 
         pub const BUILD_CAPACITY: u64 = 1 << 20;
         pub const RESULTS_CAPACITY: u64 = 1 << 18;
-        pub const FRAME_CAPACITY: usize = 8 + core::mem::size_of::<FrameHeader>()
-                + core::mem::size_of::<FrameTexture>() * 8
-                + core::mem::size_of::<FrameItem>() * 64;
+        // The production frame-region size (mirrors NativeRuntime's sizing on
+        // the Java side): 8 + 2288 budget + 65536 items. Keeping the test
+        // regions at full size means the bounds check in process_frame is
+        // exercised against the real budget, including a maximal frame.
+        pub const FRAME_CAPACITY: usize = 8 + FRAME_ITEMS_OFF_BASE
+                + FRAME_MAX_ITEMS * core::mem::size_of::<FrameItem>();
 
         pub fn create_region(tag: &str) -> Option<TestRegion> {
                 let directory = std::env::temp_dir().join(format!("wrxr-tests-{}-{tag}", std::process::id()));

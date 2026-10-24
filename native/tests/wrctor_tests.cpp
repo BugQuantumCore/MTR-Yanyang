@@ -46,7 +46,14 @@ void check(bool condition, const char* what) {
 
 constexpr uint64_t BUILD_CAPACITY = 1 << 20;
 constexpr uint64_t RESULTS_CAPACITY = 1 << 18;
-constexpr uint32_t FRAME_CAPACITY = 8 + sizeof(wrx::FrameHeader) + sizeof(wrx::FrameTexture) * 8 + sizeof(wrx::FrameItem) * 64;
+// v2 frame budget, mirroring the Java side's region sizing (NativeRuntime):
+// seq word + 240-byte header + the externals region (64 × 32) + the items
+// region (65536 × 80). The externals are variable-length per frame; this is
+// the worst-case capacity, not a fixed layout.
+constexpr uint64_t FRAME_CAPACITY = 8
+	+ sizeof(wrx::FrameHeader)
+	+ sizeof(wrx::FrameExternal) * wrx::FRAME_MAX_EXTERNAL
+	+ sizeof(wrx::FrameItem) * wrx::FRAME_MAX_ITEMS;
 
 bool writeZeroes(const std::filesystem::path& path, uint64_t size) {
 	std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -161,7 +168,7 @@ int run(const char* libraryPath) {
 	const auto configPath = directory / "wrx.conf";
 	{
 		std::ofstream stream(configPath, std::ios::binary | std::ios::trunc);
-		stream << "protocol=1\ndirectory=" << regionDirectory.string() << "\n";
+		stream << "protocol=" << wrx::PROTOCOL_VERSION << "\ndirectory=" << regionDirectory.string() << "\n";
 	}
 
 	Mapping control;
@@ -191,7 +198,7 @@ int run(const char* libraryPath) {
 	check(wrShutdown != nullptr, "wr_shutdown exported");
 	check(wrBoot != nullptr, "wr_boot exported");
 	check(wrVersion != nullptr && std::strcmp(wrVersion(), "wrvk 1.0.0 (native Vulkan OBJ pipeline)") == 0, "version string exported");
-	check(wrAbi != nullptr && wrAbi() == 1, "abi version exported");
+	check(wrAbi != nullptr && wrAbi() == static_cast<int32_t>(wrx::PROTOCOL_VERSION), "abi version exported");
 
 	// the poller must come up within the 3s budget NativeRuntime allows
 	auto heartbeat = [&]() -> uint64_t { return a64(control, 16)->load(); };

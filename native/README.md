@@ -43,11 +43,18 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
   (three sides, one contract — the Rust port caught and fixed one
   absolute/relative offset drift during migration through its layout test). Queue wraps are lossless (writer wraps only
   after a full drain; the reader resets whenever it sees `readPos > writePos`).
-* **Draw semantics** — `FrameItem` IS the 128-byte push constant (colour + MV
-  + inverse-transpose normal matrix), the frame UBO carries projection/fog/
-  directional lights (read live from VulkanMod's `VRenderSystem`), and the
-  emitted GLSL mirrors vanilla's entity/beacon shader chain (0.4+0.6·n·L two
-  light accumulation, 0.1 alpha cutoff, linear fog).
+* **Draw semantics (protocol v2 — zero-Java rendering)** — `FrameItem` is an
+  80-byte record: mesh id, native texture-pool key, render stage, the RAW
+  packed lightmap int and the RAW pose matrix straight out of the
+  `PoseStack`. The C++ recorder computes `MV = view × pose`, the
+  inverse-transpose normal matrix and the `Kd × brightness` colour at record
+  time (byte-identical 128-byte push constants), the frame UBO carries
+  projection/fog/directional lights, and the emitted GLSL mirrors vanilla's
+  entity/beacon shader chain (0.4+0.6·n·L two light accumulation, 0.1 alpha
+  cutoff, linear fog). Static textures live in a native pool (`wrvk` owns the
+  `VkImage`/view/sampler, uploaded once via `MSG_UPLOAD_TEXTURE` and staged
+  on the frame's command buffer); only animated (mcmeta) textures stay
+  external, resolved per frame through VulkanMod's own images.
 * **Leak safety** — per-mesh `VkBuffer`+`VkDeviceMemory` with a refcounted
   alias for identity instances; frees retire after `vkDeviceWaitIdle`;
   `CustomResourceLoader.reload` frees every model before the rebuild; the
@@ -57,10 +64,10 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
 
 ```bash
 native/build.sh wrobj_tests run   # 198 checks (parser/builder semantics)
-native/build.sh wrvk_tests  run   # 40 checks (command stream, leaks)
+native/build.sh wrvk_tests  run   # 172 checks (command stream, texture pool, native math, leaks)
 native/build.sh wrctor_tests run  # 22 checks (dlopen ctor boot smoke)
 (cd native/rust/wrxr && cargo test --release --offline)
-                                   # 60+ checks (transport protocol round-trips,
+                                   # 11 tests (transport protocol round-trips, v2 frame
                                    #  poison advancement, wr_* ABI, poller)
 ```
 

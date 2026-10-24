@@ -62,11 +62,32 @@ WrcoreReply wrcore_load_obj(const uint8_t* data, uint32_t size);
 WrcoreReply wrcore_make_instance(const uint8_t* data, uint32_t size);
 WrcoreReply wrcore_free_models(const uint8_t* data, uint32_t size);
 
+// v2 — the native texture pool. UPLOAD_TEXTURE payload: u32 key, u32 width,
+// u32 height, u32 flags (0, ignored), then width*height*4 RGBA8 bytes
+// (row-major, top-left origin). A repeated key re-uploads (dynamic
+// textures: PIDS displays, route maps). Like FREE_MODELS there is no
+// results-queue reply: the generic build ack is the handshake.
+WrcoreReply wrcore_upload_texture(const uint8_t* data, uint32_t size);
+
+// v2 — retire pool textures (resource reload). Payload: u32 count, then
+// count keys. No reply.
+WrcoreReply wrcore_free_texture(const uint8_t* data, uint32_t size);
+
+// v2 — upload a mesh built on the Java side (Blockbench quads, the javagl
+// fallback) into the native GPU pipeline. Payload: u32 requestId,
+// u32 textureKey, u32 stage, u32 mode (0 = triangles, 1 = quads),
+// u32 vertexCount, u8 kd[4], then vertexCount 24-byte GPU-layout vertices.
+// Reply: RES_INSTANCE-shaped (u32 requestId, u32 modelId, u32 meshCount=1,
+// { u32 meshId, f32 aabb[6] }); a validation failure replies RES_ERROR
+// carrying the requestId (modelId 0 path — Java falls back to the GL path).
+WrcoreReply wrcore_upload_mesh(const uint8_t* data, uint32_t size);
+
 // Records one frame through the attached recorder. header points to a
-// snapshot of the 176-byte wrx::FrameHeader (the Rust side re-declares the
-// identical little-endian layout); textures and items point into the same
-// verified snapshot. Returns 1 when the frame was recorded.
-int32_t wrcore_record_frame(const void* header, const uint8_t* textures, const uint8_t* items);
+// snapshot of the 240-byte wrx::FrameHeader (the Rust side re-declares the
+// identical little-endian layout); externals and items point into the same
+// verified snapshot, where the items sit CONTIGUOUSLY after the last
+// FrameExternal. Returns 1 when the frame was recorded.
+int32_t wrcore_record_frame(const void* header, const uint8_t* externals, const uint8_t* items);
 
 // The host-init hook: called from inside wrcore_init_vulkan after the
 // handles are parsed but before the recorder is attached, so wrmain can
@@ -74,13 +95,15 @@ int32_t wrcore_record_frame(const void* header, const uint8_t* textures, const u
 typedef void (*WrcoreHostInit)(const void* hostHandles, void* user);
 void wrcore_set_host_init_callback(WrcoreHostInit callback, void* user);
 
-// Teardown: frees every live mesh through the recorder and clears the
-// registry. The Rust Server::shutdown calls this before unmapping its side.
+// Teardown: frees every live mesh and pool texture through the recorder and
+// clears the registry. The Rust Server::shutdown calls this before unmapping
+// its side.
 void wrcore_shutdown_domain(void);
 
 // Introspection for tests and diagnostics.
 uint32_t wrcore_live_models(void);
 uint32_t wrcore_live_meshes(void);
+uint32_t wrcore_live_textures(void);
 
 #ifdef __cplusplus
 }

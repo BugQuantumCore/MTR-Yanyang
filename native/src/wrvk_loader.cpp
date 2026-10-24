@@ -126,6 +126,14 @@ public:
                 WR_RESOLVE(vkBindBufferMemory)
                 WR_RESOLVE(vkDestroyBuffer)
                 WR_RESOLVE(vkFreeMemory)
+                WR_RESOLVE(vkCreateImage)
+                WR_RESOLVE(vkDestroyImage)
+                WR_RESOLVE(vkGetImageMemoryRequirements)
+                WR_RESOLVE(vkBindImageMemory)
+                WR_RESOLVE(vkCreateImageView)
+                WR_RESOLVE(vkDestroyImageView)
+                WR_RESOLVE(vkCreateSampler)
+                WR_RESOLVE(vkDestroySampler)
                 WR_RESOLVE(vkCreateDescriptorSetLayout)
                 WR_RESOLVE(vkCreatePipelineLayout)
                 WR_RESOLVE(vkCreateDescriptorPool)
@@ -148,6 +156,8 @@ public:
                 WR_RESOLVE(vkCmdBindDescriptorSets)
                 WR_RESOLVE(vkCmdPushConstants)
                 WR_RESOLVE(vkCmdDrawIndexed)
+                WR_RESOLVE(vkCmdPipelineBarrier)
+                WR_RESOLVE(vkCmdCopyBufferToImage)
 #undef WR_RESOLVE
                 return dispatch;
         }
@@ -199,6 +209,49 @@ public:
 
         void freeMemory(uint64_t device, uint64_t memory) override {
                 vkFreeMemory_(dev(device), static_cast<VkDeviceMemory>(handleToPtr(memory)), nullptr);
+        }
+
+        uint32_t createImage(uint64_t device, const void* createInfo, uint64_t* outImage) override {
+                VkImage image = VK_NULL_HANDLE;
+                const uint32_t result = vkCreateImage_(dev(device), static_cast<const VkImageCreateInfo*>(createInfo), nullptr, &image);
+                *outImage = ptrToHandle(image);
+                return result;
+        }
+
+        void destroyImage(uint64_t device, uint64_t image) override {
+                vkDestroyImage_(dev(device), static_cast<VkImage>(handleToPtr(image)), nullptr);
+        }
+
+        void getImageMemoryRequirements(uint64_t device, uint64_t image, void* outRequirements) override {
+                vkGetImageMemoryRequirements_(dev(device), static_cast<VkImage>(handleToPtr(image)),
+                        static_cast<VkMemoryRequirements*>(outRequirements));
+        }
+
+        uint32_t bindImageMemory(uint64_t device, uint64_t image, uint64_t memory, uint64_t offset) override {
+                return vkBindImageMemory_(dev(device), static_cast<VkImage>(handleToPtr(image)),
+                        static_cast<VkDeviceMemory>(handleToPtr(memory)), offset);
+        }
+
+        uint32_t createImageView(uint64_t device, const void* createInfo, uint64_t* outView) override {
+                VkImageView view = VK_NULL_HANDLE;
+                const uint32_t result = vkCreateImageView_(dev(device), static_cast<const VkImageViewCreateInfo*>(createInfo), nullptr, &view);
+                *outView = ptrToHandle(view);
+                return result;
+        }
+
+        void destroyImageView(uint64_t device, uint64_t view) override {
+                vkDestroyImageView_(dev(device), static_cast<VkImageView>(handleToPtr(view)), nullptr);
+        }
+
+        uint32_t createSampler(uint64_t device, const void* createInfo, uint64_t* outSampler) override {
+                VkSampler sampler = VK_NULL_HANDLE;
+                const uint32_t result = vkCreateSampler_(dev(device), static_cast<const VkSamplerCreateInfo*>(createInfo), nullptr, &sampler);
+                *outSampler = ptrToHandle(sampler);
+                return result;
+        }
+
+        void destroySampler(uint64_t device, uint64_t sampler) override {
+                vkDestroySampler_(dev(device), static_cast<VkSampler>(handleToPtr(sampler)), nullptr);
         }
 
         uint32_t createDescriptorSetLayout(uint64_t device, const void* createInfo, uint64_t* outLayout) override {
@@ -333,6 +386,20 @@ public:
                 vkCmdDrawIndexed_(cmd(commandBuffer), indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
         }
 
+        void cmdPipelineBarrier(uint64_t commandBuffer, uint32_t srcStageMask, uint32_t dstStageMask, uint32_t dependencyFlags, uint32_t memoryBarrierCount, const void* memoryBarriers, uint32_t bufferMemoryBarrierCount, const void* bufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const void* imageMemoryBarriers) override {
+                vkCmdPipelineBarrier_(cmd(commandBuffer),
+                        static_cast<VkPipelineStageFlags>(srcStageMask), static_cast<VkPipelineStageFlags>(dstStageMask), dependencyFlags,
+                        memoryBarrierCount, static_cast<const VkMemoryBarrier*>(memoryBarriers),
+                        bufferMemoryBarrierCount, static_cast<const VkBufferMemoryBarrier*>(bufferMemoryBarriers),
+                        imageMemoryBarrierCount, static_cast<const VkImageMemoryBarrier*>(imageMemoryBarriers));
+        }
+
+        void cmdCopyBufferToImage(uint64_t commandBuffer, uint64_t srcBuffer, uint64_t dstImage, uint32_t dstImageLayout, uint32_t regionCount, const void* regions) override {
+                vkCmdCopyBufferToImage_(cmd(commandBuffer), static_cast<VkBuffer>(handleToPtr(srcBuffer)),
+                        static_cast<VkImage>(handleToPtr(dstImage)), static_cast<VkImageLayout>(dstImageLayout),
+                        regionCount, static_cast<const VkBufferImageCopy*>(regions));
+        }
+
 private:
         void* library_{nullptr};
         VkInstance instance_{VK_NULL_HANDLE};
@@ -347,6 +414,14 @@ private:
         WR_DECLARE(vkBindBufferMemory)
         WR_DECLARE(vkDestroyBuffer)
         WR_DECLARE(vkFreeMemory)
+        WR_DECLARE(vkCreateImage)
+        WR_DECLARE(vkDestroyImage)
+        WR_DECLARE(vkGetImageMemoryRequirements)
+        WR_DECLARE(vkBindImageMemory)
+        WR_DECLARE(vkCreateImageView)
+        WR_DECLARE(vkDestroyImageView)
+        WR_DECLARE(vkCreateSampler)
+        WR_DECLARE(vkDestroySampler)
         WR_DECLARE(vkCreateDescriptorSetLayout)
         WR_DECLARE(vkCreatePipelineLayout)
         WR_DECLARE(vkCreateDescriptorPool)
@@ -369,6 +444,8 @@ private:
         WR_DECLARE(vkCmdBindDescriptorSets)
         WR_DECLARE(vkCmdPushConstants)
         WR_DECLARE(vkCmdDrawIndexed)
+        WR_DECLARE(vkCmdPipelineBarrier)
+        WR_DECLARE(vkCmdCopyBufferToImage)
 #undef WR_DECLARE
 };
 

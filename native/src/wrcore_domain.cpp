@@ -97,11 +97,30 @@ struct ModelEntry {
         std::vector<std::shared_ptr<wrx::GpuMesh>> meshes;
 };
 
+// v2: one entry per live native-pool texture. The registry tracks the key
+// and its dimensions for validation; the pixel bytes live only inside the
+// message (the recorder copies them into its staging buffer immediately).
+struct TextureEntry {
+        uint32_t width;
+        uint32_t height;
+};
+
+// The static texture pool's budget (see wrx.hpp's FRAME_MAX_EXTERNAL note):
+// Java assigns session-stable keys with its own 4096-upload budget, so a
+// registry beyond this size means the stream is out of control.
+inline constexpr uint32_t MAX_TEXTURES = 4096;
+inline constexpr uint32_t MAX_TEXTURE_DIM = 16384;
+
+// UPLOAD_MESH validation budget: 2^20 vertices = 24 MiB of vertex bytes,
+// far beyond any Blockbench model but a safe upper bound for the size check.
+inline constexpr uint32_t MAX_UPLOAD_MESH_VERTICES = 1u << 20;
+
 struct Core {
         std::mutex mutex;
 
         std::unordered_map<uint32_t, std::unique_ptr<ModelEntry>> models;
         std::unordered_map<uint32_t, std::shared_ptr<wrx::GpuMesh>> meshIndex;
+        std::unordered_map<uint32_t, TextureEntry> textures;
         uint32_t nextModelId{1};
         uint32_t nextMeshId{1};
 
@@ -272,7 +291,7 @@ struct Core {
 
                                 meshIndex[info.meshId] = mesh;
                                 if (recorder != nullptr) {
-                                        recorder->uploadMesh(info.meshId, *mesh);
+                                        recorder->uploadMesh(info.meshId, *mesh, info.kd);
                                 }
                                 groupMeshesScratch.push_back(std::move(info));
                         }
@@ -438,7 +457,7 @@ struct Core {
                         const uint32_t meshId = nextMeshId++;
                         model->meshInfos[i].meshId = meshId;
                         if (recorder != nullptr) {
-                                recorder->uploadMesh(meshId, *mesh);
+                                recorder->uploadMesh(meshId, *mesh, model->meshInfos[i].kd);
                         }
                         meshIndex[meshId] = std::move(mesh);
                 }
@@ -490,6 +509,197 @@ struct Core {
                         return false;
                 }
                 out = finish(WRCORE_OK, 0);
+                return true;
+        }
+
+        // --- UPLOAD_TEXTURE (v2) ------------------------------------------------
+        // The native texture pool. The registry mirrors the mesh pattern: it
+        // tracks the key (plus dimensions for validation) whether or not a
+        // recorder is attached, while the pixel upload itself only runs when
+        // one is (the bytes are copied into the recorder's staging buffer
+        // immediately, so no pixel data is retained here — a texture uploaded
+        // before a recorder attaches is therefore LOST; in practice
+        // MSG_INIT_VULKAN always precedes the first upload, and a re-attached
+        // recorder re-sees the key on the next dynamic re-upload). Like
+        // FREE_MODELS there is no reply — the build ack is the handshake.
+        bool handleUploadTexture(Reader& reader, WrcoreReply& out) {
+                const uint32_t key = reader.read<uint32_t>();
+                const uint32_t width = reader.read<uint32_t>();
+                const uint32_t height = reader.read<uint32_t>();
+                const uint32_t flags = reader.read<uint32_t>();
+                (void)flags; // reserved (0)
+                if (reader.overflow || key == 0
+                        || width < 1 || width > MAX_TEXTURE_DIM
+                        || height < 1 || height > MAX_TEXTURE_DIM)
+                {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                const uint64_t pixelBytes = static_cast<uint64_t>(width) * height * 4;
+                if (pixelBytes > UINT32_MAX || static_cast<uint64_t>(reader.size) != 16 + pixelBytes) {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                const uint8_t* pixels = nullptr;
+                uint32_t pixelLen = 0;
+                if (!reader.bytes(static_cast<uint32_t>(pixelBytes), pixels, pixelLen)) {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                if (textures.find(key) == textures.end() && textures.size() >= MAX_TEXTURES) {
+                        // Budget rejection (Java keeps its own 4096-upload budget,
+                        // so this only fires on a runaway stream): surface it once
+                        // through the error flag, mirroring LOAD_SHADERS' budget
+                        // poison, and let the pass drain past the message.
+                        out = finish(WRCORE_POISON, wrx::ERR_OVERFLOW);
+                        return false;
+                }
+                textures[key] = TextureEntry{width, height}; // re-upload replaces
+                if (recorder != nullptr) {
+                        recorder->uploadTexture(key, width, height, pixels, static_cast<uint32_t>(pixelBytes));
+                }
+                out = finish(WRCORE_OK, 0);
+                return true;
+        }
+
+        // --- FREE_TEXTURE (v2) --------------------------------------------------
+        // Retire pool textures (resource reload). Only keys that are actually
+        // registered reach the recorder — a re-attached recorder's pool never
+        // saw entries uploaded before it existed, and FREE_MODELS skips
+        // unknown ids the same way. count == 0 is a no-op.
+        bool handleFreeTexture(Reader& reader, WrcoreReply& out) {
+                const uint32_t count = reader.read<uint32_t>();
+                if (!reader.overflow && static_cast<uint64_t>(reader.size) != 4ull + count * 4ull) {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                for (uint32_t i = 0; i < count && !reader.overflow; i++) {
+                        const uint32_t key = reader.read<uint32_t>();
+                        if (textures.erase(key) > 0 && recorder != nullptr) {
+                                recorder->freeTexture(key);
+                        }
+                }
+                // Same quiet convention as FREE_MODELS: no echo, the ack is the
+                // handshake.
+                if (reader.overflow) {
+                        out = finish(WRCORE_POISON, wrx::ERR_INCONSISTENT);
+                        return false;
+                }
+                out = finish(WRCORE_OK, 0);
+                return true;
+        }
+
+        // --- UPLOAD_MESH (v2) ---------------------------------------------------
+        // Java-side mesh sources (Blockbench quads, the javagl fallback)
+        // feeding the same GPU pipeline the OBJ path uses: the vertices
+        // arrive already in the 24-byte GPU layout, so the payload is adopted
+        // without a repack and the index buffer is generated by fan
+        // triangulation (quads: 0,1,2 / 0,2,3; triangles pass through).
+        // One model, one mesh — the registry pattern mirrors make_instance's
+        // identity path, and the reply is RES_INSTANCE-shaped.
+        bool handleUploadMesh(Reader& reader, WrcoreReply& out) {
+                const uint32_t requestId = reader.read<uint32_t>();
+                const uint32_t textureKey = reader.read<uint32_t>();
+                const uint32_t stage = reader.read<uint32_t>();
+                const uint32_t mode = reader.read<uint32_t>();
+                const uint32_t vertexCount = reader.read<uint32_t>();
+                const uint8_t* kdBytes = nullptr;
+                uint32_t kdLen = 0;
+                reader.bytes(4, kdBytes, kdLen); // u8 kd[4] at offsets 20..23
+                uint8_t kd[4] = {0, 0, 0, 0};
+                if (kdBytes != nullptr) {
+                        std::memcpy(kd, kdBytes, sizeof(kd));
+                }
+                (void)textureKey; // draw items carry it per-frame; the mesh itself does not need it
+
+                // Structural validity: a truncated header poisons the stream and
+                // still publishes the error reply, exactly like INSTANCE.
+                const bool truncated = reader.overflow;
+                const bool sizeMatches = !truncated
+                        && static_cast<uint64_t>(reader.size) == 24ull + static_cast<uint64_t>(vertexCount) * wrx::VERTEX_BYTES;
+                const bool countsOk = sizeMatches
+                        && stage < 5
+                        && mode <= 1
+                        && vertexCount >= 1
+                        && vertexCount <= MAX_UPLOAD_MESH_VERTICES
+                        && vertexCount % (mode == 0 ? 3 : 4) == 0;
+
+                if (!countsOk) {
+                        // Per-request failure (the LOAD_OBJ convention): the reply
+                        // carries the requestId so Java can fall back to the GL
+                        // path; only a truncated/inconsistent message also poisons.
+                        buildErrorReply(requestId, wrx::ERR_INCONSISTENT);
+                        out = finishResult(truncated || !sizeMatches ? WRCORE_POISON : WRCORE_OK, 0, wrx::RES_ERROR, true);
+                        return !truncated && sizeMatches;
+                }
+
+                const uint8_t* vertexBytes = nullptr;
+                uint32_t vertexLen = 0;
+                reader.bytes(vertexCount * wrx::VERTEX_BYTES, vertexBytes, vertexLen);
+
+                auto mesh = std::make_shared<wrx::GpuMesh>();
+                mesh->vertices.assign(vertexBytes, vertexBytes + vertexLen);
+                if (mode == 0) {
+                        mesh->indices.resize(vertexCount);
+                        for (uint32_t i = 0; i < vertexCount; i++) {
+                                mesh->indices[i] = i;
+                        }
+                } else {
+                        mesh->indices.reserve(static_cast<size_t>(vertexCount / 4) * 6);
+                        for (uint32_t q = 0; q + 3 < vertexCount; q += 4) {
+                                mesh->indices.push_back(q);
+                                mesh->indices.push_back(q + 1);
+                                mesh->indices.push_back(q + 2);
+                                mesh->indices.push_back(q);
+                                mesh->indices.push_back(q + 2);
+                                mesh->indices.push_back(q + 3);
+                        }
+                }
+
+                // AABB from the first 12 bytes of every vertex — the same scan
+                // the LOAD_OBJ builder loop performs. vertexCount >= 1 is
+                // guaranteed here, so no zero-count reset is needed.
+                float bounds[6] = {1e30F, 1e30F, 1e30F, -1e30F, -1e30F, -1e30F};
+                for (uint32_t v = 0; v < vertexCount; v++) {
+                        float xyz[3];
+                        std::memcpy(xyz, vertexBytes + static_cast<size_t>(v) * wrx::VERTEX_BYTES, sizeof(xyz));
+                        bounds[0] = std::min(bounds[0], xyz[0]);
+                        bounds[1] = std::min(bounds[1], xyz[1]);
+                        bounds[2] = std::min(bounds[2], xyz[2]);
+                        bounds[3] = std::max(bounds[3], xyz[0]);
+                        bounds[4] = std::max(bounds[4], xyz[1]);
+                        bounds[5] = std::max(bounds[5], xyz[2]);
+                }
+
+                wrx::MeshInfo info{};
+                info.meshId = nextMeshId++;
+                info.vertexCount = vertexCount;
+                info.indexCount = static_cast<uint32_t>(mesh->indices.size());
+                std::memcpy(info.aabb, bounds, sizeof(bounds));
+                std::memcpy(info.kd, kd, sizeof(kd));
+                // info.name stays empty: only RES_MODELS replies carry material
+                // names, and the Java caller already knows its texture/stage.
+
+                auto model = std::make_unique<ModelEntry>();
+                model->modelId = nextModelId++;
+                model->meshInfos.push_back(info);
+                model->meshes.push_back(mesh);
+                meshIndex[info.meshId] = mesh;
+                if (recorder != nullptr) {
+                        recorder->uploadMesh(info.meshId, *mesh, info.kd);
+                }
+
+                // reply: requestId, modelId, meshCount(=1), { meshId, aabb[6] }
+                reply.clear();
+                Writer w{reply};
+                w.write(requestId);
+                w.write(model->modelId);
+                const uint32_t meshCount = 1;
+                w.write(meshCount);
+                w.write(info.meshId);
+                w.blob(info.aabb, sizeof(info.aabb));
+                out = finishResult(WRCORE_OK, 0, wrx::RES_INSTANCE, true);
+                models[model->modelId] = std::move(model);
                 return true;
         }
 };
@@ -586,14 +796,41 @@ WrcoreReply wrcore_free_models(const uint8_t* data, uint32_t size) {
         return out;
 }
 
-int32_t wrcore_record_frame(const void* header, const uint8_t* textures, const uint8_t* items) {
+WrcoreReply wrcore_upload_texture(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        Reader reader{data, size, 0};
+        WrcoreReply out{};
+        c.handleUploadTexture(reader, out);
+        return out;
+}
+
+WrcoreReply wrcore_free_texture(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        Reader reader{data, size, 0};
+        WrcoreReply out{};
+        c.handleFreeTexture(reader, out);
+        return out;
+}
+
+WrcoreReply wrcore_upload_mesh(const uint8_t* data, uint32_t size) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        Reader reader{data, size, 0};
+        WrcoreReply out{};
+        c.handleUploadMesh(reader, out);
+        return out;
+}
+
+int32_t wrcore_record_frame(const void* header, const uint8_t* externals, const uint8_t* items) {
         Core& c = core();
         std::lock_guard<std::mutex> lock(c.mutex);
         if (c.recorder == nullptr) {
                 return 0;
         }
         const auto* frameHeader = static_cast<const wrx::FrameHeader*>(header);
-        return c.recorder->recordFrame(*frameHeader, textures, items) ? 1 : 0;
+        return c.recorder->recordFrame(*frameHeader, externals, items) ? 1 : 0;
 }
 
 void wrcore_set_host_init_callback(WrcoreHostInit callback, void* user) {
@@ -612,9 +849,13 @@ void wrcore_shutdown_domain(void) {
                                 c.recorder->freeMesh(info.meshId);
                         }
                 }
+                for (const auto& entry : c.textures) {
+                        c.recorder->freeTexture(entry.first);
+                }
         }
         c.models.clear();
         c.meshIndex.clear();
+        c.textures.clear();
 }
 
 uint32_t wrcore_live_models(void) {
@@ -627,6 +868,12 @@ uint32_t wrcore_live_meshes(void) {
         Core& c = core();
         std::lock_guard<std::mutex> lock(c.mutex);
         return static_cast<uint32_t>(c.meshIndex.size());
+}
+
+uint32_t wrcore_live_textures(void) {
+        Core& c = core();
+        std::lock_guard<std::mutex> lock(c.mutex);
+        return static_cast<uint32_t>(c.textures.size());
 }
 
 } // extern "C"

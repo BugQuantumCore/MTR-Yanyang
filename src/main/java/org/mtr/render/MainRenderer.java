@@ -342,23 +342,29 @@ public class MainRenderer {
         }
 
         private static void renderModel(PoseStack matrixStack, Object2ObjectOpenHashMap<NewOptimizedModel, Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<ObjectIntImmutablePair<StoredMatrixTransformations>>>> modelRenders, Vec3 offset) {
-                // Native Vulkan pipeline: models built through the exchange carry a native
-                // mesh; their draws are queued into the shared-memory frame slot and recorded
-                // by the C++ side inside VulkanMod's command buffer. GL models in the same
-                // bucket keep drawing exactly as before.
+                // Native Vulkan pipeline (protocol v2): models built through the exchange
+                // carry a native mesh; their draws are queued into the shared-memory frame
+                // slot as RAW pose matrices + the RAW packed lightmap int, and the C++ side
+                // records them inside VulkanMod's command buffer — no model-view, normal or
+                // colour math happens in Java on this path. GL models in the same bucket keep
+                // drawing exactly as before.
                 final org.mtr.nativeobj.NativeFrameRecorder nativeRecorder;
                 if (org.mtr.nativeobj.NativeRuntime.isActive()) {
                         nativeRecorder = new org.mtr.nativeobj.NativeFrameRecorder(org.mtr.nativeobj.NativeRuntime.getInstance());
                 } else {
                         nativeRecorder = null;
                 }
+                if (nativeRecorder != null) {
+                        // re-upload dynamic textures (PIDS displays, route maps) whose pixels
+                        // changed since the last drain, before this frame's items land
+                        org.mtr.nativeobj.NativeTextureManager.INSTANCE.flushDirty();
+                }
                 modelRenders.forEach((newOptimizedModel, modelsForRenderStage) -> modelsForRenderStage.forEach((renderStage, renderDetails) -> {
                         final org.mtr.nativeobj.NativeModel nativeModel = newOptimizedModel.getNativeModel();
                         if (nativeRecorder != null && nativeModel != null) {
                                 renderDetails.forEach(renderDetailsEntry -> {
                                         renderDetailsEntry.left().transform(matrixStack, offset);
-                                        nativeRecorder.queue(nativeModel, matrixStack.last().pose(),
-                                                renderStage.isFullBrightness ? 1 : (float) renderDetailsEntry.rightInt() / 0xF);
+                                        nativeRecorder.queue(nativeModel, matrixStack.last().pose(), renderDetailsEntry.rightInt());
                                         matrixStack.popPose();
                                 });
                                 return;

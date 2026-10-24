@@ -352,6 +352,10 @@ public class DynamicTextureCache implements IGui {
                                         final DynamicTexture nativeImageBackedTexture = new DynamicTexture(newNativeImage);
                                         final ResourceLocation identifier = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "id_" + MTR.randomString());
                                         Minecraft.getInstance().getTextureManager().register(identifier, nativeImageBackedTexture);
+                                        // native Vulkan pool: the pixels were (re)generated under this
+                                        // identifier — flag it so the next render drain re-uploads it if a
+                                        // native model references it (no-op without the native runtime)
+                                        org.mtr.nativeobj.NativeTextureManager.INSTANCE.markDirty(identifier);
                                         dynamicResourceNew = new DynamicResource(identifier, nativeImageBackedTexture);
                                         dynamicResources.put(key, dynamicResourceNew);
                                 }

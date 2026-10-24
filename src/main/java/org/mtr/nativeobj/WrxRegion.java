@@ -40,7 +40,7 @@ import java.util.List;
 public final class WrxRegion implements AutoCloseable {
 
         public static final int CONTROL_MAGIC = 0x57525831; // "WRX1"
-        public static final int PROTOCOL_VERSION = 1;
+        public static final int PROTOCOL_VERSION = 2;
         public static final int CONTROL_SIZE = 4096;
 
         public static final int FLAG_TRANSPORT_FFM = 1 << 0;
@@ -81,20 +81,38 @@ public final class WrxRegion implements AutoCloseable {
          * outside every lock (see wrx_server.cpp).
          */
         public static final int MSG_SHUTDOWN = 6;
+        /**
+         * v2: upload RGBA8 pixels for the native texture pool. Body: u32 key,
+         * u32 width, u32 height, u32 flags, then width*height*4 bytes,
+         * row-major from the top-left. A repeated key re-uploads (dynamic
+         * textures). No reply.
+         */
+        public static final int MSG_UPLOAD_TEXTURE = 7;
+        /** v2: retire pool textures whose models were freed (resource reload). */
+        public static final int MSG_FREE_TEXTURE = 8;
+        /**
+         * v2: upload a mesh built on the Java side (Blockbench quads, the
+         * javagl fallback) into the native GPU pipeline; the reply mirrors
+         * {@link #RES_INSTANCE}.
+         */
+        public static final int MSG_UPLOAD_MESH = 9;
 
         public static final int RES_MODELS = 1;
         public static final int RES_INSTANCE = 2;
         public static final int RES_ERROR = 3;
 
-        // frame.bin payload (after the 8-byte seq word) — matches C++ FrameHeader
-        public static final int FRAME_MAGIC = 0x46524D31; // "FRM1"
+        // frame.bin payload (after the 8-byte seq word) — matches C++ FrameHeader v2.
+        // The v1 per-frame texture table is gone: static textures live in the
+        // native pool (MSG_UPLOAD_TEXTURE), and only animated (mcmeta) textures
+        // travel per frame as a small FrameExternal override table.
+        public static final int FRAME_MAGIC = 0x46524D32; // "FRM2"
         public static final int FRAME_MAX_ITEMS = 65536;
-        public static final int FRAME_MAX_TEXTURES = 1024;
-        public static final int FRAME_HEADER_BYTES = 176;
-        public static final int FRAME_ITEM_BYTES = 128;
-        public static final int FRAME_TEXTURE_BYTES = 40;
-        public static final int FRAME_TEXTURES_OFFSET = FRAME_HEADER_BYTES;
-        public static final int FRAME_ITEMS_OFFSET = FRAME_HEADER_BYTES + FRAME_MAX_TEXTURES * FRAME_TEXTURE_BYTES;
+        public static final int FRAME_HEADER_BYTES = 240;
+        public static final int FRAME_ITEM_BYTES = 80;
+        public static final int FRAME_EXTERNAL_BYTES = 32;
+        public static final int FRAME_MAX_EXTERNAL = 64;
+        public static final int FRAME_EXTERNALS_OFFSET = FRAME_HEADER_BYTES;
+        public static final int FRAME_ITEMS_OFFSET = FRAME_HEADER_BYTES + FRAME_MAX_EXTERNAL * FRAME_EXTERNAL_BYTES;
 
         public static final int VERTEX_BYTES = 24;
 

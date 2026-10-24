@@ -12,7 +12,12 @@
 //   control.bin  fixed 4096-byte page of counters and flags
 //   build.bin    [u64 writePos][u64 readPos][u64 capacity][messages...]
 //   results.bin  same bump-queue layout, C++/Rust writes, Java reads
-//   frame.bin    [u64 seq][FrameHeader][FrameTexture*1024][FrameItem*65536]
+//   frame.bin    [u64 seq][FrameHeader][FrameExternal*used][FrameItem*used]
+//
+// The frame payload is CONTIGUOUS: the externals start at
+// FRAME_EXTERNAL_OFF and the items follow IMMEDIATELY after the last
+// FrameExternal. FRAME_MAX_EXTERNAL only bounds the region budget
+// (FRAME_ITEMS_OFF_BASE), never the item placement.
 
 #![allow(dead_code)]
 
@@ -33,7 +38,7 @@ pub const CONFIG_FILE: &[u8] = b"wrx.conf";
 // ---------------------------------------------------------------------------
 
 pub const CONTROL_MAGIC: u32 = 0x57525831; // "WRX1"
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const CONTROL_SIZE: usize = 4096;
 
 pub const FLAG_TRANSPORT_FFM: u32 = 1 << 0; // 0 = shm poller, 1 = ffm calls
@@ -73,8 +78,8 @@ pub const ERR_TIMEOUT: u32 = 6; // the other side stopped heartbeating
 // publishes writePos with release after writing bytes; the reader consumes,
 // then publishes readPos with release. The queue resets to zero only while
 // writePos == readPos (both sides observe it), which keeps wrap-around out
-// of the protocol entirely — build traffic is batchy, so waiting for a
-// full drain before reset is fine.
+// of the protocol entirely — build traffic is batchy, so waiting for a full
+// drain before reset is fine.
 // ---------------------------------------------------------------------------
 
 pub const BUMP_HEADER_SIZE: usize = 24;
@@ -95,6 +100,16 @@ pub const MSG_FREE_MODELS: u32 = 5;
 // the shutdown-requested flag; the poller observes it after the current
 // processBuilds pass and performs the teardown outside every lock.
 pub const MSG_SHUTDOWN: u32 = 6;
+// v2: the native texture pool. Java uploads RGBA8 pixel rows (top-left
+// origin); wrvk owns the VkImage/View/Sampler + a staging buffer and executes
+// the upload inside the next frame's command buffer. A repeated key
+// re-uploads (dynamic textures: PIDS displays, route maps).
+pub const MSG_UPLOAD_TEXTURE: u32 = 7;
+// v2: retire textures whose models were freed (resource reload).
+pub const MSG_FREE_TEXTURE: u32 = 8;
+// v2: upload a mesh built on the Java side (Blockbench quads, javagl fallback
+// triangles) into the native GPU pipeline. Reply mirrors RES_INSTANCE.
+pub const MSG_UPLOAD_MESH: u32 = 9;
 
 // results.bin message types
 pub const RES_MODELS: u32 = 1; // reply to LOAD_OBJ
@@ -102,18 +117,25 @@ pub const RES_INSTANCE: u32 = 2; // reply to INSTANCE
 pub const RES_ERROR: u32 = 3; // reply to any failed request
 
 // ---------------------------------------------------------------------------
-// frame.bin — single-slot seqlocked draw list.
+// frame.bin — single-slot seqlocked draw list (v2).
 //
 // Java writes: seq = seq|1 (odd, release), payload, seq+1 (even, release).
 // The reader samples seq until stable and even, snapshots the payload,
 // re-samples, then records from the snapshot (never from the live mapping).
+//
+// v2: the draw items carry RAW pose matrices and reference textures by
+// native pool key; the texture table is replaced by a small per-frame list
+// of EXTERNAL texture handles (animated textures VulkanMod still owns).
 // ---------------------------------------------------------------------------
 
-pub const FRAME_MAGIC: u32 = 0x46524D31; // "FRM1"
+pub const FRAME_MAGIC: u32 = 0x46524D32; // "FRM2"
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 pub const FRAME_MAX_ITEMS: usize = 65536;
-pub const FRAME_MAX_TEXTURES: usize = 1024;
+// External (animated) textures resolved through VulkanMod per frame. The
+// static pool has no per-frame cap — it is bounded by MSG budget checks at
+// upload time (see wrcore: MAX_TEXTURES).
+pub const FRAME_MAX_EXTERNAL: usize = 64;
 
 // GPU vertex layout = wrobj's upload layout, used verbatim: float x,y,z,u,v
 // (20 bytes) + 4 packed snorm8 normal bytes = 24-byte stride.
@@ -124,8 +146,9 @@ pub const VERTEX_BYTES: usize = 24;
 pub struct FrameHeader {
 	pub magic: u32,
 	pub item_count: u32,
-	pub texture_count: u32,
+	pub external_texture_count: u32, // entries in the override table below
 	pub reserved0: u32,
+	pub view: [f32; 16], // camera view (RenderSystem snapshot), column-major
 	pub projection: [f32; 16], // column-major, JOML get(float[]) order
 	pub fog_color: [f32; 4],
 	pub fog_start: f32,
@@ -134,45 +157,50 @@ pub struct FrameHeader {
 	pub light_dir1: [f32; 3],
 	pub viewport_width: u32,
 	pub viewport_height: u32,
-	pub depth_format: u32,
-	pub reserved1: u32,
+	pub reserved1a: u32,
+	pub reserved1b: u32,
 	pub cmd_buffer: u64, // VulkanMod's current primary command buffer
 	pub render_pass: u64, // the render pass the cmd buffer is inside
 	pub reserved2: u64,
 	pub reserved3: u64,
-	// followed by: textures[textureCount], items[itemCount]
+	// followed by: external[externalTextureCount], items[itemCount]
 }
 
+// One animated texture resolved through VulkanMod for this frame only:
+// items reference it by key, and the recorder substitutes these handles for
+// the pool entry (a pool entry with the same key, if any, is shadowed).
 #[repr(C)]
-pub struct FrameTexture {
+pub struct FrameExternal {
+	pub key: u32,
+	pub reserved: u32,
 	pub image: u64,
 	pub view: u64,
 	pub sampler: u64,
-	pub format: u32,
-	pub mip_levels: u32,
-	pub layout: u32,
-	pub reserved: u32,
 }
 
+// One draw. Java copies the pose straight out of the PoseStack; every piece
+// of rendering math (MV = view×pose, N = transpose(inverse(MV3×3)),
+// colour = Kd×brightness) is computed natively at record time.
 #[repr(C)]
 pub struct FrameItem {
 	pub mesh_id: u32,
-	pub texture_index: u32,
+	pub texture_key: u32, // native pool key (or external override key)
 	pub stage: u32, // org.mtr.resource.RenderStage ordinal (0..4)
-	pub color_packed: u32, // r<<24 | g<<16 | b<<8 | a
-	pub model_view: [f32; 16], // column-major, = RenderSystem MV * pose
-	pub normal_matrix: [f32; 12], // 3 rows padded as vec4
+	pub light: u32, // packed lightmap int, raw — native derives brightness
+	pub pose: [f32; 16], // column-major raw pose (PoseStack.last().pose())
 }
 
 pub const FRAME_SEQ_SIZE: usize = 8;
 pub const FRAME_HEADER_OFF: usize = 8;
-pub const FRAME_TEXTURE_OFF: usize = FRAME_HEADER_OFF + core::mem::size_of::<FrameHeader>();
+pub const FRAME_EXTERNAL_OFF: usize = FRAME_HEADER_OFF + core::mem::size_of::<FrameHeader>();
 // Items offset RELATIVE TO THE PAYLOAD (i.e. after the 8-byte seq word) —
 // mirrors wrx.hpp's FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) +
-// sizeof(FrameTexture) * FRAME_MAX_TEXTURES exactly. The absolute offset
-// from the start of frame.bin is FRAME_HEADER_OFF + FRAME_ITEMS_OFF_BASE.
+// sizeof(FrameExternal) * FRAME_MAX_EXTERNAL exactly. This is the REGION
+// BUDGET, not the item placement: the externals are variable-length and the
+// items follow immediately after the last one, so the absolute item offset
+// is FRAME_EXTERNAL_OFF + externalTextureCount * 32, never this constant.
 pub const FRAME_ITEMS_OFF_BASE: usize = core::mem::size_of::<FrameHeader>()
-	+ core::mem::size_of::<FrameTexture>() * FRAME_MAX_TEXTURES;
+	+ core::mem::size_of::<FrameExternal>() * FRAME_MAX_EXTERNAL;
 
 // ---------------------------------------------------------------------------
 // LOAD_OBJ request payload (after the message header):
@@ -193,6 +221,24 @@ pub const FRAME_ITEMS_OFF_BASE: usize = core::mem::size_of::<FrameHeader>()
 // FREE_MODELS: u32 requestId, u32 count, u32 modelIds...
 // No reply: request ids are monotonic, so no flow-control echo is needed.
 //
+// UPLOAD_TEXTURE (v2): u32 key, u32 width, u32 height, u32 flags (0),
+//   u8 pixels[width*height*4] — RGBA8, row-major, top-left origin.
+//   Creates the pool entry (or re-uploads an existing one: same key, same or
+//   new dimensions — the image is recreated when they change). No reply.
+//
+// FREE_TEXTURE (v2): u32 count, u32 keys...
+// No reply.
+//
+// UPLOAD_MESH (v2): u32 requestId, u32 textureKey, u32 stage, u32 mode
+//   (0 = triangles, 1 = quads), u32 vertexCount, u8 kd[4] (r, g, b, a;
+//   white for Blockbench), then vertexCount vertices × 24 bytes in the GPU
+//   layout: f32 x, y, z, u, v (little-endian) + 4 int8 snorm bytes
+//   (x, y, z, pad) encoded as Java's (byte)(n * 127.0F) — truncation toward
+//   zero. Quads fan-triangulate to (0,1,2)(0,2,3), triangles pass through.
+//   Reply: RES_INSTANCE layout — u32 requestId, u32 modelId, u32 meshCount
+//   (1), { u32 meshId, float aabb[6] }. A zero modelId means rejection
+//   (bad counts / empty mesh) and Java falls back to the GL path.
+//
 // INIT_VULKAN payload: u64 instance, physicalDevice, device, queue, renderPass,
 //   u32 queueFamily, colorFormat, depthFormat, sampleCount, maxPushConstants
 //
@@ -206,12 +252,13 @@ pub fn round_up8(value: u32) -> u32 {
 
 // ---------------------------------------------------------------------------
 // Compile-time layout verification against the C++ static_asserts
-// (wrx.hpp: sizeof(FrameItem) == 128; FrameHeader == 176; FrameTexture == 40).
+// (wrx.hpp: sizeof(FrameHeader) == 240; FrameExternal == 32;
+// FrameItem == 80).
 // ---------------------------------------------------------------------------
 
-const _: () = assert!(core::mem::size_of::<FrameHeader>() == 176, "FrameHeader layout");
-const _: () = assert!(core::mem::size_of::<FrameTexture>() == 40, "FrameTexture layout");
-const _: () = assert!(core::mem::size_of::<FrameItem>() == 128, "FrameItem layout (push constant budget)");
+const _: () = assert!(core::mem::size_of::<FrameHeader>() == 240, "FrameHeader v2 layout");
+const _: () = assert!(core::mem::size_of::<FrameExternal>() == 32, "FrameExternal layout");
+const _: () = assert!(core::mem::size_of::<FrameItem>() == 80, "FrameItem v2 layout");
 const _: () = assert!(core::mem::align_of::<FrameHeader>() <= 8);
 const _: () = assert!(core::mem::size_of::<c_char>() == 1);
 
@@ -221,10 +268,10 @@ mod tests {
 
 	#[test]
 	fn frame_offsets_match_wrx_hpp() {
-		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 40 * 1024 = 41136
-		assert_eq!(FRAME_ITEMS_OFF_BASE, 41_136);
-		assert_eq!(FRAME_TEXTURE_OFF, 8 + 176);
-		// the java-side total: 8 + FRAME_ITEMS_OFFSET + 65536*128
-		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 128, 8_429_752);
+		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 32 * 64 = 2288
+		assert_eq!(FRAME_ITEMS_OFF_BASE, 2_288);
+		assert_eq!(FRAME_EXTERNAL_OFF, 8 + 240);
+		// the java-side total: 8 + FRAME_ITEMS_OFFSET + 65536*80
+		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 80, 5_245_176);
 	}
 }

@@ -269,6 +269,9 @@ public final class ObjModelLoader extends ModelLoaderBase {
 					texture = materialGroupName.equals("_") ? null : textureResolver.apply(formatFilePath(materialGroupName));
 				}
 				final ResourceLocation resolvedTexture = texture == null ? defaultTexture : texture;
+				// protocol v2: register the resolved texture in the native pool and
+				// carry its stable key with every mesh of this build
+				final int textureKey = org.mtr.nativeobj.NativeTextureManager.INSTANCE.register(resolvedTexture);
 				// flipv is baked natively (per-material via the key table), so
 				// only the stage needs to travel with the draw item
 				// the raw stage follows the javagl semantics: null entries are rescued
@@ -277,7 +280,7 @@ public final class ObjModelLoader extends ModelLoaderBase {
 				final org.mtr.resource.RenderStage stage = getRenderStage(materialOptions.get("#"));
 				newOptimizedModelGroup.addNative(stage, resolvedTexture,
 					new org.mtr.nativeobj.NativeModel(group.modelId(), mesh.meshId(), resolvedTexture,
-						stage, mesh.colorPacked(), mesh.aabb()));
+						stage, mesh.colorPacked(), mesh.aabb(), textureKey));
 			}
 			addModel(group.name(), newOptimizedModelGroup);
 		}

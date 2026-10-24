@@ -10,12 +10,23 @@ import org.mtr.resource.RenderStage;
  * stores in a {@code NewOptimizedModel} — the difference is that the vertex
  * data never leaves the native side: the {@code meshId} addresses a GPU
  * buffer the C++ recorder owns.
+ *
+ * <p>Protocol v2: draws reference the texture by the native pool key
+ * ({@link #textureKey}, assigned once per client session by
+ * {@code NativeTextureManager}); the material Kd and the raw lightmap
+ * brightness are combined natively at record time.</p>
  */
 public final class NativeModel {
 
         public final int modelId;
         public final int meshId;
         public final ResourceLocation texture;
+        /**
+         * The native texture-pool key for {@link #texture} (0 when the texture
+         * never registered — the C++ side then skips the draw). Stable for the
+         * whole client session.
+         */
+        public final int textureKey;
         /**
          * The stage this mesh was built for. {@code null} follows the javagl
          * pipeline's semantics exactly: an un-staged entry is rescued to the
@@ -25,22 +36,30 @@ public final class NativeModel {
          */
         @Nullable
         public final RenderStage renderStage;
-        public final int colorPacked; // r << 24 | g << 16 | b << 8 | a (1.20.x packing)
+        /**
+         * The material Kd colour, r << 24 | g << 16 | b << 8 | a (1.20.x
+         * packing). Kept for the build-reply decoding chain only — under
+         * protocol v2 the draw path no longer reads it (the native recorder
+         * multiplies Kd into the brightness itself).
+         */
+        public final int colorPacked;
         public final float[] aabb;
 
-        public NativeModel(int modelId, int meshId, ResourceLocation texture, @Nullable RenderStage renderStage, int colorPacked, float[] aabb) {
+        public NativeModel(int modelId, int meshId, ResourceLocation texture, @Nullable RenderStage renderStage, int colorPacked, float[] aabb, int textureKey) {
                 this.modelId = modelId;
                 this.meshId = meshId;
                 this.texture = texture;
+                this.textureKey = textureKey;
                 this.renderStage = renderStage;
                 this.colorPacked = colorPacked;
                 this.aabb = aabb;
         }
 
         /**
-         * The colour the draw item multiplies into the shader, exactly the chain
-         * the Java path computes: the material's Kd times the fork's scalar
-         * brightness ({@code light / 0xF} or full bright).
+         * The colour the v1 draw item multiplied into the shader — the Kd times
+         * the fork's scalar brightness ({@code light / 0xF} or full bright).
+         * Unused by the v2 draw path (native math); kept for tooling that
+         * inspects material colours.
          */
         public int colorFor(float lightMultiplier) {
                 final int r = clampToByte(((colorPacked >>> 24) & 0xFF) / 255.0F * lightMultiplier);

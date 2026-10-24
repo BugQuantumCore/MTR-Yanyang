@@ -24,6 +24,11 @@ import java.util.stream.Stream;
 /**
  * Lifecycle of the native Vulkan OBJ pipeline.
  *
+ * <p>Protocol v2 ("zero-Java model rendering"): textures live in a native
+ * pool uploaded once ({@code NativeTextureManager}), and the frame recorder
+ * only appends raw pose matrices — the C++ recorder owns every matrix,
+ * colour and texture computation. See {@code docs/NATIVE_VULKAN.md}.</p>
+ *
  * <p>Activation is fully automatic and conservative: the pipeline turns on
  * only when VulkanMod is present and every Vulkan handle resolves, and any
  * failure at any stage leaves the fork's Java renderer exactly as it was,
@@ -641,6 +646,14 @@ public final class NativeRuntime {
                                 runtime.freeAllModels();
                         } catch (Throwable throwable) {
                                 MTR.LOGGER.error("[wrvk] model free failed during resource reload", throwable);
+                        }
+                        try {
+                                // v2: the models referencing the pool textures are gone —
+                                // retire the pool entries too (keys stay assigned; the next
+                                // register re-uploads)
+                                NativeTextureManager.INSTANCE.freePool();
+                        } catch (Throwable throwable) {
+                                MTR.LOGGER.error("[wrvk] texture pool free failed during resource reload", throwable);
                         }
                 }
         }

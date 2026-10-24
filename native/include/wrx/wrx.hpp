@@ -28,6 +28,19 @@
 // Byte layout contract (little-endian). Java mirrors every constant in
 // org.mtr.nativeobj.WrxRegion, and the Rust core mirrors them in
 // rust/wrxr/src/protocol.rs — three sides, one contract.
+//
+// PROTOCOL VERSION 2 — "zero-Java model rendering under Vulkan":
+//   * The per-frame texture table is gone. Textures live in a native pool
+//     (Vulkan images wrvk owns itself), uploaded once through
+//     MSG_UPLOAD_TEXTURE; only animated (mcmeta) textures stay external and
+//     travel as per-frame handle overrides.
+//   * Frame items carry the RAW pose matrix; the native side computes the
+//     model-view (header view × pose), the inverse-transpose normal matrix
+//     and the Kd×brightness colour itself. Java's per-item work is one
+//     16-float copy.
+//   * MSG_UPLOAD_MESH lets Java-side mesh sources (Blockbench, the javagl
+//     fallback) feed the same native GPU pipeline, so EVERY optimised-model
+//     draw under Vulkan is recorded by C++.
 
 #pragma once
 
@@ -61,7 +74,7 @@ inline constexpr const char* CONFIG_FILE = "wrx.conf";
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t CONTROL_MAGIC = 0x57525831; // "WRX1"
-inline constexpr uint32_t PROTOCOL_VERSION = 1;
+inline constexpr uint32_t PROTOCOL_VERSION = 2;
 inline constexpr uint32_t CONTROL_SIZE = 4096;
 
 inline constexpr uint32_t FLAG_TRANSPORT_FFM = 1u << 0; // 0 = shm poller, 1 = ffm calls
@@ -129,6 +142,16 @@ inline constexpr uint32_t MSG_FREE_MODELS = 5;
 // every lock. The generic per-message build ack doubles as the handshake, so
 // Java can unmap its side safely once buildAck reaches the sent sequence.
 inline constexpr uint32_t MSG_SHUTDOWN = 6;
+// v2: the native texture pool. Java uploads RGBA8 pixel rows (top-left
+// origin); wrvk owns the VkImage/View/Sampler + a staging buffer and executes
+// the upload inside the next frame's command buffer. A repeated key
+// re-uploads (dynamic textures: PIDS displays, route maps).
+inline constexpr uint32_t MSG_UPLOAD_TEXTURE = 7;
+// v2: retire textures whose models were freed (resource reload).
+inline constexpr uint32_t MSG_FREE_TEXTURE = 8;
+// v2: upload a mesh built on the Java side (Blockbench quads, javagl fallback
+// triangles) into the native GPU pipeline. Reply mirrors RES_INSTANCE.
+inline constexpr uint32_t MSG_UPLOAD_MESH = 9;
 
 // results.bin message types
 inline constexpr uint32_t RES_MODELS = 1;   // reply to LOAD_OBJ
@@ -136,19 +159,26 @@ inline constexpr uint32_t RES_INSTANCE = 2; // reply to INSTANCE
 inline constexpr uint32_t RES_ERROR = 3;    // reply to any failed request
 
 // ---------------------------------------------------------------------------
-// frame.bin — single-slot seqlocked draw list.
+// frame.bin — single-slot seqlocked draw list (v2).
 //
 // Java writes: seq = seq|1 (odd, release), payload, seq+1 (even, release).
 // C++ reads: sample seq until stable and even, copy payload, re-sample.
 // With the FFM transport the call is synchronous so the seqlock never
 // actually contends, but the same code runs on both transports.
+//
+// v2: the draw items carry RAW pose matrices and reference textures by
+// native pool key; the texture table is replaced by a small per-frame list
+// of EXTERNAL texture handles (animated textures VulkanMod still owns).
 // ---------------------------------------------------------------------------
 
-inline constexpr uint32_t FRAME_MAGIC = 0x46524D31; // "FRM1"
+inline constexpr uint32_t FRAME_MAGIC = 0x46524D32; // "FRM2"
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 inline constexpr uint32_t FRAME_MAX_ITEMS = 65536;
-inline constexpr uint32_t FRAME_MAX_TEXTURES = 1024;
+// External (animated) textures resolved through VulkanMod per frame. The
+// static pool has no per-frame cap — it is bounded by MSG budget checks at
+// upload time (see wrcore: MAX_TEXTURES).
+inline constexpr uint32_t FRAME_MAX_EXTERNAL = 64;
 
 // GPU vertex layout = wrobj's upload layout, used verbatim: float x,y,z,u,v
 // (20 bytes) + 4 packed snorm8 normal bytes (x,y,z + pad) = 24-byte stride.
@@ -161,8 +191,9 @@ inline constexpr uint32_t VERTEX_BYTES = 24;
 struct FrameHeader {
         uint32_t magic;
         uint32_t itemCount;
-        uint32_t textureCount;
+        uint32_t externalTextureCount; // entries in the override table below
         uint32_t reserved0;
+        float view[16];           // camera view (RenderSystem snapshot), column-major
         float projection[16];     // column-major, JOML get(float[]) order
         float fogColor[4];
         float fogStart;
@@ -171,41 +202,46 @@ struct FrameHeader {
         float lightDir1[3];
         uint32_t viewportWidth;
         uint32_t viewportHeight;
-        uint32_t depthFormat;
-        uint32_t reserved1;
+        uint32_t reserved1a;
+        uint32_t reserved1b;
         uint64_t cmdBuffer;       // VulkanMod's current primary command buffer
         uint64_t renderPass;      // the render pass the cmd buffer is inside
         uint64_t reserved2;
         uint64_t reserved3;
-        // followed by: textures[textureCount], items[itemCount]
+        // followed by: external[externalTextureCount], items[itemCount]
 };
+static_assert(sizeof(FrameHeader) == 240, "frame header v2 layout");
 
-struct FrameTexture {
+// One animated texture resolved through VulkanMod for this frame only:
+// items reference it by key, and the recorder substitutes these handles for
+// the pool entry (a pool entry with the same key, if any, is shadowed).
+struct FrameExternal {
+        uint32_t key;
+        uint32_t reserved;
         uint64_t image;
         uint64_t view;
         uint64_t sampler;
-        uint32_t format;
-        uint32_t mipLevels;
-        uint32_t layout;
-        uint32_t reserved;
 };
+static_assert(sizeof(FrameExternal) == 32, "frame external layout");
 
+// One draw. Java copies the pose straight out of the PoseStack; every piece
+// of rendering math (MV = view×pose, N = transpose(inverse(MV3×3)),
+// colour = Kd×brightness) is computed natively at record time.
 struct FrameItem {
         uint32_t meshId;
-        uint32_t textureIndex;
-        uint32_t stage;       // org.mtr.resource.RenderStage ordinal (0..4)
-        uint32_t colorPacked; // r<<24 | g<<16 | b<<8 | a; Java composes Kd * brightness
-        float modelView[16];  // column-major, = RenderSystem MV * pose
-        // then 48 bytes of normal matrix (3 rows padded as vec4) — see wrvk
-        float normalMatrix[12];
+        uint32_t textureKey; // native pool key (or external override key)
+        uint32_t stage;      // org.mtr.resource.RenderStage ordinal (0..4)
+        uint32_t light;      // packed lightmap int, raw — native derives brightness
+        float pose[16];      // column-major raw pose (PoseStack.last().pose())
 };
+static_assert(sizeof(FrameItem) == 80, "frame item v2 layout");
 
-// Push constants: MV mat4 + colour vec4 + normal matrix 3×vec4 = 128 bytes,
-// exactly the Vulkan guaranteed minimum, so no device limit is violated.
-static_assert(sizeof(FrameItem) == 128, "frame item layout is the push constant layout");
+// Push constants stay byte-identical to v1: vec4 colour + mat4 MV + 3×vec4 N
+// = 128 bytes, exactly the Vulkan guaranteed minimum. Only the producer
+// moved: C++ computes them at record time.
 
-inline constexpr uint32_t FRAME_TEXTURE_COUNT_OFF = sizeof(FrameHeader);
-inline constexpr uint32_t FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + sizeof(FrameTexture) * FRAME_MAX_TEXTURES;
+inline constexpr uint32_t FRAME_EXTERNAL_OFF = sizeof(FrameHeader);
+inline constexpr uint32_t FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + sizeof(FrameExternal) * FRAME_MAX_EXTERNAL;
 
 // ---------------------------------------------------------------------------
 // LOAD_OBJ request payload (after the message header):
@@ -230,6 +266,24 @@ inline constexpr uint32_t FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + sizeof(Fr
 //
 // FREE_MODELS: u32 requestId, u32 count, u32 modelIds...
 // No reply: request ids are monotonic, so no flow-control echo is needed.
+//
+// UPLOAD_TEXTURE (v2): u32 key, u32 width, u32 height, u32 flags (0),
+//   u8 pixels[width*height*4] — RGBA8, row-major, top-left origin.
+//   Creates the pool entry (or re-uploads an existing one: same key, same or
+//   new dimensions — the image is recreated when they change). No reply.
+//
+// FREE_TEXTURE (v2): u32 count, u32 keys...
+// No reply.
+//
+// UPLOAD_MESH (v2): u32 requestId, u32 textureKey, u32 stage, u32 mode
+//   (0 = triangles, 1 = quads), u32 vertexCount, u8 kd[4] (r, g, b, a;
+//   white for Blockbench), then vertexCount vertices × 24 bytes in the GPU
+//   layout: f32 x, y, z, u, v (little-endian) + 4 int8 snorm bytes
+//   (x, y, z, pad) encoded as Java's (byte)(n * 127.0F) — truncation toward
+//   zero. Quads fan-triangulate to (0,1,2)(0,2,3), triangles pass through.
+//   Reply: RES_INSTANCE layout — u32 requestId, u32 modelId, u32 meshCount
+//   (1), { u32 meshId, float aabb[6] }. A zero modelId means rejection
+//   (bad counts / empty mesh) and Java falls back to the GL path.
 // ---------------------------------------------------------------------------
 
 struct MeshInfo {

@@ -1,6 +1,9 @@
 package org.mtr.nativeobj;
 
+import net.minecraft.resources.ResourceLocation;
+import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
+import org.mtr.model.StoredVertexData;
 import org.mtr.resource.RenderStage;
 
 import java.nio.ByteBuffer;
@@ -10,10 +13,10 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The build-side protocol of the exchange: LOAD_OBJ / INSTANCE / FREE and
- * the result decoding that turns native mesh records into
- * {@link NativeModel}s. The heavy geometry never crosses back into Java —
- * only ids, AABBs, colours and material names do.
+ * The build-side protocol of the exchange: LOAD_OBJ / INSTANCE /
+ * UPLOAD_MESH / FREE and the result decoding that turns native mesh records
+ * into {@link NativeModel}s. The heavy geometry never crosses back into
+ * Java — only ids, AABBs, colours and material names do.
  */
 public final class NativeModelLoader {
 
@@ -149,13 +152,87 @@ public final class NativeModelLoader {
                                 for (int j = 0; j < 6; j++) {
                                         aabb[j] = reply.getFloat();
                                 }
-                                // same texture/stage/colour as the source; the mesh id is the instance's
-                                placed.add(new NativeModel(instanceModelId, instanceMeshId, source.texture, resolvedStage, source.colorPacked, aabb));
+                                // same texture/stage/colour/pool key as the source; the mesh id is the instance's
+                                placed.add(new NativeModel(instanceModelId, instanceMeshId, source.texture, resolvedStage, source.colorPacked, aabb, source.textureKey));
                         }
                         return placed;
                 } catch (Throwable throwable) {
                         MTR.LOGGER.error("[wrvk] native INSTANCE failed", throwable);
                         return List.of();
+                }
+        }
+
+        /**
+         * Publish MSG_UPLOAD_MESH and await the RES_INSTANCE-shaped reply.
+         * This is the v2 entry point for meshes that originate on the Java
+         * side — Blockbench quads and the javagl fallback — so EVERY
+         * optimised-model draw under Vulkan can be recorded natively. The
+         * vertex encoding mirrors the GPU 24-byte layout (f32 x,y,z,u,v +
+         * snorm8 normal bytes packed as Java's {@code (byte)(n * 127.0F)},
+         * truncation toward zero); the Kd is white because Blockbench colour
+         * travels in the vertices.
+         *
+         * @return the uploaded mesh as a {@link NativeModel}, or
+         * {@code null} when the runtime is inactive, the counts do not match
+         * the draw mode, or the native build failed (the caller falls back
+         * to the GL path)
+         */
+        @Nullable
+        public NativeModel uploadMesh(ResourceLocation texture, int textureKey, RenderStage stage, boolean quads, List<StoredVertexData> vertices) {
+                final NativeRuntime runtime = NativeRuntime.getInstance();
+                if (runtime == null || stage == null || vertices == null || vertices.isEmpty()) {
+                        return null;
+                }
+                final int vertexCount = vertices.size();
+                if (vertexCount % (quads ? 4 : 3) != 0) {
+                        return null;
+                }
+                try {
+                        final int requestId = requestIds.incrementAndGet();
+                        final ByteBuffer body = ByteBuffer.allocate(24 + vertexCount * WrxRegion.VERTEX_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+                        body.putInt(requestId);
+                        body.putInt(textureKey);
+                        body.putInt(stage.ordinal());
+                        body.putInt(quads ? 1 : 0);
+                        body.putInt(vertexCount);
+                        body.put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF); // kd = white
+                        for (final StoredVertexData vertex : vertices) {
+                                body.putFloat(vertex.x());
+                                body.putFloat(vertex.y());
+                                body.putFloat(vertex.z());
+                                body.putFloat(vertex.u());
+                                body.putFloat(vertex.v());
+                                body.put((byte) (vertex.normalX() * 127.0F));
+                                body.put((byte) (vertex.normalY() * 127.0F));
+                                body.put((byte) (vertex.normalZ() * 127.0F));
+                                body.put((byte) 0); // pad
+                        }
+                        final byte[] bodyBytes = new byte[body.position()];
+                        body.flip();
+                        body.get(bodyBytes);
+                        runtime.publish(ByteBuffer.allocate(4 + bodyBytes.length).order(ByteOrder.LITTLE_ENDIAN)
+                                        .putInt(WrxRegion.MSG_UPLOAD_MESH).put(bodyBytes).array());
+
+                        final ByteBuffer reply = runtime.awaitResult(requestId, 60_000);
+                        if (reply == null) {
+                                return null;
+                        }
+                        final int instanceModelId = reply.getInt();
+                        final int meshCount = reply.getInt();
+                        if (meshCount == 0 || instanceModelId == 0) {
+                                return null; // rejected (bad counts / empty mesh) — caller falls back to GL
+                        }
+                        runtime.trackModel(instanceModelId);
+                        // one mesh per upload — the whole vertex list is a single material
+                        final int meshId = reply.getInt();
+                        final float[] aabb = new float[6];
+                        for (int j = 0; j < 6; j++) {
+                                aabb[j] = reply.getFloat();
+                        }
+                        return new NativeModel(instanceModelId, meshId, texture, stage, 0xFFFFFFFF, aabb, textureKey);
+                } catch (Throwable throwable) {
+                        MTR.LOGGER.error("[wrvk] native UPLOAD_MESH failed", throwable);
+                        return null;
                 }
         }
 
