@@ -335,7 +335,7 @@ void RecordingDispatch::cmdPipelineBarrier(uint64_t cmd, uint32_t srcStageMask, 
         log.push_back({Op::CmdPipelineBarrier, cmd, srcStageMask, dstStageMask});
         const auto* barriers = static_cast<const VkImageMemoryBarrier*>(imageMemoryBarriers);
         for (uint32_t i = 0; i < imageMemoryBarrierCount; i++) {
-                imageBarriers.push_back(ImageBarrierRecord{asHandle(barriers[i].image), barriers[i].oldLayout, barriers[i].newLayout});
+                imageBarriers.push_back(ImageBarrierRecord{asHandle(barriers[i].image), static_cast<uint32_t>(barriers[i].oldLayout), static_cast<uint32_t>(barriers[i].newLayout)});
         }
 }
 
