@@ -14,6 +14,7 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
+import org.mtr.MTR;
 import org.mtr.MTRClient;
 import org.mtr.client.DynamicTextureCache;
 import org.mtr.client.MinecraftClientData;
