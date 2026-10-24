@@ -156,9 +156,9 @@ mesh build. With §1.2 fixed, this loop should `submit` all preloads to the work
 ```java
 final ObjectArrayList<CompletableFuture<?>> preloadFutures = new ObjectArrayList<>();
 VEHICLES.forEach((transportMode, vehicleResources) -> vehicleResources.forEach(vehicleResource -> {
-	if (vehicleResource.shouldPreload) {
-		preloadFutures.add(CompletableFuture.runAsync(() -> vehicleResource.getCachedVehicleResource(0, 0), MainRenderer.WORKER_THREAD.worker));
-	}
+        if (vehicleResource.shouldPreload) {
+                preloadFutures.add(CompletableFuture.runAsync(() -> vehicleResource.getCachedVehicleResource(0, 0), MainRenderer.WORKER_THREAD.worker));
+        }
 }));
 // similar for rails and objects, then:
 CompletableFuture.allOf(preloadFutures.toArray(new CompletableFuture[0])).join();
@@ -195,7 +195,7 @@ The dynamic texture path is `DynamicTextureCache.getResource(...)` →
 ```java
 private final AtomicReference<@Nullable Runnable> dynamicTextureQueue = new AtomicReference<>();
 public void scheduleDynamicTextures(Runnable runnable) {
-	dynamicTextureQueue.set(runnable);   // overwrites any pending task
+        dynamicTextureQueue.set(runnable);   // overwrites any pending task
 }
 ```
 
@@ -239,10 +239,10 @@ helper at lines 102–111.
 
 ```java
 for (final Font testFont : GraphicsEnvironment.getLocalGraphicsEnvironment().getAllFonts()) {
-	if (testFont.canDisplay(character)) {
-		defaultFont = testFont;
-		break;
-	}
+        if (testFont.canDisplay(character)) {
+                defaultFont = testFont;
+                break;
+        }
 }
 ```
 
@@ -294,9 +294,9 @@ and copies pixels with:
 
 ```java
 for (int x = 0; x < ...; x++) {
-	for (int y = 0; y < ...; y++) {
-		newNativeImage.setColorArgb(x, y, nativeImage.getColorArgb(x, y));
-	}
+        for (int y = 0; y < ...; y++) {
+                newNativeImage.setColorArgb(x, y, nativeImage.getColorArgb(x, y));
+        }
 }
 ```
 
@@ -455,8 +455,8 @@ laptop iGPUs this is the dominant cost.
 
 ```java
 for (int j = 0; j < QueuedRenderLayer.values().length; j++) {
-	...
-	final QueuedRenderLayer queuedRenderLayer = QueuedRenderLayer.values()[j];
+        ...
+        final QueuedRenderLayer queuedRenderLayer = QueuedRenderLayer.values()[j];
 ```
 
 `Enum.values()` allocates a new array on every call. Called 2 × N_layers + 1 times per
@@ -497,15 +497,15 @@ once and removes all identifiers in one pass.
 
 ```java
 final ObjectArrayList<...> vehiclePropertiesList = vehicle.getSmoothedVehicleCarsAndPositions(millisElapsed)
-	.stream()
-	.map(vehicleCarAndPosition -> {
-		final ObjectArrayList<PositionAndRotation> bogiePositions = vehicleCarAndPosition.right()
-			.stream()
-			.map(...)
-			.collect(Collectors.toCollection(ObjectArrayList::new));
-		return new ObjectObjectImmutablePair<>(...);
-	})
-	.collect(Collectors.toCollection(ObjectArrayList::new));
+        .stream()
+        .map(vehicleCarAndPosition -> {
+                final ObjectArrayList<PositionAndRotation> bogiePositions = vehicleCarAndPosition.right()
+                        .stream()
+                        .map(...)
+                        .collect(Collectors.toCollection(ObjectArrayList::new));
+                return new ObjectObjectImmutablePair<>(...);
+        })
+        .collect(Collectors.toCollection(ObjectArrayList::new));
 ```
 
 Per vehicle, this allocates one outer stream + one inner stream **per car** + a `Pair` per
@@ -719,3 +719,36 @@ iteration is needed. Most uses in `CustomResourceLoader` are point lookups; swit
 Numbers throughout this document are order-of-magnitude estimates derived from reading,
 not profiling. Profile each item with a JFR recording on a populated world before and
 after each change to confirm the gain.
+
+---
+
+## 6. Per-module predicted execution efficiency (4.1.0-beta-2.yanyang.4)
+
+Order-of-magnitude per-frame / per-tick costs of the client's major modules at steady
+state, derived from the current code paths (post the yanyang.4 fixes listed in
+`CHANGELOG.md`). "N" = visible vehicles, "C" = cars per vehicle, "P" = AI passengers in
+sync range, "Q" = queued textures. Frame assumed 60 FPS, 20 ticks/s.
+
+| Module | Runs | Predicted cost | Notes |
+|---|---|---|---|
+| **Vehicle simulation mirror** (`VehicleExtension.simulate`) | per frame | O(N·C) float math, zero steady-state allocation | Interpolates smoothed rail progress; path metrics precomputed server-side |
+| **Vehicle sound sim** (`PersistentVehicleData.playVehicleSound`) | per frame ×N·C | ~1–3 µs per car; flange adds one wrapped-angle diff | All `VehicleLoopingSoundInstance`s reused; `setData` only toggles active sounds. Scheduled brake/door/air events now play exactly once (was N×) |
+| **Vehicle geometry render** (`RenderVehicles` + native/GL model draw) | per frame ×N·C | O(models per car) draw calls, batched per render layer | GL path: `NewOptimizedModel` per-texture batching; VulkanMod path: protocol v2 native recorder — zero per-draw Java model math |
+| **AI passenger render — platform/street** (`RenderPassengers`) | per frame ×P | ~1 µs per passenger pose math + 1 model draw each; ground scan amortised to ≤1 column scan per passenger per 500 ms (shared 4096-entry LRU) | Was 3 block lookups × area height × P per frame before the yanyang.4 cache |
+| **AI passenger render — on-board** (`RenderVehicles` standee loop) | per frame ×P on visible cars | cached deterministic standing position (LRU 4096), then the same model draw | No per-frame `Random` replay since the position cache landed |
+| **Passenger model renderer** (`PassengerModelRenderer`) | per drawn passenger | ~2–4 µs: walk-cycle trig (5 `cos`), phone-pose lerp, age scale; +1 cuboid (12 quads) for phone watchers | Two shared baked `PlayerModel`s + one shared phone part; animation states LRU 4096 |
+| **Passenger skins** (`PassengerSkinManager`) | per drawn passenger | ~0.1 µs: one volatile array index | Online fetch is a single daemon thread, disk-cached, retried ≥10 min apart |
+| **Rails / block entities / signs** (`RenderRails`, sign renderers, culling) | per frame | Bounded by block-entity culling + occlusion instances; cached geometry (`RailGeometryCache`) | See §3 of this document; the yanyang perf series already applied |
+| **Dynamic textures** (PIDS/displays, `DynamicTextureCache`) | per frame | `tick()` amortised over recent entries; rebuild work on the worker thread | See §2 of this document |
+| **Data sync** (`PacketUpdateDynamicData` split) | per server tick | O(changed ids), incremental; ~4 KB/s steady state | See §4 of this document |
+| **Server-side path finding** (`PathComputePool`) | per request | Bounded parallel batches; path hex id cache | Commit `0f76bba` (perf: bounded parallel path computation) |
+| **Native exchange** (`org.mtr.nativeobj`, Vulkan path) | per frame | One shared-memory poll; model uploads only on (re)build; steady state ~0.1 ms | Vulkan-gated: entirely inactive when VulkanMod is absent |
+
+**Memory ceiling** (steady state): vehicle mirrors O(N·C), passenger render caches ≤ 4096
+entries each (entities, positions, animation states, ground columns), skin pool ≤ 73
+textures (9 vanilla + up to 64 online), model GPU buffers immutable after build.
+
+**Worst-case frame** (crowded station, 50 trains × 8 cars, 200 passengers visible): the
+render queue drains ≤ a few thousand callbacks per frame; the passenger tier contributes
+≤ ~0.8 ms at 200 drawn passengers (was ~2 ms pre-cache), sound sim ≤ ~0.5 ms, vehicle
+math+buffers the remainder — comfortably inside a 16.6 ms frame budget on 2015+ hardware.

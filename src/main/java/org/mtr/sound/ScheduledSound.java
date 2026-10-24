@@ -28,7 +28,13 @@ public final class ScheduledSound {
 	private void play() {
 		final ClientLevel clientWorld = Minecraft.getInstance().level;
 		if (clientWorld != null) {
-			SCHEDULED_SOUNDS.values().forEach(scheduledSound -> clientWorld.playLocalSound(blockPos, soundEvent, SoundSource.BLOCKS, gain, pitch, false));
+			// Play exactly once. The previous upstream implementation iterated ALL
+			// scheduled sounds from inside each instance's play() call (referencing the
+			// enclosing instance's fields inside the lambda), so a tick with N scheduled
+			// sounds played every sound N times — stacked voices caused phasing
+			// distortion and exhausted the sound engine's voice budget, dropping
+			// other tracks entirely (reported as missing BVE sound tracks).
+			clientWorld.playLocalSound(blockPos, soundEvent, SoundSource.BLOCKS, gain, pitch, false);
 		}
 	}
 

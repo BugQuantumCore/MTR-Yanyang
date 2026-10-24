@@ -180,8 +180,8 @@ public final class RenderVehicles {
                                                 VehicleRidingMovement.startRiding(openFloorsAndDoorways, vehicle.vehicleExtraData.getDepotId(), vehicle.vehicleExtraData.getSidingId(), vehicle.getId(), carNumber, playerPosition.x, playerPosition.y, playerPosition.z, absoluteVehicleCarPositionAndRotation.yaw);
                                         }
 
-                                        // Play vehicle sounds
-                                        vehicle.playVehicleSound(vehicleResource, carNumber, absoluteVehicleCarPositionAndRotation.position);
+                                        // Play vehicle sounds (the absolute car yaw drives the flange-squeal yaw rate)
+                                        vehicle.playVehicleSound(vehicleResource, carNumber, absoluteVehicleCarPositionAndRotation.position, absoluteVehicleCarPositionAndRotation.yaw);
 
                                         // Play door sound
                                         if (!openDoorways.isEmpty()) {

@@ -1,143 +1,53 @@
-# Minecraft Transit Railway 4.1.0 — YanYang Optimised (1.21.1 branch)
+# MTR-Yanyang
 
-_Minecraft Transit Railway_ is a [Minecraft mod](https://minecraft.wiki/w/Mods) that lets you build your own transport network with automated trains, boats, cable cars, and planes.
+**Minecraft Transit Railway — YanYang 优化分支** · A [Minecraft Transit Railway](https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway) fork, optimised and extended by the YanYang Technology Group.
 
-> **YanYang Technology Group optimised branch.** This branch (`1.21.1`) is based on the
-> upstream `stonecutter` codebase (4.1.0-beta.2, Minecraft 1.21.1 / 1.21.4) and carries
-> the YanYang performance work forward from the 4.0.5 optimised releases, plus AI
-> passenger fixes and further bug fixes found during the port. It is a branch of the
-> upstream mod and contains optimised content — see
-> [docs/YANYANG_PORT.md](docs/YANYANG_PORT.md) for the full porting notes (what was
-> ported, what was deliberately not ported yet, and why).
+MTR lets you build your own transport network with automated trains, boats, cable cars, and planes. This fork carries the YanYang performance work onto the modern `stonecutter` codebase and adds a native Vulkan rendering pipeline and living station crowds.
 
-Version 4.0.0 is a complete rewrite from scratch.
-The vehicle simulation code is separated from the Minecraft instance, which greatly reduces lag on Minecraft servers.
+| | |
+|---|---|
+| **Minecraft** | 1.21.1 / 1.21.4 |
+| **Loaders** | Fabric · NeoForge |
+| **Version scheme** | `<upstream>-yanyang.N` (e.g. `4.1.0-beta-2.yanyang.4`) |
+| **Downloads** | [Releases](../../releases) — four jars per release, one per version × loader |
 
-## Major Features in 4.0.0
+## Highlights
 
-- Custom train configuration
-- Realistic bogies and train movement
-- Improved signalling
-- Sideways elevators
-- OBJ features ported over from Nemo's Transit Expansion
-- Vehicle swaying effect
-- New online system map and OneBusAway integration
-- Client-side FPS improvements and server-side TPS improvements
+- **Performance series** — client FPS and server TPS improvements ported from the YanYang 4.0.5 releases: split dynamic-data sync, block-entity culling, rail geometry and route-map caches, bounded parallel path computation, render-queue pooling.
+- **Native Vulkan model pipeline (Vulkan-gated)** — when [VulkanMod](https://modrinth.com/mod/vulkanmod) is detected, OBJ/BlockBench models render through a Rust + C++ pipeline over shared memory (Panama FFM exchange, no JNI): all model transform math runs natively; the original OpenGL path is untouched otherwise. Ships 8 prebuilt natives: Windows x64/ARM64, Linux x64/ARM64, macOS ARM64, Android ARM64, iOS/iPadOS ARM64.
+- **VulkanMod & Beryl compatible** — conditional mixins keep MTR/Elementa GUIs and Beryl-shaded world models correct under VulkanMod 0.6.x; fully inert when it's absent.
+- **AI passenger crowds** — deterministic client-side passengers walk between homes, landmarks and platforms and ride trains: vanilla-accurate walk cycles, idle head movement, phone pose **with a phone in hand**, mixed ages (mostly adults, some children), 9 vanilla skins plus optional online skins.
+- **BVE sound system fixes** — scheduled tracks no longer stack N× per tick, and the flange (curve squeal) track is implemented for the first time.
 
-[See these features in detail](https://www.youtube.com/playlist?list=PLp0jZgheSlXuQCXu9UynrKuBnq2Ef_TSI).
+## Requirements
 
-[![Video Trailer](images/footer/video-preview.png)](https://www.youtube.com/watch?v=1cZfU7t4cAk)
-
-Please report any issues or bugs you find; it is greatly appreciated.
-Refer to the [to-do list](https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway/projects/2) to see currently known issues.
-
-## Downloads and Installation
-
-Visit the [Modrinth page](https://modrinth.com/mod/minecraft-transit-railway) to download the mod and view project information.
-
-## Guide
-
-There is a [new wiki](https://wiki.minecrafttransitrailway.com/start) for the mod.
+- Minecraft **1.21.1** or **1.21.4**, with **Fabric Loader + Fabric API** or **NeoForge**.
+- Optional: [VulkanMod](https://modrinth.com/mod/vulkanmod) 0.6.x for the native pipeline.
 
 ## Documentation
 
-- [API](docs/API.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Build](docs/BUILD.md)
-- [Migrations](docs/MIGRATIONS.md)
-- [Performance](docs/PERFORMANCE.md)
-- [Pending work and progress log](docs/PENDING.md)
-- [Runtime Model Loading and Rendering Pipeline](docs/RENDERING_PIPELINE.md)
-- [Running and Testing](docs/RUNNING.md)
-- [Schema](docs/SCHEMA.md)
+- [Changelog](CHANGELOG.md)
+- [Per-module performance](docs/PERFORMANCE.md) · [Native Vulkan pipeline](docs/NATIVE_VULKAN.md) · [Rendering pipeline](docs/RENDERING_PIPELINE.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Build](docs/BUILD.md) · [YanYang porting notes](docs/YANYANG_PORT.md)
+- Upstream wiki (gameplay): <https://wiki.minecrafttransitrailway.com/start>
 
-## Recommended Addons and Resource Packs
+## Building from source
 
-- [MTR London Underground Addon](https://modrinth.com/mod/the-tube)
-- [Joban Client Mod](https://modrinth.com/mod/jcm)
-- [Station Decoration](https://modrinth.com/mod/station-decoration)
-- [Russian Metro Addon](https://modrinth.com/mod/russian-metro-addon)
-- [Tianjin Metro](https://modrinth.com/mod/tianjin-metro)
+Requires JDK 21+ and Node.js 24.
 
-For a full list, check out [this site](https://addons.minecrafttransitrailway.com/).
+```bash
+# 1) Build the Transport-Simulation-Core fork into mavenLocal (org.mtr:transport-simulation-core)
+git clone https://github.com/Yanyang-Technology-Group/Transport-Simulation-Core
+cd Transport-Simulation-Core && git apply --3way ../MTR-Yanyang/.github/tsc-fork-ci.patch
+./gradlew -p buildSrc publishToMavenLocal && ./gradlew publishToMavenLocal
 
-## Contributing
-
-### Help Translate the Mod!
-
-The [Crowdin site for Minecraft Transit Railway](https://crowdin.com/project/minecraft-transit-railway) is available.
-
-Crowdin is a cloud-based platform where translators can contribute to the project.
-With your help, we can translate the mod into many different languages.
-You can create a free account to start translating.
-
-[![Crowdin](https://badges.crowdin.net/minecraft-transit-railway/localized.svg)](https://crowdin.com/project/minecraft-transit-railway)
-
-### Adding Features
-
-1. Fork this project
-2. In your fork, create a new branch based on the development version branch
-3. Commit your changes to the new branch
-4. Open a Pull Request to merge your branch into the development version of this repository
-
-> Please be sure to [sign all your GitHub commits](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)!
-
-### Building
-
-To build the mod, this project uses **Stonecutter** for managing multi-platform (Fabric + NeoForge) and multi-version builds.
-
-The build resolves `org.mtr:transport-simulation-core:+` from GitHub Packages. For local development, create a GitHub [personal access token (classic)](https://github.com/settings/tokens) with at least the `read:packages` scope, then add your credentials to your Gradle user-home properties file:
-
-`C:\Users\<you>\.gradle\gradle.properties`
-
-```properties
-gpr.user=<your-github-username>
-gpr.key=<your-personal-access-token>
+# 2) Build the mod (each version × loader is a stonecutter project)
+cd ../MTR-Yanyang
+./gradlew :1.21.1-fabric:build :1.21.1-neoforge:build :1.21.4-fabric:build :1.21.4-neoforge:build
 ```
 
-As an alternative, Gradle will also use the `GITHUB_TOKEN` environment variable when it is set.
+Jars are produced under `build/release/`.
 
-From the repository root:
+## Credits & Licence
 
-```powershell
-# Setup files (one-time); also builds website/ automatically when Node.js is available
-.\gradlew.bat setupFiles -PcrowdinApiKey="<key>" -PpatreonApiKey="<key>"
-# (If Node.js is unavailable, build website/ manually first: cd website && npm install && npm run build)
-# The Transport System Map website ships inside the transport-simulation-core dependency;
-# the build verifies it is embedded and fails clearly if the artifact is broken.
-
-# Set active version and build Fabric
-.\gradlew.bat "Set active project to 1.21.4-fabric"
-.\gradlew.bat 1.21.4-fabric:build
-
-# Set active version and build NeoForge
-.\gradlew.bat "Set active project to 1.21.4-neoforge"
-.\gradlew.bat 1.21.4-neoforge:build
-```
-
-The mod JAR files should be generated in the following directory:
-
-```
-<root>/build/release/MTR-<fabric|neoforge>-<mod_version>+<minecraft_version>.jar
-```
-
-For full build instructions, see [docs/BUILD.md](docs/BUILD.md).
-
-## Licence
-
-This project is licensed under the [MIT License](https://opensource.org/licenses/MIT). All fonts bundled with this mod are licensed under the [Open Font License](https://openfontlicense.org/).
-
-- [Noto](https://fonts.google.com/noto)
-- [正風毛筆字體](https://github.com/max32002/masafont)
-
-## Questions? Comments? Complaints?
-
-Let's connect.
-
-<a href="https://discord.gg/PVZ2nfUaTW" target="_blank"><img src="https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway/blob/master/images/footer/discord.png" alt="Discord" width=64></a>
-&nbsp;
-<a href="https://www.linkedin.com/in/jonathanho33" target="_blank"><img src="https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway/blob/master/images/footer/linked_in.png" alt="LinkedIn" width=64></a>
-&nbsp;
-<a href="mailto:jonho.minecraft@gmail.com" target="_blank"><img src="https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway/blob/master/images/footer/email.png" alt="Email" width=64></a>
-&nbsp;
-<a href="https://www.patreon.com/minecraft_transit_railway" target="_blank"><img src="https://github.com/Minecraft-Transit-Railway/Minecraft-Transit-Railway/blob/master/images/footer/patreon.png" alt="Patreon" width=64></a>
+Upstream **Minecraft Transit Railway** by [Jonathan Ho](https://github.com/jonafanho) and contributors — this fork tracks upstream and merges its changes. Mod code is [MIT](LICENSE); bundled fonts are under the Open Font License ([Noto](https://fonts.google.com/noto), [正風毛筆字體](https://github.com/max32002/masafont)).

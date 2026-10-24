@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.sounds.SoundEvent;
 import org.jspecify.annotations.Nullable;
 import org.mtr.MTRClient;
+import org.mtr.libraries.it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 
 import java.util.Random;
@@ -22,7 +23,9 @@ public class BveVehicleSound extends VehicleSoundBase {
 	private boolean isCompressorActiveLastElapsed;
 
 	private final int defaultRunSoundIndex;
+	private final int defaultFlangeSoundIndex;
 	private final VehicleLoopingSoundHolder vehicleLoopingSoundHolder;
+	private float oldYaw = Float.NaN;
 
 	public BveVehicleSound(BveVehicleSoundConfig config) {
 		this.config = config;
@@ -37,18 +40,30 @@ public class BveVehicleSound extends VehicleSoundBase {
 		final Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopRun = new Int2ObjectOpenHashMap<>();
 
 		for (final int key : config.config.run.keySet()) {
-			if (firstRunIndex == -1) {
+			if (firstRunIndex == -1 || key < firstRunIndex) {
 				firstRunIndex = key;
 			}
 			soundLoopRun.put(key, new VehicleLoopingSoundInstance(config.config.run.get(key)));
 		}
 
+		// The fallback index must be deterministic: previously it was the first key the hash
+		// map iteration happened to yield, so a missing rail sound index resolved to a random track.
 		defaultRunSoundIndex = Math.max(0, firstRunIndex);
+
+		int firstFlangeIndex = -1;
+		final Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopFlange = new Int2ObjectOpenHashMap<>();
+		for (final Int2ObjectMap.Entry<SoundEvent> entry : config.config.flange.int2ObjectEntrySet()) {
+			if (firstFlangeIndex == -1 || entry.getIntKey() < firstFlangeIndex) {
+				firstFlangeIndex = entry.getIntKey();
+			}
+			soundLoopFlange.put(entry.getIntKey(), new VehicleLoopingSoundInstance(entry.getValue()));
+		}
+		defaultFlangeSoundIndex = Math.max(0, firstFlangeIndex);
 
 		vehicleLoopingSoundHolder = new VehicleLoopingSoundHolder(
 			soundLoopMotor,
 			soundLoopRun,
-			config.config.flange.isEmpty() ? null : new VehicleLoopingSoundInstance(config.config.flange.get(0)),
+			soundLoopFlange.isEmpty() ? null : soundLoopFlange,
 			config.config.noise == null ? null : new VehicleLoopingSoundInstance(config.config.noise),
 			config.config.shoe == null ? null : new VehicleLoopingSoundInstance(config.config.shoe),
 			config.config.compressorLoop == null ? null : new VehicleLoopingSoundInstance(config.config.compressorLoop)
@@ -143,9 +158,27 @@ public class BveVehicleSound extends VehicleSoundBase {
 			vehicleLoopingSoundInstance.setData(volume, pitch, blockPos);
 		});
 
-		// Flange noise
+		// Flange noise (curve squeal). Upstream never drove this track (it was permanently muted at
+		// zero volume and only the first sound.cfg entry was ever wired up), which users heard as
+		// BVE sound tracks going missing. The gain is now derived from the car's yaw rate: turning
+		// through a curve at speed makes the wheels squeal, exactly like the flange noise in BVE.
+		// The flange entry follows the current rail run sound index when the sound pack defines one
+		// for it, so different rail types can have their own squeal, falling back to the lowest entry.
 		if (vehicleLoopingSoundHolder.soundLoopFlange != null) {
-			vehicleLoopingSoundHolder.soundLoopFlange.setData(0, 1, blockPos);
+			final float yawChange = Float.isNaN(oldYaw) ? 0 : VehicleSoundBase.wrapAngleRadians(input.yaw() - oldYaw);
+			oldYaw = input.yaw();
+			final float yawRate = secondsElapsed > 0 ? Math.abs(yawChange) / secondsElapsed : 0; // radians per second
+
+			// No squeal at walking pace; ramp in between 2.5 and 4 m/s and gently fade above 25 m/s.
+			final float speedFactor = Math.min(1, Math.max(0, speedMetersPerSecond - 2.5F) / 1.5F) * (1 - Math.min(0.6F, Math.max(0, speedMetersPerSecond - 25F) / 40F));
+			// About 17 degrees per second of yaw already gives the full squeal.
+			final float rateFactor = Math.min(1, yawRate / 0.3F);
+			final float flangeGain = Math.min(0.85F, rateFactor * speedFactor);
+			final float flangePitch = 0.75F + 0.35F * rateFactor;
+
+			final int flangeIndex = runSound != null && vehicleLoopingSoundHolder.soundLoopFlange.containsKey(runSound.index()) ? runSound.index() : defaultFlangeSoundIndex;
+			vehicleLoopingSoundHolder.soundLoopFlange.forEach((index, vehicleLoopingSoundInstance) ->
+					vehicleLoopingSoundInstance.setData(index == flangeIndex ? flangeGain : 0, flangePitch, blockPos));
 		}
 
 		// Brake shoe rubbing noise (below regeneration brake cutoff limit)
@@ -216,7 +249,7 @@ public class BveVehicleSound extends VehicleSoundBase {
 		return new Random().nextInt(maxExclusive - minInclusive) + minInclusive;
 	}
 
-	private record VehicleLoopingSoundHolder(Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopMotor, Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopRun, @Nullable VehicleLoopingSoundInstance soundLoopFlange, @Nullable VehicleLoopingSoundInstance soundLoopNoise, @Nullable VehicleLoopingSoundInstance soundLoopShoe, @Nullable VehicleLoopingSoundInstance soundLoopCompressor) {
+	private record VehicleLoopingSoundHolder(Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopMotor, Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopRun, @Nullable Int2ObjectOpenHashMap<VehicleLoopingSoundInstance> soundLoopFlange, @Nullable VehicleLoopingSoundInstance soundLoopNoise, @Nullable VehicleLoopingSoundInstance soundLoopShoe, @Nullable VehicleLoopingSoundInstance soundLoopCompressor) {
 
 		public void dispose() {
 			for (final VehicleLoopingSoundInstance instance : soundLoopMotor.values()) {
@@ -232,7 +265,9 @@ public class BveVehicleSound extends VehicleSoundBase {
 			}
 
 			if (soundLoopFlange != null) {
-				soundLoopFlange.dispose();
+				for (final VehicleLoopingSoundInstance instance : soundLoopFlange.values()) {
+					instance.dispose();
+				}
 			}
 
 			if (soundLoopNoise != null) {

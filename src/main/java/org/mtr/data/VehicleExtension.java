@@ -304,9 +304,11 @@ public class VehicleExtension extends Vehicle implements Utilities {
 
 	/**
 	 * Plays vehicle motor/run sounds for the given car, using the current speed, acceleration, and rail run sound state.
+	 *
+	 * @param yaw the absolute (world) yaw of the car in radians, used to derive the yaw rate that drives flange squeal
 	 */
-	public void playVehicleSound(VehicleResource vehicleResource, int carNumber, Vector bogiePosition) {
-		persistentVehicleData.playVehicleSound(vehicleResource, carNumber, BlockPos.containing(bogiePosition.x(), bogiePosition.y(), bogiePosition.z()), (float) speed, (float) (speed - oldSpeed), (float) vehicleExtraData.getAcceleration(), getIsOnRoute());
+	public void playVehicleSound(VehicleResource vehicleResource, int carNumber, Vector bogiePosition, float yaw) {
+		persistentVehicleData.playVehicleSound(vehicleResource, carNumber, BlockPos.containing(bogiePosition.x(), bogiePosition.y(), bogiePosition.z()), (float) speed, (float) (speed - oldSpeed), (float) vehicleExtraData.getAcceleration(), getIsOnRoute(), yaw);
 	}
 
 	public void playDoorSound(VehicleResource vehicleResource, int carNumber, Vector vehiclePosition) {

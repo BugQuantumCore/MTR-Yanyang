@@ -10,6 +10,7 @@ import org.mtr.client.MinecraftClientData;
 import org.mtr.core.data.*;
 import org.mtr.core.tool.Utilities;
 import org.mtr.core.tool.Vector;
+import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.mtr.tool.CullingHelper;
 import org.mtr.tool.Drawing;
@@ -50,6 +51,18 @@ public class RenderPassengers {
 
 	private static final int RESOLUTION = 1000000;
 	private static final long GOLDEN_RATIO_FRACTION = 0x9E3779B97F4A7C15L;
+
+	/**
+	 * Ground-height scan results, cached per quantised world column (0.5 blocks) and scan
+	 * Y-range for {@link #GROUND_SCAN_CACHE_MILLIS} milliseconds. Previously every idle or
+	 * walking passenger re-scanned up to 3 block states per candidate Y level EVERY frame
+	 * (a platform with 50 passengers was thousands of block lookups per frame); the result
+	 * is a pure function of the column and the scan range, so all passengers on the same
+	 * platform share entries.
+	 */
+	private static final int GROUND_SCAN_CACHE_MILLIS = 500;
+	private static final int GROUND_SCAN_CACHE_LIMIT = 4096;
+	private static final Long2ObjectLinkedOpenHashMap<CachedGroundY> GROUND_SCAN_CACHE = new Long2ObjectLinkedOpenHashMap<>();
 
 	public static void render() {
 		final MinecraftClientData minecraftClientData = MinecraftClientData.getInstance();
@@ -175,18 +188,51 @@ public class RenderPassengers {
 
 			final double animationSpeed = getWanderAnimationSpeed(walkingTime, progress, walkingSpeed);
 
-			for (long y = area.getMinY(); y <= area.getMaxY(); y++) {
-				final BlockPos checkPos1 = BlockPos.containing(x, y - 1, z);
-				final BlockPos checkPos2 = BlockPos.containing(x, y, z);
-				final BlockPos checkPos3 = BlockPos.containing(x, y + 1, z);
-
-				if (!clientWorld.getBlockState(checkPos1).isAir() && clientWorld.getBlockState(checkPos2).isAir() && clientWorld.getBlockState(checkPos3).isAir()) {
-					return new PositionAndYaw(x, y, z, yaw, animationSpeed);
-				}
-			}
-
-			return new PositionAndYaw(x, clientWorld.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) Math.floor(x), (int) Math.floor(z)), z, yaw, animationSpeed);
+			return new PositionAndYaw(x, findGroundY(clientWorld, x, z, area.getMinY(), area.getMaxY()), z, yaw, animationSpeed);
 		}
+	}
+
+	/**
+	 * Scans the candidate Y levels for the first stand-on-able block, with the shared
+	 * time-bounded column cache. The heightmap fallback (no standable level found in the
+	 * whole area Y-range) is rare and is cached with the same key so identical scans
+	 * within the TTL short-circuit before re-scanning.
+	 */
+	private static long findGroundY(ClientLevel clientWorld, double x, double z, long minY, long maxY) {
+		final long quantisedX = (long) Math.floor(x * 2);
+		final long quantisedZ = (long) Math.floor(z * 2);
+		final long cacheKey = quantisedX * GOLDEN_RATIO_FRACTION ^ quantisedZ * 0xC2B2AE3D27D4EB4FL ^ minY * 0x165667B19E3779F9L ^ maxY * 0x27D4EB2F165667C5L;
+		final long now = System.currentTimeMillis();
+
+		final CachedGroundY cached = GROUND_SCAN_CACHE.getAndMoveToFirst(cacheKey);
+		if (cached != null && now - cached.time() <= GROUND_SCAN_CACHE_MILLIS) {
+			return cached.y();
+		}
+
+		for (long y = minY; y <= maxY; y++) {
+			final BlockPos checkPos1 = BlockPos.containing(x, y - 1, z);
+			final BlockPos checkPos2 = BlockPos.containing(x, y, z);
+			final BlockPos checkPos3 = BlockPos.containing(x, y + 1, z);
+
+			if (!clientWorld.getBlockState(checkPos1).isAir() && clientWorld.getBlockState(checkPos2).isAir() && clientWorld.getBlockState(checkPos3).isAir()) {
+				cacheGroundY(cacheKey, y, now);
+				return y;
+			}
+		}
+
+		final long fallbackY = clientWorld.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) Math.floor(x), (int) Math.floor(z));
+		cacheGroundY(cacheKey, fallbackY, now);
+		return fallbackY;
+	}
+
+	private static void cacheGroundY(long cacheKey, long y, long now) {
+		GROUND_SCAN_CACHE.putAndMoveToFirst(cacheKey, new CachedGroundY(y, now));
+		while (GROUND_SCAN_CACHE.size() > GROUND_SCAN_CACHE_LIMIT) {
+			GROUND_SCAN_CACHE.removeLast();
+		}
+	}
+
+	private record CachedGroundY(long y, long time) {
 	}
 
 	private static PositionAndYaw getIdlePosition(Platform platform, long passengerId) {

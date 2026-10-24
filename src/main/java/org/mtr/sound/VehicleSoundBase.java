@@ -26,7 +26,23 @@ public abstract class VehicleSoundBase {
 
 	protected abstract double getDoorCloseSoundTime();
 
-	public record VehicleSoundParameters(@Nullable RunSoundInfo runSound, BlockPos blockPos, float speed, float speedChange, float acceleration, boolean isOnRoute) {
+	public record VehicleSoundParameters(@Nullable RunSoundInfo runSound, BlockPos blockPos, float speed, float speedChange, float acceleration, boolean isOnRoute, float yaw) {
+	}
+
+	/**
+	 * Wraps an angle in radians into the -pi..pi range, used by the flange-yaw-rate calculation.
+	 *
+	 * @param angle the raw angle difference in radians
+	 * @return the equivalent angle within -pi..pi
+	 */
+	public static float wrapAngleRadians(float angle) {
+		while (angle > Math.PI) {
+			angle -= (float) (Math.PI * 2);
+		}
+		while (angle < -Math.PI) {
+			angle += (float) (Math.PI * 2);
+		}
+		return angle;
 	}
 
 	/**
