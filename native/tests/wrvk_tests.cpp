@@ -228,12 +228,10 @@ int main() {
                 // the pending texture upload flushed on this frame: barrier pair + copy
                 check(dispatch.bufferImageCopies.size() == 1, "pool upload flushed on the frame");
                 check(dispatch.imageBarriers.size() == 2, "barrier pair around the copy");
-                check(dispatch.descriptorImageInfos.size() == 2, "one descriptor write per item");
-                if (dispatch.descriptorImageInfos.size() == 2) {
+                check(dispatch.descriptorImageInfos.size() == 1, "one descriptor write per distinct texture (shared texture reuses the set)");
+                if (!dispatch.descriptorImageInfos.empty()) {
                         check(dispatch.descriptorImageInfos[0].view != 0 && dispatch.descriptorImageInfos[0].sampler != 0,
                                 "descriptor uses the pool view + sampler");
-                        check(dispatch.descriptorImageInfos[0].view == dispatch.descriptorImageInfos[1].view,
-                                "shared pool texture binds the same view");
                 }
                 check(firstOpIndex(dispatch, wrvk::RecordingDispatch::Op::CmdCopyBufferToImage)
                                 < firstOpIndex(dispatch, wrvk::RecordingDispatch::Op::CmdSetViewport),
@@ -651,6 +649,82 @@ int main() {
                 }
                 // the pool texture with key 7 still exists; only the binding changed
                 check(env.recorder->liveTextureCount() == 2, "pool untouched by the override");
+        }
+
+        std::printf("wrvk: descriptor cache keeps deep scenes inside the budget\n");
+        {
+                TestEnv env;
+                wrx::GpuMesh mesh;
+                mesh.vertices.resize(3 * wrx::VERTEX_BYTES);
+                mesh.indices = {0, 1, 2};
+                const uint8_t kd[4] = {255, 255, 255, 255};
+                check(env.recorder->uploadMesh(60, mesh, kd), "mesh uploaded");
+                uint8_t pixels[64];
+                std::memset(pixels, 0x33, sizeof(pixels));
+                check(env.recorder->uploadTexture(11, 4, 4, pixels, sizeof(pixels)), "pool texture uploaded");
+
+                // 600 items sharing one texture — the first revision allocated a
+                // descriptor set per item and the 512-set pool dropped everything
+                // past item 512 (silently missing model parts)
+                std::vector<wrx::FrameItem> items(600);
+                for (uint32_t i = 0; i < items.size(); i++) {
+                        items[i] = makeItem(60, 11, 3, 15);
+                }
+                wrx::FrameHeader header = basicHeader();
+                header.itemCount = static_cast<uint32_t>(items.size());
+                // count only the allocations this frame performs — attachHost
+                // already logged the 64 UBO set allocations
+                const size_t logSizeBefore = env.dispatch.log.size();
+                check(env.recorder->recordFrame(header, nullptr,
+                                reinterpret_cast<const uint8_t*>(items.data())), "deep frame recorded");
+                check(env.dispatch.drawCalls == items.size(), "every item drew");
+                check(env.dispatch.descriptorImageInfos.size() == 1, "one descriptor write for the shared texture");
+                size_t frameAllocations = 0;
+                for (size_t i = logSizeBefore; i < env.dispatch.log.size(); i++) {
+                        if (env.dispatch.log[i].op == wrvk::RecordingDispatch::Op::AllocateDescriptorSets) {
+                                frameAllocations++;
+                        }
+                }
+                check(frameAllocations == 1, "one descriptor set allocated for the shared texture");
+        }
+
+        std::printf("wrvk: external view change rewrites the cached set\n");
+        {
+                TestEnv env;
+                wrx::GpuMesh mesh;
+                mesh.vertices.resize(3 * wrx::VERTEX_BYTES);
+                mesh.indices = {0, 1, 2};
+                const uint8_t kd[4] = {255, 255, 255, 255};
+                check(env.recorder->uploadMesh(70, mesh, kd), "mesh uploaded");
+
+                wrx::FrameHeader header = basicHeader();
+                header.externalTextureCount = 1;
+                wrx::FrameExternal external{};
+                external.key = 21;
+                external.image = 0xDEAD0000;
+                external.view = 0xAAAA0001;
+                external.sampler = 0xAAAA0002;
+                wrx::FrameItem item = makeItem(70, 21, 3, 15);
+                header.itemCount = 1;
+
+                check(env.recorder->recordFrame(header,
+                                reinterpret_cast<const uint8_t*>(&external),
+                                reinterpret_cast<const uint8_t*>(&item)), "frame one recorded");
+                check(env.dispatch.descriptorImageInfos.size() == 1, "one write in frame one");
+                check(!env.dispatch.descriptorImageInfos.empty()
+                                && env.dispatch.descriptorImageInfos[0].view == 0xAAAA0001,
+                        "frame one binds the external view");
+
+                // the SAME key resolves to a fresh handle next frame (animated
+                // textures VulkanMod re-creates) — the cached set must be rewritten
+                external.view = 0xBBBB0001;
+                check(env.recorder->recordFrame(header,
+                                reinterpret_cast<const uint8_t*>(&external),
+                                reinterpret_cast<const uint8_t*>(&item)), "frame two recorded");
+                check(env.dispatch.descriptorImageInfos.size() == 2, "the view change rewrites the set");
+                check(env.dispatch.descriptorImageInfos.size() == 2
+                                && env.dispatch.descriptorImageInfos[1].view == 0xBBBB0001,
+                        "frame two binds the new external view");
         }
 
         std::printf("wrvk: allocation failure paths never corrupt state\n");

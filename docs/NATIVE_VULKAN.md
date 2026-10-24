@@ -19,7 +19,8 @@ The byte contract lives in `native/include/wrx/wrx.hpp` and is mirrored in
 |-------------------------------------|----------------------------------------------------------------|
 | no VulkanMod (OpenGL)               | the original Java/OpenGL renderer — byte-identical, untouched  |
 | VulkanMod, no shader pipeline       | **native pipeline** (this document)                            |
-| VulkanMod + Beryl                   | Java renderer through Beryl's own pipelines (see below)        |
+| VulkanMod + Beryl, shaders off      | **native pipeline** (this document) — Beryl is dormant          |
+| VulkanMod + Beryl, shaders on       | Java renderer through Beryl's own pipelines (see below)        |
 
 Activation is automatic and conservative (`NativeRuntime.initialise`): the
 pipeline only boots when VulkanMod is detected and every Vulkan handle
@@ -27,14 +28,39 @@ resolves; any failure latches the session back to the Java renderer with one
 log line. There is no user toggle — the graphics API being Vulkan *is* the
 switch.
 
+**Beryl gating is a runtime check, not mod presence.** Beryl being
+*installed* is not the same as Beryl *driving the frame*: with its shaders
+disabled, Beryl's `RenderingPipeline.beginRender` returns before touching
+anything and the frame is plain VulkanMod. `VulkanCompat.isBerylActive()`
+reads Beryl's own runtime flag (`RenderingPipeline.useShaderPipeline`,
+fallback `BerylMod.CONFIG.shadersOn`) so:
+
+* the boot defers — without latching — while Beryl's shaders are on, and
+  boots the moment they are off (the deferral is one cached-field reflection
+  read per frame);
+* the render drain re-checks every pass, so Beryl's keybind toggle takes
+  effect immediately;
+* a mid-session toggle rebuilds the models for the new path
+  (`MainRenderer.render` watches the state and calls
+  `CustomResourceLoader.reload()`), because models are built for one path at
+  load time — dual-path models (native mesh **and** GL vertex buffer, see
+  `NewOptimizedModelGroup.build`) cover the transition window;
+* `CustomResourceLoader.reload()` boots the runtime *before* parsing models,
+  so every rebuild picks the native path from its very first model.
+
+The original class-presence-only check disabled the native pipeline
+permanently for anyone with the Beryl jar in their mods folder — even with
+shaders off — which silently routed every model through the Java GL path
+under VulkanMod (mispositioned/stretched geometry, missing parts).
+
 **Beryl exception (by design):** Beryl swaps every entity-family shader for
 its own G-buffer pipelines and composes the swapchain itself at the end of
 the frame. Geometry recorded straight into VulkanMod's command buffer (the
 native path) would either bypass Beryl's G-buffers entirely or be overwritten
-by Beryl's fullscreen compose — so under Beryl the Java renderer draws MTR
-models through Beryl's own pipelines (with the `VulkanFrameState` per-draw
-bridge keeping positions correct). Models are shaded by Beryl there; the
-native path cannot offer that.
+by Beryl's fullscreen compose — so while Beryl's shaders are on, the Java
+renderer draws MTR models through Beryl's own pipelines (with the
+`VulkanFrameState` per-draw bridge keeping positions correct). Models are
+shaded by Beryl there; the native path cannot offer that.
 
 ## The data flow (v2)
 

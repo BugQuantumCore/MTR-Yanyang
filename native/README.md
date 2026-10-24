@@ -64,7 +64,7 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
 
 ```bash
 native/build.sh wrobj_tests run   # 198 checks (parser/builder semantics)
-native/build.sh wrvk_tests  run   # 172 checks (command stream, texture pool, native math, leaks)
+native/build.sh wrvk_tests  run   # 184 checks (command stream, texture pool, native math, descriptor cache, leaks)
 native/build.sh wrctor_tests run  # 22 checks (dlopen ctor boot smoke)
 (cd native/rust/wrxr && cargo test --release --offline)
                                    # 11 tests (transport protocol round-trips, v2 frame

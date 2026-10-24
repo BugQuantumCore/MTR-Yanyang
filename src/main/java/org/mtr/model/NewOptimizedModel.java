@@ -41,8 +41,9 @@ public final class NewOptimizedModel {
 	/**
 	 * The native Vulkan mesh when this model was built through the native
 	 * pipeline (see {@code docs/NATIVE_VULKAN.md}); null means the GL path.
-	 * When present, {@link #begin} is a no-op and {@link #render} queues the
-	 * draw through the native frame recorder instead of issuing GL commands.
+	 * Dual-path build: when present, the GL {@link #vertexBuffer} is built
+	 * too, and the render drain decides per frame which path draws — native
+	 * under plain VulkanMod, GL under Beryl's pipeline or on plain OpenGL.
 	 */
 	@Nullable
 	private final NativeModel nativeModel;
@@ -109,11 +110,6 @@ public final class NewOptimizedModel {
 	/*public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable ShaderInstance shaderProgram) {
 //
 *///? }
-		if (nativeModel != null) {
-			// the native drain queues this mesh into the Vulkan frame; GL state
-			// must stay untouched so the surrounding passes stay exact
-			return;
-		}
 		if (vertexBuffer != null && shaderProgram != null) {
 			// Full per-instance model-view: camera view (RenderSystem snapshot) * pose.
 			// The vanilla uniform channel below is what the pure-GL path and VulkanMod's
@@ -185,9 +181,6 @@ public final class NewOptimizedModel {
 	/*public void begin(@Nullable ShaderInstance shaderProgram) {
 //
 *///? }
-		if (nativeModel != null) {
-			return;
-		}
 		if (vertexBuffer != null && shaderProgram != null) {
 			vertexBuffer.bind();
 			shaderProgram.setDefaultUniforms(drawMode, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), Minecraft.getInstance().getWindow());

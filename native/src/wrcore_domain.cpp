@@ -238,6 +238,12 @@ struct Core {
                 std::vector<GroupBuild> groupBuilds;
                 std::vector<wrx::MeshInfo> groupMeshesScratch;
 
+                // mesh ids registered by THIS request — the failure path unwinds
+                // exactly these (nextMeshId is global, so a partial failure must
+                // not leave half-registered models behind)
+                std::vector<uint32_t> registeredMeshIds;
+                bool uploadFailed = false;
+
                 const auto buildOne = [&](WrObjBuilder* builder, const std::string& groupName) {
                         if (builder == nullptr) {
                                 return;
@@ -289,10 +295,15 @@ struct Core {
                                 }
                                 std::memcpy(info.aabb, bounds, sizeof(bounds));
 
-                                meshIndex[info.meshId] = mesh;
-                                if (recorder != nullptr) {
-                                        recorder->uploadMesh(info.meshId, *mesh, info.kd);
+                                // The GPU upload can fail (mesh budget / device allocation);
+                                // a failed mesh would draw nothing while the reply claimed
+                                // success, so track it and fail the whole request — Java
+                                // then falls back to the javagl loader for this model.
+                                if (recorder != nullptr && !recorder->uploadMesh(info.meshId, *mesh, info.kd)) {
+                                        uploadFailed = true;
                                 }
+                                meshIndex[info.meshId] = mesh;
+                                registeredMeshIds.push_back(info.meshId);
                                 groupMeshesScratch.push_back(std::move(info));
                         }
                         wr_obj_result_free(result);
@@ -339,6 +350,21 @@ struct Core {
                         }
                 }
                 wr_obj_keys_free(keys);
+
+                if (uploadFailed) {
+                        // Unwind every mesh this request registered and report the
+                        // failure: Java falls back to the javagl loader for the whole
+                        // model (correct rendering beats a partially-invisible one).
+                        for (const uint32_t meshId : registeredMeshIds) {
+                                if (recorder != nullptr) {
+                                        recorder->freeMesh(meshId); // no-op for meshes the upload rejected
+                                }
+                                meshIndex.erase(meshId);
+                        }
+                        buildErrorReply(requestId, wrx::ERR_OVERFLOW);
+                        out = finishResult(WRCORE_OK, 0, wrx::RES_ERROR, true);
+                        return true;
+                }
 
                 // reply: requestId, groupCount, per group {name, modelId, meshCount, meshes...}
                 reply.clear();
@@ -406,6 +432,12 @@ struct Core {
                 model->meshInfos = source.meshInfos;
                 model->meshes.reserve(source.meshes.size());
 
+                // mesh ids created by THIS request — the failure path unwinds
+                // exactly these (identity aliases share the source GPU buffers,
+                // so freeing them only drops this request's references)
+                std::vector<uint32_t> createdMeshIds;
+                bool uploadFailed = false;
+
                 for (size_t i = 0; i < source.meshes.size(); i++) {
                         const wrx::GpuMesh& src = *source.meshes[i];
                         auto mesh = identity ? source.meshes[i] : std::make_shared<wrx::GpuMesh>();
@@ -456,10 +488,27 @@ struct Core {
                         }
                         const uint32_t meshId = nextMeshId++;
                         model->meshInfos[i].meshId = meshId;
-                        if (recorder != nullptr) {
-                                recorder->uploadMesh(meshId, *mesh, model->meshInfos[i].kd);
+                        // A failed GPU upload must not masquerade as a placed
+                        // instance (every draw would silently skip): track it and
+                        // fail the request so Java at least knows the placement
+                        // is gone instead of rendering a hole.
+                        if (recorder != nullptr && !recorder->uploadMesh(meshId, *mesh, model->meshInfos[i].kd)) {
+                                uploadFailed = true;
                         }
                         meshIndex[meshId] = std::move(mesh);
+                        createdMeshIds.push_back(meshId);
+                }
+
+                if (uploadFailed) {
+                        for (const uint32_t meshId : createdMeshIds) {
+                                if (recorder != nullptr) {
+                                        recorder->freeMesh(meshId); // no-op for meshes the upload rejected
+                                }
+                                meshIndex.erase(meshId);
+                        }
+                        buildErrorReply(requestId, wrx::ERR_OVERFLOW);
+                        out = finishResult(WRCORE_OK, 0, wrx::RES_ERROR, true);
+                        return true;
                 }
 
                 reply.clear();
@@ -680,14 +729,21 @@ struct Core {
                 // info.name stays empty: only RES_MODELS replies carry material
                 // names, and the Java caller already knows its texture/stage.
 
+                // The GPU upload can fail (mesh budget / device allocation). The
+                // first revision reported success anyway, leaving a model whose
+                // every draw was silently skipped; propagate the failure so Java
+                // falls back to the GL path for this model.
+                if (recorder != nullptr && !recorder->uploadMesh(info.meshId, *mesh, info.kd)) {
+                        buildErrorReply(requestId, wrx::ERR_OVERFLOW);
+                        out = finishResult(WRCORE_OK, 0, wrx::RES_ERROR, true);
+                        return true;
+                }
+
                 auto model = std::make_unique<ModelEntry>();
                 model->modelId = nextModelId++;
                 model->meshInfos.push_back(info);
                 model->meshes.push_back(mesh);
                 meshIndex[info.meshId] = mesh;
-                if (recorder != nullptr) {
-                        recorder->uploadMesh(info.meshId, *mesh, info.kd);
-                }
 
                 // reply: requestId, modelId, meshCount(=1), { meshId, aabb[6] }
                 reply.clear();

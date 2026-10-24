@@ -79,6 +79,14 @@ public class MainRenderer {
         @Getter
         private static long timerMillis;
         private static long lastRenderedMillis;
+        /**
+         * Beryl pipeline state mirror for the mid-session toggle detector in
+         * {@link #render} — {@code berylStateInitialized} stays {@code false}
+         * until the first frame establishes the baseline (the first frame must
+         * not trigger a rebuild).
+         */
+        private static boolean berylStateInitialized;
+        private static boolean berylActiveLast;
 
         /**
          * Shared off-main-thread worker for occlusion culling and dynamic texture generation.
@@ -157,6 +165,22 @@ public class MainRenderer {
                 // ever unmaps the exchange region.
                 org.mtr.nativeobj.NativeRuntime.initialise();
                 org.mtr.nativeobj.NativeRuntime.tickTeardown();
+
+                // Beryl's keybind toggles its shader pipeline while the client runs,
+                // and the renderer that must own the models changes with it (native
+                // under plain VulkanMod, Java GL under Beryl). Models are built for
+                // one path at load time, so a toggle triggers a full rebuild — the
+                // same reload F3+T performs. Dual-path models (native mesh + GL
+                // buffer) cover the transition window while the rebuild runs.
+                final boolean berylActiveNow = org.mtr.client.VulkanCompat.isVulkanModActive() && org.mtr.client.VulkanCompat.isBerylActive();
+                if (berylStateInitialized && berylActiveNow != berylActiveLast) {
+                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline {} — rebuilding the MTR models for the {} renderer",
+                                        berylActiveNow ? "enabled" : "disabled",
+                                        berylActiveNow ? "Java GL" : "native Vulkan");
+                        org.mtr.client.CustomResourceLoader.reload();
+                }
+                berylActiveLast = berylActiveNow;
+                berylStateInitialized = true;
 
                 final long millisElapsed = getMillisElapsed();
                 timerMillis += millisElapsed;
@@ -348,8 +372,14 @@ public class MainRenderer {
                 // records them inside VulkanMod's command buffer — no model-view, normal or
                 // colour math happens in Java on this path. GL models in the same bucket keep
                 // drawing exactly as before.
+                //
+                // The gate is a RUNTIME Beryl check: Beryl's keybind toggles its pipeline
+                // while the client runs, and while it is active the models must draw
+                // through the Java renderer (Beryl shades them through its own G-buffer
+                // pipelines via the VulkanFrameState bridge). Native-built models carry
+                // their GL vertex buffer too (dual-path build), so this fallback is exact.
                 final org.mtr.nativeobj.NativeFrameRecorder nativeRecorder;
-                if (org.mtr.nativeobj.NativeRuntime.isActive()) {
+                if (org.mtr.nativeobj.NativeRuntime.isActive() && !org.mtr.client.VulkanCompat.isBerylActive()) {
                         nativeRecorder = new org.mtr.nativeobj.NativeFrameRecorder(org.mtr.nativeobj.NativeRuntime.getInstance());
                 } else {
                         nativeRecorder = null;

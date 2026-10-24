@@ -51,6 +51,8 @@ public final class NativeRuntime {
         private static volatile @Nullable NativeRuntime instance;
         private static volatile boolean bootAttempted;
         private static volatile boolean teardownPending;
+        /** One-shot log for the per-frame Beryl deferral (the skip itself repeats silently). */
+        private static volatile boolean berylSkipLogged;
         /**
          * The JDK 22+ FFM arena that owns the library lookups and the
          * downcall address segments. Kept for the whole session: closing
@@ -118,9 +120,6 @@ public final class NativeRuntime {
                         if (!isVulkanModLoaded()) {
                                 return; // silently: GL is the normal path, nothing to latch
                         }
-                        // From here on the environment claims Vulkan; whatever
-                        // fails, do not retry this session (per-frame callers).
-                        bootAttempted = true;
 
                         // Beryl replaces every entity-family vanilla shader with its own
                         // G-buffer pipelines and drives the frame through its own render
@@ -130,10 +129,25 @@ public final class NativeRuntime {
                         // for. The Java renderer, with the VulkanFrameState per-draw
                         // bridge, draws MTR models through Beryl's own pipelines instead:
                         // correctly positioned AND shaded by Beryl.
+                        //
+                        // This is a RUNTIME check (Beryl's shaders can be toggled while the
+                        // client runs), and — crucially — it must NOT latch bootAttempted:
+                        // a session that starts with Beryl shaders on (or a Beryl jar that
+                        // merely sits in the mods folder with shaders off!) still deserves
+                        // the native pipeline the moment the shaders are off. The check is
+                        // one cached-field reflection read per frame while it defers.
                         if (org.mtr.client.VulkanCompat.isBerylActive()) {
-                                MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder is bypassed so Beryl can shade MTR geometry through its own pipelines (Java renderer active)");
-                                return;
+                                if (!berylSkipLogged) {
+                                        berylSkipLogged = true;
+                                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder is bypassed so Beryl can shade MTR geometry through its own pipelines (Java renderer active)");
+                                }
+                                return; // no latch — retry next frame (Beryl can be toggled off)
                         }
+
+                        // From here on the environment claims Vulkan and Beryl is not
+                        // driving the frame; whatever fails, do not retry this session
+                        // (per-frame callers).
+                        bootAttempted = true;
 
                         final VulkanHostAccess host = VulkanHostAccess.resolve();
                         if (host == null) {

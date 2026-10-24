@@ -102,9 +102,16 @@ static constexpr uint32_t STAGE_COUNT = 5;
 static constexpr uint32_t SET_SAMPLER = 0;
 static constexpr uint32_t SET_UBO = 1;
 static constexpr uint32_t UBO_SLOTS = 64;      // 128 B each, 8 KiB total
-static constexpr uint32_t POOL_RING = 6;      // > any sane swapchain in-flight depth
+static constexpr uint32_t POOL_RING = 8;      // > any sane swapchain in-flight depth (2 recordFrames per MC frame)
 static constexpr uint32_t MAX_MESHES = 2048;   // vkAllocateMemory budget guard
 static constexpr uint32_t UBO_BYTES = 128;
+// Descriptor sets per drain pass. One set is allocated per DISTINCT texture
+// (see the per-call cache in recordFrame), so this bounds distinct textures
+// visible in one pass — a generous multiple of any realistic MTR scene. The
+// first revision allocated one set per ITEM with a 512 budget, and a busy
+// station (several trains + platform doors + rails) blew through it, silently
+// dropping every item past the 512th ("partially transparent" models).
+static constexpr uint32_t POOL_MAX_SETS = 2048;
 
 // Native texture pool budget (v2): mirrors the wrcore message-budget and the
 // Java NativeTextureManager upload cap.
@@ -191,6 +198,8 @@ struct WrvkRecorder::Impl {
         std::vector<uint32_t> pendingTextureOrder;         // upload order (dedup via pendingUpload)
 
         bool fatal{false};
+        /** One-shot stderr warn when the per-pass descriptor set budget is hit. */
+        bool descriptorBudgetWarned{false};
 
         ~Impl() { destroyAll(); }
 
@@ -707,10 +716,10 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                         VkDescriptorPoolCreateInfo poolInfo{};
                         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
                         poolInfo.flags = 0; // reset per reuse, no FREE_DESCRIPTOR_SET_BIT needed
-                        poolInfo.maxSets = 512;
+                        poolInfo.maxSets = POOL_MAX_SETS;
                         VkDescriptorPoolSize size{};
                         size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                        size.descriptorCount = 512;
+                        size.descriptorCount = POOL_MAX_SETS;
                         poolInfo.poolSizeCount = 1;
                         poolInfo.pPoolSizes = &size;
                         impl_->d().createDescriptorPool(impl_->device(), &poolInfo, &impl_->pools[i]);
@@ -1155,6 +1164,22 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
         uint32_t cachedExternalKey = 0xFFFFFFFFu;
         const wrx::FrameExternal* cachedExternal = nullptr;
 
+        // Per-call texture→descriptor-set cache: ONE set per DISTINCT texture
+        // per drain pass instead of one per item. Hundreds of items routinely
+        // share a handful of textures (a train's parts, rails, doors), so this
+        // keeps the deepest scenes far below the pool budget — the first
+        // revision allocated per item and dropped everything past item 512.
+        // An entry remembers the view it was written for: external overrides
+        // resolve to fresh handles every frame, so a stale entry is rewritten
+        // in place (updateDescriptorSets on an already-written set is legal).
+        struct TexSetEntry {
+                uint32_t key;
+                uint64_t view;
+                uint64_t set;
+        };
+        std::vector<TexSetEntry> texSets;
+        texSets.reserve(16);
+
         uint64_t lastPipeline = 0;
         uint64_t lastTextureSet = 0;
         bool anyDrawn = false;
@@ -1213,22 +1238,51 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                         lastPipeline = pipeline;
                 }
 
+                // resolve the texture from the per-call cache: reuse the set
+                // when the key AND the resolved view are unchanged
                 uint64_t textureSet = 0;
-                if (d.allocateDescriptorSets(impl_->device(), &setAlloc, &textureSet) != VK_SUCCESS) {
-                        return anyDrawn; // pool exhausted this frame; keep what we recorded
+                for (const TexSetEntry& entry : texSets) {
+                        if (entry.key == item->textureKey) {
+                                if (entry.view == textureView) {
+                                        textureSet = entry.set;
+                                }
+                                break;
+                        }
                 }
-                VkDescriptorImageInfo imageInfo{};
-                imageInfo.sampler = samplerH(textureSampler);
-                imageInfo.imageView = imageViewH(textureView);
-                imageInfo.imageLayout = imageLayoutH(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                VkWriteDescriptorSet write{};
-                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = setH(textureSet);
-                write.dstBinding = 0;
-                write.descriptorCount = 1;
-                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                write.pImageInfo = &imageInfo;
-                d.updateDescriptorSets(impl_->device(), 1, &write, 0, nullptr);
+                if (textureSet == 0) {
+                        if (d.allocateDescriptorSets(impl_->device(), &setAlloc, &textureSet) != VK_SUCCESS) {
+                                if (!impl_->descriptorBudgetWarned) {
+                                        impl_->descriptorBudgetWarned = true;
+                                        std::fprintf(stderr, "[wrvk] descriptor set budget (%u distinct textures) reached; the remaining draws of this pass were dropped\n",
+                                                        static_cast<unsigned>(POOL_MAX_SETS));
+                                }
+                                return anyDrawn; // pool exhausted this frame; keep what we recorded
+                        }
+                        bool replaced = false;
+                        for (TexSetEntry& entry : texSets) {
+                                if (entry.key == item->textureKey) {
+                                        entry.view = textureView;
+                                        entry.set = textureSet;
+                                        replaced = true;
+                                        break;
+                                }
+                        }
+                        if (!replaced) {
+                                texSets.push_back(TexSetEntry{item->textureKey, textureView, textureSet});
+                        }
+                        VkDescriptorImageInfo imageInfo{};
+                        imageInfo.sampler = samplerH(textureSampler);
+                        imageInfo.imageView = imageViewH(textureView);
+                        imageInfo.imageLayout = imageLayoutH(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        VkWriteDescriptorSet write{};
+                        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        write.dstSet = setH(textureSet);
+                        write.dstBinding = 0;
+                        write.descriptorCount = 1;
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        write.pImageInfo = &imageInfo;
+                        d.updateDescriptorSets(impl_->device(), 1, &write, 0, nullptr);
+                }
                 if (textureSet != lastTextureSet) {
                         const uint64_t sets[2] = {textureSet, impl_->uboSets[slot]};
                         d.cmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, impl_->pipelineLayout, SET_SAMPLER, 2, sets, 0, nullptr);

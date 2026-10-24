@@ -109,6 +109,16 @@ public class CustomResourceLoader {
          */
         public static void reload() {
 
+        // Bring the native Vulkan pipeline up BEFORE the rebuild: models parse
+        // during this reload, and a model built before the runtime is active is a
+        // GL-only model (no native mesh) that keeps drawing through the Java GL
+        // path until the next reload. Booting here — right after VulkanMod has
+        // initialised its device but before any MTR model parses — makes every
+        // rebuild pick the native path from its very first model. Cheap no-op on
+        // GL (VulkanMod absent), deferred (not latched) while Beryl's shaders are
+        // driving the frame.
+        org.mtr.nativeobj.NativeRuntime.initialise();
+
         // The native Vulkan pipeline owns GPU copies of every built model; free
         // them before the rebuild replaces the loader set (leak safety).
         org.mtr.nativeobj.NativeRuntime.freeAllModelsForReload();
