@@ -181,7 +181,7 @@ public final class RenderVehicles {
                                         }
 
                                         // Play vehicle sounds (the absolute car yaw drives the flange-squeal yaw rate)
-                                        vehicle.playVehicleSound(vehicleResource, carNumber, absoluteVehicleCarPositionAndRotation.position, absoluteVehicleCarPositionAndRotation.yaw);
+                                        vehicle.playVehicleSound(vehicleResource, carNumber, absoluteVehicleCarPositionAndRotation.position, (float) absoluteVehicleCarPositionAndRotation.yaw);
 
                                         // Play door sound
                                         if (!openDoorways.isEmpty()) {
