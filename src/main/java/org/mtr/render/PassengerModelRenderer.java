@@ -36,13 +36,13 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMa
  *   <li><b>Idle head movement</b> — standing passengers slowly look around with deterministic
  *       per-passenger targets.</li>
  *   <li><b>Phone pose</b> — a deterministic subset of standing passengers (platform waiters
- *       and on-board standees) look down at a phone: both forearms raised, head tilted
- *       forward, with subtle scrolling micro-movement. A dark phone cuboid is rendered in
- *       the hands, materialising as the pose blends in (previously the arms rose but no
- *       phone model was ever drawn).</li>
+ *       and on-board standees) look down at a phone: both forearms raised symmetrically with
+ *       the hands converging exactly at the phone cuboid's pivot, head tilted forward, with
+ *       subtle scrolling micro-movement. The dark phone cuboid is held between the hands
+ *       (not floating at arm's length) and materialises as the pose blends in.</li>
  *   <li><b>Age variation</b> — a deterministic ~85% of passengers are adults with slight
- *       per-passenger height jitter, the remaining ~15% render as children: a smaller body
- *       with a proportionally larger head, mirroring the vanilla baby-entity look.</li>
+ *       per-passenger height jitter, the remaining ~15% render as uniformly scaled-down
+ *       children (feet still on the ground), mirroring the vanilla baby-entity look.</li>
  *   <li><b>Skins</b> — textures come from {@link PassengerSkinManager} (vanilla default pool
  *       plus optional online skins); slim skins select the slim arm model.</li>
  * </ul>
@@ -73,12 +73,13 @@ public final class PassengerModelRenderer {
 	 * small height jitter, matching a real transit crowd (adults dominant).
 	 */
 	private static final float CHILD_CHANCE = 0.15F;
-	/** Child body scale range (uniform scale on the whole model, vanilla AgeableMob-style). */
-	private static final float CHILD_SCALE_MIN = 0.52F;
-	private static final float CHILD_SCALE_MAX = 0.64F;
-	/** Child head scale range; a near-adult-sized head on a small body reads as a child. */
-	private static final float CHILD_HEAD_SCALE_MIN = 1.4F;
-	private static final float CHILD_HEAD_SCALE_MAX = 1.55F;
+	/**
+	 * Child scale range — a uniform (equal-ratio) scale of the whole model, exactly
+	 * like vanilla AgeableMobRenderer babies: smaller person, normal proportions,
+	 * feet on the ground.
+	 */
+	private static final float CHILD_SCALE_MIN = 0.55F;
+	private static final float CHILD_SCALE_MAX = 0.65F;
 	/** Adult height jitter range (±3%). */
 	private static final float ADULT_SCALE_MIN = 0.97F;
 	private static final float ADULT_SCALE_MAX = 1.03F;
@@ -125,14 +126,19 @@ public final class PassengerModelRenderer {
 		final float ageInTicks = clientLevel.getGameTime() % 100000 + 1;
 
 		// Deterministic age: mostly adults (with ±3% height jitter), some children
-		// (small body, near-adult-sized head — the classic baby-entity proportions).
+		// (uniformly scaled down — equal-ratio, vanilla baby-mob proportions).
 		final boolean isChild = hashLong(passengerId, 7) < CHILD_CHANCE;
 		final float passengerScale = isChild
 			? lerp(CHILD_SCALE_MIN, CHILD_SCALE_MAX, hashLong(passengerId, 9))
 			: lerp(ADULT_SCALE_MIN, ADULT_SCALE_MAX, hashLong(passengerId, 8));
-		final float headScale = isChild ? lerp(CHILD_HEAD_SCALE_MIN, CHILD_HEAD_SCALE_MAX, hashLong(passengerId, 10)) : 1;
 
 		matrixStack.pushPose();
+		// The per-passenger age scale sits exactly where vanilla's AgeableMobRenderer
+		// applies its baby scale — OUTERMOST, before the whole core transform chain —
+		// so it also scales the -1.501 foot offset: children keep their feet on the
+		// ground plane while the whole body shrinks (applying it innermost left the
+		// offset unscaled and made children float ~0.6-0.9 blocks above the ground).
+		matrixStack.scale(passengerScale, passengerScale, passengerScale);
 		// Vanilla LivingEntityRenderer core transform for players. The ordering is exactly
 		// equivalent to the vanilla sequence (setupRotations YP180, then flip, then 0.9375
 		// scale, then the -1.501 offset): all factors are diagonal so they commute, and the
@@ -141,10 +147,6 @@ public final class PassengerModelRenderer {
 		matrixStack.scale(0.9375F, 0.9375F, 0.9375F);
 		matrixStack.translate(0.0F, -1.501F, 0.0F);
 		matrixStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180.0F));
-		// The per-passenger age scale sits exactly where vanilla's AgeableMobRenderer applies
-		// its baby scale (last code op → applied first to model points), so children keep
-		// their feet on the ground plane while the whole body shrinks.
-		matrixStack.scale(passengerScale, passengerScale, passengerScale);
 
 		// Standard walk cycle and head angles from the animation state.
 		applyWalkPose(model, state);
@@ -155,16 +157,11 @@ public final class PassengerModelRenderer {
 			applyPhonePose(model, phoneBlend, ageInTicks);
 		}
 
-		// The head part scale must be set every frame: the wide/slim models are shared
-		// static instances rendered by many passengers with different ages. copyFrom (via
-		// copyPart below) propagates the scale into the hat overlay automatically.
-		model.head.xScale = headScale;
-		model.head.yScale = headScale;
-		model.head.zScale = headScale;
-
 		// The overlay layers (sleeves, pants, jacket, hat) are separate parts; re-copy the
 		// modified angles into them (vanilla does this inside setupAnim before any pose
-		// overrides, so this must run after the overrides).
+		// overrides, so this must run after the overrides). copyFrom also copies the part
+		// scales, which are always the vanilla default 1 now that age scaling lives in the
+		// matrix chain — no per-part scale writes or resets are needed any more.
 		copyPart(model.hat, model.head);
 		copyPart(model.leftSleeve, model.leftArm);
 		copyPart(model.rightSleeve, model.rightArm);
@@ -221,16 +218,18 @@ public final class PassengerModelRenderer {
 	}
 
 	/**
-	 * Overlays the "looking at a phone" pose on the standard animation: both forearms raised
-	 * in front of the chest, head tilted down, with a subtle scrolling micro-movement.
+	 * Overlays the "looking at a phone" pose on the standard animation: both forearms
+	 * raised symmetrically so the hands converge exactly at the phone cuboid's pivot
+	 * (see {@link #getPhoneModel()}), head tilted forward, with a subtle scrolling
+	 * micro-movement.
 	 */
 	private static void applyPhonePose(PlayerModel model, float blend, float ageInTicks) {
 		final float scrollWobble = (float) Math.sin(ageInTicks * 0.23F) * 2;
 		final float scrollWobbleSlow = (float) Math.sin(ageInTicks * 0.11F) * 1.5F;
 
-		lerpRot(model.rightArm, (float) Math.toRadians(-67 + scrollWobbleSlow), (float) Math.toRadians(-14), (float) Math.toRadians(-6), blend);
-		lerpRot(model.leftArm, (float) Math.toRadians(-60 - scrollWobbleSlow), (float) Math.toRadians(12), (float) Math.toRadians(7), blend);
-		lerpRot(model.head, (float) Math.toRadians(34 + scrollWobble * 0.5F), (float) Math.toRadians(7), 0, blend);
+		lerpRot(model.rightArm, (float) Math.toRadians(-50 + scrollWobbleSlow), (float) Math.toRadians(-14), (float) Math.toRadians(-4), blend);
+		lerpRot(model.leftArm, (float) Math.toRadians(-50 - scrollWobbleSlow), (float) Math.toRadians(14), (float) Math.toRadians(4), blend);
+		lerpRot(model.head, (float) Math.toRadians(40 + scrollWobble * 0.5F), (float) Math.toRadians(4), 0, blend);
 	}
 
 	private static void lerpRot(ModelPart part, float xRot, float yRot, float zRot, float blend) {
@@ -287,9 +286,11 @@ public final class PassengerModelRenderer {
 	}
 
 	/**
-	 * Builds (once) the phone cuboid: 3×5×0.5 model pixels, held in front of the chest at
-	 * the point the raised hands converge, tilted so the screen faces the passenger's
-	 * lowered head. The pivot and rotation live in the baked {@link PartPose}.
+	 * Builds (once) the phone cuboid: 3×5×0.5 model pixels held between the raised
+	 * hands. The pivot is the exact point the hands converge at with the
+	 * {@code applyPhonePose} arm angles (arms at -50° with the mirrored inward yaw,
+	 * hand tips ≈ (±3.0, 8.3, -7.5)), and the tilt leans the top slightly back
+	 * toward the reader so the lowered head can see the screen.
 	 */
 	private static ModelPart getPhoneModel() {
 		if (phoneModel == null) {
@@ -297,7 +298,7 @@ public final class PassengerModelRenderer {
 			final PartDefinition partDefinition = meshDefinition.getRoot();
 			partDefinition.addOrReplaceChild("phone",
 					CubeListBuilder.create().texOffs(0, 0).addBox(-1.5F, -2.5F, -0.25F, 3.0F, 5.0F, 0.5F),
-					PartPose.offsetAndRotation(0, 4.6F, -9.0F, (float) Math.toRadians(-22), 0, 0));
+					PartPose.offsetAndRotation(0, 8.2F, -7.6F, (float) Math.toRadians(-12), 0, 0));
 			phoneModel = LayerDefinition.create(meshDefinition, 16, 16).bakeRoot().getChild("phone");
 		}
 		return phoneModel;

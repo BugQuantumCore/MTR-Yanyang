@@ -374,11 +374,13 @@ public class MainRenderer {
                 // colour math happens in Java on this path. GL models in the same bucket keep
                 // drawing exactly as before.
                 //
-                // The gate is a RUNTIME Beryl check: Beryl's keybind toggles its pipeline
-                // while the client runs, and while it is active the models must draw
-                // through the Java renderer (Beryl shades them through its own G-buffer
-                // pipelines via the VulkanFrameState bridge). Native-built models carry
-                // their GL vertex buffer too (dual-path build), so this fallback is exact.
+                // The gate is a RUNTIME Beryl check: while Beryl's shader pipeline is active
+                // the models must draw through the Java renderer so Beryl shades them through
+                // its own pipelines. Native-built models carry their GL vertex buffer too
+                // (dual-path build), so this fallback is exact. The GL draw goes through
+                // VertexBuffer#drawWithShader (never a raw draw), which under VulkanMod binds
+                // the shader's current pipeline — translated or Beryl-redirected — instead of
+                // re-using whatever pipeline the previous unrelated draw left bound.
                 final org.mtr.nativeobj.NativeFrameRecorder nativeRecorder;
                 if (org.mtr.nativeobj.NativeRuntime.isActive() && !org.mtr.client.VulkanCompat.isBerylActive()) {
                         nativeRecorder = new org.mtr.nativeobj.NativeFrameRecorder(org.mtr.nativeobj.NativeRuntime.getInstance());
@@ -409,7 +411,6 @@ public class MainRenderer {
                                 case EXTERIOR -> MoreRenderLayers.getExterior(texture);
                         };
                         renderLayer.setupRenderState();
-                        newOptimizedModel.begin(RenderSystem.getShader());
                         renderDetails.forEach(renderDetailsEntry -> {
                                 renderDetailsEntry.left().transform(matrixStack, offset);
                                 newOptimizedModel.render(matrixStack.last().pose(), renderStage.isFullBrightness ? 1 : (float) renderDetailsEntry.rightInt() / 0xF, RenderSystem.getShader());

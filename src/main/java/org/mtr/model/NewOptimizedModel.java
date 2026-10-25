@@ -2,12 +2,10 @@ package org.mtr.model;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
-import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
 import org.joml.Matrix4f;
 import org.jspecify.annotations.Nullable;
 import org.mtr.nativeobj.NativeModel;
-import org.mtr.render.VulkanFrameState;
 
 import java.util.function.Consumer;
 
@@ -26,8 +24,8 @@ import net.minecraft.client.renderer.CompiledShaderProgram;
  * {@link VertexBuffer#uploadStatic}; subsequent frames just call {@link #render} and
  * the GPU re-uses the stored vertices.</p>
  *
- * <p>If the supplied {@code callback} is {@code null}, no buffer is allocated and both
- * {@link #begin} and {@link #render} no-op. This is the path for empty groups.</p>
+ * <p>If the supplied {@code callback} is {@code null}, no buffer is allocated and
+ * {@link #render} no-ops. This is the path for empty groups.</p>
  *
  * <p><b>Naming note:</b> the "New" prefix is historical — there is no non-{@code New}
  * counterpart any more. See {@code docs/MIGRATIONS.md} §4 for the planned rename.</p>
@@ -37,7 +35,6 @@ public final class NewOptimizedModel {
 	public final ResourceLocation texture;
 	@Nullable
 	private final VertexBuffer vertexBuffer;
-	private final VertexFormat.Mode drawMode;
 	/**
 	 * The native Vulkan mesh when this model was built through the native
 	 * pipeline (see {@code docs/NATIVE_VULKAN.md}); null means the GL path.
@@ -87,7 +84,6 @@ public final class NewOptimizedModel {
 	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel) {
 		this.vertexBuffer = callback == null ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
 		this.texture = texture;
-		this.drawMode = drawMode;
 		this.nativeModel = nativeModel;
 	}
 
@@ -98,11 +94,11 @@ public final class NewOptimizedModel {
 	}
 
 	/**
-	 * Issue the draw call after {@link #begin(CompiledShaderProgram)} has bound the buffer.
+	 * Issue the draw call for this mesh.
 	 *
-	 * @param matrix4f        the per-instance model matrix multiplied into the active view matrix
+	 * @param matrix4f        the per-instance model matrix (the pose, without the camera view)
 	 * @param lightMultiplier brightness scale in {@code [0, 1]}; {@code 1} for full-bright stages
-	 * @param shaderProgram   the active shader, may be {@code null} during reload
+	 * @param shaderProgram   the active shader (set by the render layer's state setup), may be {@code null} during reload
 	 */
 //? if >= 1.21.4 {
 	public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable CompiledShaderProgram shaderProgram) {
@@ -112,28 +108,29 @@ public final class NewOptimizedModel {
 *///? }
 		if (vertexBuffer != null && shaderProgram != null) {
 			// Full per-instance model-view: camera view (RenderSystem snapshot) * pose.
-			// The vanilla uniform channel below is what the pure-GL path and VulkanMod's
-			// translated legacy pipelines read; pipelines that redirect the vanilla
-			// shader (Beryl) instead read the VRenderSystem globals synced by
-			// VulkanFrameState around the draw.
 			MODEL_VIEW_SCRATCH.set(RenderSystem.getModelViewMatrix()).mul(matrix4f);
 			final float[] colorModulator = colorModulatorFor(lightMultiplier);
-			if (shaderProgram.MODEL_VIEW_MATRIX != null) {
-				shaderProgram.MODEL_VIEW_MATRIX.set(MODEL_VIEW_SCRATCH);
-				shaderProgram.MODEL_VIEW_MATRIX.upload();
-			}
-			if (shaderProgram.COLOR_MODULATOR != null) {
-				shaderProgram.COLOR_MODULATOR.set(colorModulator);
-				shaderProgram.COLOR_MODULATOR.upload();
-			}
-			final boolean vulkanBridge = VulkanFrameState.isActive();
-			if (vulkanBridge) {
-				VulkanFrameState.beginInstance(MODEL_VIEW_SCRATCH, colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
-			}
-			vertexBuffer.draw();
-			if (vulkanBridge) {
-				VulkanFrameState.endInstance();
-			}
+			// The light multiplier travels through the shader colour so every backend picks
+			// it up: pure GL reads COLOR_MODULATOR via setDefaultUniforms inside
+			// drawWithShader, and VulkanMod's translated pipelines plus Beryl's redirected
+			// pipelines read the VRenderSystem colour that RenderSystem.setShaderColor
+			// keeps in sync. The colour is restored afterwards so later vanilla batches
+			// are not tinted by this instance.
+			final float[] savedColor = RenderSystem.getShaderColor().clone();
+			RenderSystem.setShaderColor(colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
+			// drawWithShader — never the raw draw() — is the same contract every vanilla
+			// batch uses: it applies setDefaultUniforms (the per-instance MODEL_VIEW,
+			// COLOR_MODULATOR and fog uniforms) and, under VulkanMod, additionally binds
+			// the shader's CURRENT pipeline (VulkanMod-translated, or Beryl-redirected),
+			// syncs the per-draw MVP into VRenderSystem, binds the shader textures and
+			// uploads the UBOs, then restores the frame MVP. The previous raw draw()
+			// relied on whichever pipeline the previous unrelated draw left bound: under
+			// VulkanMod/Beryl that drew NEW_ENTITY data through stale terrain or entity
+			// pipelines — stretched rectangles, wrong-blend translucent stages
+			// (see-through ceilings and windows) and non-additive light stages
+			// (misplaced colour blocks).
+			vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
+			RenderSystem.setShaderColor(savedColor[0], savedColor[1], savedColor[2], savedColor[3]);
 		}
 	}
 
@@ -170,21 +167,4 @@ public final class NewOptimizedModel {
 		return new float[]{lightMultiplier, lightMultiplier, lightMultiplier, 1f};
 	}
 
-	/**
-	 * Bind this model's vertex buffer and initialise the shader uniforms for the current
-	 * GL state. Must be paired with one or more {@link #render(Matrix4f, float, CompiledShaderProgram)}
-	 * calls per frame, then the next mesh's {@code begin(...)}.
-	 */
-//? if >= 1.21.4 {
-	public void begin(@Nullable CompiledShaderProgram shaderProgram) {
-//? } else {
-	/*public void begin(@Nullable ShaderInstance shaderProgram) {
-//
-*///? }
-		if (vertexBuffer != null && shaderProgram != null) {
-			vertexBuffer.bind();
-			shaderProgram.setDefaultUniforms(drawMode, RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), Minecraft.getInstance().getWindow());
-			shaderProgram.apply();
-		}
-	}
 }
