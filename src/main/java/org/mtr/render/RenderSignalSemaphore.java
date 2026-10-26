@@ -12,6 +12,8 @@ public class RenderSignalSemaphore<T extends BlockSignalSemaphoreBase.BlockEntit
 
 	private static final int ANGLE = 55;
 	private static final int SPEED = 4;
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
+	private static final ResourceLocation SEMAPHORE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/semaphore.png");
 
 	public RenderSignalSemaphore() {
 		super(8, 2);
@@ -20,13 +22,13 @@ public class RenderSignalSemaphore<T extends BlockSignalSemaphoreBase.BlockEntit
 	@Override
 	protected void render(StoredMatrixTransformations storedMatrixTransformations, T entity, ClientLevel world, float tickDelta, int light, int occupiedAspect, boolean isBackSide) {
 		final float angle = isBackSide ? entity.angle2 : entity.angle1;
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			IDrawing.drawTexture(matrixStack, vertexConsumer, -0.0625F, 0.296875F, -0.190625F, 0.0625F, 0.453125F, -0.190625F, Direction.UP, angle < ANGLE / 2F ? 0xFFFF0000 : 0xFF00FF00, DEFAULT_LIGHT);
 			matrixStack.popPose();
 		});
 
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/semaphore.png"), false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(SEMAPHORE_TEXTURE, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			matrixStack.translate(0.1875, 0.375, 0);
 			Drawing.rotateZDegrees(matrixStack, -180 - angle);

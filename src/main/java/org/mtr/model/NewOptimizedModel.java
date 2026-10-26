@@ -7,6 +7,9 @@ import org.joml.Matrix4f;
 import org.jspecify.annotations.Nullable;
 import org.mtr.nativeobj.NativeModel;
 
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Set;
 import java.util.function.Consumer;
 
 //? if >= 1.21.4 {
@@ -26,6 +29,10 @@ import net.minecraft.client.renderer.CompiledShaderProgram;
  *
  * <p>If the supplied {@code callback} is {@code null}, no buffer is allocated and
  * {@link #render} no-ops. This is the path for empty groups.</p>
+
+ * <p>Every instance that owns a GL buffer registers itself in a live-instance registry;
+ * {@code CustomResourceLoader#reload()} closes them all via {@link #releaseAll()} before
+ * the model caches are cleared, so no VAO/VBO outlives its model set.</p>
  *
  * <p><b>Naming note:</b> the "New" prefix is historical — there is no non-{@code New}
  * counterpart any more. See {@code docs/MIGRATIONS.md} §4 for the planned rename.</p>
@@ -50,6 +57,20 @@ public final class NewOptimizedModel {
 	 * a single buffer avoids a per-draw allocation. See {@code docs/PERFORMANCE.md} §3.2.
 	 */
 	private static final Matrix4f MODEL_VIEW_SCRATCH = new Matrix4f();
+	/**
+	 * Reusable shader-colour save/restore scratch, same render-thread-confinement pattern
+	 * as {@link #MODEL_VIEW_SCRATCH}. Copied element-wise because getShaderColor may hand
+	 * back RenderSystem's internal array, so it must never be kept across a draw.
+	 */
+	private static final float[] SAVED_COLOR_SCRATCH = new float[4];
+	/**
+	 * Live instances that own a GL vertex buffer, so a resource reload can close them all
+	 * before the model caches holding them are cleared (see {@link #releaseAll()}). Without
+	 * this, every F3+T / pack change / Beryl toggle leaked the entire previous model set's
+	 * VAO+VBO ids — the caches were cleared but the buffers were never closed. Guarded by
+	 * itself; {@code CustomResourceLoader.reload()} drains it on the render thread.
+	 */
+	private static final Set<NewOptimizedModel> LIVE_GL_MODELS = new HashSet<>();
 	/**
 	 * Pre-built {@code colorModulator} arrays for every value of {@code lightMultiplier}
 	 * the renderer ever emits. The renderer derives {@code lightMultiplier} from a 4-bit
@@ -85,12 +106,54 @@ public final class NewOptimizedModel {
 		this.vertexBuffer = callback == null ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
 		this.texture = texture;
 		this.nativeModel = nativeModel;
+		if (vertexBuffer != null) {
+			synchronized (LIVE_GL_MODELS) {
+				LIVE_GL_MODELS.add(this);
+			}
+		}
 	}
 
 	/** The native mesh handle, or null when this model renders through MC's GL path. */
 	@Nullable
 	public NativeModel getNativeModel() {
 		return nativeModel;
+	}
+
+	/**
+	 * Close the GL vertex buffer owned by this model and forget it in the live registry.
+	 * Idempotent: the registry removal happens exactly once per instance, so a later close
+	 * (for example one racing the reload's {@link #releaseAll()}) is a no-op. The native
+	 * mesh, when present, is owned and freed by the native runtime instead.
+	 */
+	public void close() {
+		synchronized (LIVE_GL_MODELS) {
+			if (!LIVE_GL_MODELS.remove(this)) {
+				return;
+			}
+		}
+		if (vertexBuffer != null) {
+			vertexBuffer.close();
+		}
+	}
+
+	/**
+	 * Close every live model's GL vertex buffer and clear the registry. Called from
+	 * {@code CustomResourceLoader#reload()} on the render thread right before the model
+	 * caches are cleared — the GL-path counterpart of the native pipeline's
+	 * {@code freeAllModelsForReload} leak safety. Models rebuilt later in the same reload
+	 * register fresh buffers.
+	 */
+	public static void releaseAll() {
+		synchronized (LIVE_GL_MODELS) {
+			final Iterator<NewOptimizedModel> iterator = LIVE_GL_MODELS.iterator();
+			while (iterator.hasNext()) {
+				final NewOptimizedModel model = iterator.next();
+				iterator.remove();
+				if (model.vertexBuffer != null) {
+					model.vertexBuffer.close();
+				}
+			}
+		}
 	}
 
 	/**
@@ -116,7 +179,8 @@ public final class NewOptimizedModel {
 			// pipelines read the VRenderSystem colour that RenderSystem.setShaderColor
 			// keeps in sync. The colour is restored afterwards so later vanilla batches
 			// are not tinted by this instance.
-			final float[] savedColor = RenderSystem.getShaderColor().clone();
+			final float[] currentColor = RenderSystem.getShaderColor();
+			System.arraycopy(currentColor, 0, SAVED_COLOR_SCRATCH, 0, 4);
 			RenderSystem.setShaderColor(colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
 			// drawWithShader — never the raw draw() — is the same contract every vanilla
 			// batch uses: it applies setDefaultUniforms (the per-instance MODEL_VIEW,
@@ -130,7 +194,7 @@ public final class NewOptimizedModel {
 			// (see-through ceilings and windows) and non-additive light stages
 			// (misplaced colour blocks).
 			vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
-			RenderSystem.setShaderColor(savedColor[0], savedColor[1], savedColor[2], savedColor[3]);
+			RenderSystem.setShaderColor(SAVED_COLOR_SCRATCH[0], SAVED_COLOR_SCRATCH[1], SAVED_COLOR_SCRATCH[2], SAVED_COLOR_SCRATCH[3]);
 		}
 	}
 

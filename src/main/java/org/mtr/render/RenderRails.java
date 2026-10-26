@@ -64,6 +64,7 @@ public final class RenderRails implements IGui {
         private static final ResourceLocation RAIL_TEXTURE = ResourceLocation.parse("textures/block/rail.png");
         private static final ResourceLocation WOOL_TEXTURE = ResourceLocation.parse("textures/block/white_wool.png");
         private static final ResourceLocation ONE_WAY_RAIL_ARROW_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/one_way_rail_arrow.png");
+        private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
         private static final int INVALID_NODE_CHECK_RADIUS = 16;
         private static final double LIGHT_REFERENCE_OFFSET = 0.1;
         private static final int SIGNAL_DOTTED_LINE_SCALE = 4;
@@ -363,7 +364,7 @@ public final class RenderRails implements IGui {
                                 matrixStack.scale(4, 0.5F, 0.5F);
                                 matrixStack.translate(-0.5, 0, -0.5);
                         });
-                        MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+                        MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
                                 storedMatrixTransformations.transform(matrixStack, offset);
                                 RenderPSDAPGDoor.MODEL_SMALL_CUBE.render(matrixStack, vertexConsumer, light, OverlayTexture.NO_OVERLAY);
                                 matrixStack.popPose();

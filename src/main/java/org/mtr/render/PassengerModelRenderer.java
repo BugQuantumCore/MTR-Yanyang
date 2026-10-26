@@ -210,6 +210,8 @@ public final class PassengerModelRenderer {
 		model.leftArm.xRot = Mth.cos(limbSwing * 0.6662F) * amount;
 		model.rightArm.zRot = 0;
 		model.leftArm.zRot = 0;
+		model.rightArm.yRot = 0;
+		model.leftArm.yRot = 0;
 		model.body.yRot = 0;
 
 		// Head angles are stored in degrees; converted like vanilla setupAnim.

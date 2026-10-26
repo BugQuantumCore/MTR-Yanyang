@@ -52,7 +52,22 @@ public abstract class DynamicReloadableRegistry<T, U, V extends DynamicReloadabl
 		protected abstract T create(U input);
 
 		private void reload() {
+			// Release the data this holder currently holds BEFORE it is replaced: data types
+			// with a lifecycle (GL textures, native handles, …) would otherwise leak one
+			// object per holder on every registry reload (e.g. each F3+T). Subclasses opt in
+			// by overriding release(); the data being replaced is still visible via get().
+			release();
 			data = create(input);
+		}
+
+		/**
+		 * Hook invoked by {@code reload()} before the held data is replaced; the data about to
+		 * be replaced is still available via {@link #get()} at this point (and is {@code null}
+		 * on the very first reload from the constructor). The default implementation does
+		 * nothing — subclasses holding data with a lifecycle (GL textures, native handles, …)
+		 * should close it here.
+		 */
+		protected void release() {
 		}
 	}
 }

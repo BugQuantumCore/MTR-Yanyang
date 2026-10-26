@@ -191,7 +191,13 @@ tasks {
 
         shadowJar {
                 configurations = listOf(project.configurations["shadowBundle"])
-                minimize()
+                // The Transport-Simulation-Core jar re-shadows a log4j-slf4j2-impl provider that is
+                // only ServiceLoader-discovered (never referenced directly), so minimize() would
+                // strip it and simulation-core logs would silently degrade to the slf4j NOP
+                // backend — exclude the whole dependency from minimization.
+                minimize {
+                        exclude(dependency("org.mtr:transport-simulation-core"))
+                }
                 relocate("com.logisticscraft", "org.mtr.libraries.com.logisticscraft")
                 relocate("de.javagl", "org.mtr.libraries.de.javagl")
                 relocate("gg.essential", "org.mtr.libraries.gg.essential")

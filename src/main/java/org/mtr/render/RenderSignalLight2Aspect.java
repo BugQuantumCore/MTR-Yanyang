@@ -9,6 +9,7 @@ import org.mtr.client.IDrawing;
 
 public class RenderSignalLight2Aspect<T extends BlockSignalBase.BlockEntityBase> extends RenderSignalBase<T> {
 
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
 	private final boolean redOnTop;
 	private final int proceedColor;
 
@@ -21,7 +22,7 @@ public class RenderSignalLight2Aspect<T extends BlockSignalBase.BlockEntityBase>
 	@Override
 	protected void render(StoredMatrixTransformations storedMatrixTransformations, T entity, ClientLevel world, float tickDelta, int light, int occupiedAspect, boolean isBackSide) {
 		final float y = (occupiedAspect == 1) == redOnTop ? 0.4375F : 0.0625F;
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			IDrawing.drawTexture(matrixStack, vertexConsumer, -0.125F, y, -0.19375F, 0.125F, y + 0.25F, -0.19375F, Direction.UP, occupiedAspect == 1 ? 0xFFFF0000 : proceedColor, DEFAULT_LIGHT);
 			matrixStack.popPose();

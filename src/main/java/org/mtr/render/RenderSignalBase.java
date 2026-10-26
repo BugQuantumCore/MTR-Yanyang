@@ -22,6 +22,7 @@ import org.mtr.core.tool.Utilities;
 import org.mtr.data.IGui;
 import org.mtr.libraries.it.unimi.dsi.fastutil.ints.IntAVLTreeSet;
 import org.mtr.libraries.it.unimi.dsi.fastutil.ints.IntArrayList;
+import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.longs.LongArrayList;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -33,6 +34,22 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 
 	protected final int aspects;
 	private final float colorIndicatorHeight;
+	/** Colour-indicator texture — allocated once instead of per colour per frame. */
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
+	/**
+	 * Node scan results for {@link #getNodePos}, cached per (signal position, facing) for
+	 * {@value #NODE_POS_CACHE_TTL_MILLIS} ms. The scan walks 9&times;9&times;11 = 891 block
+	 * positions (three BlockPos allocations each) per signal per side per frame; nodes don't
+	 * move, so a short TTL — refreshed eagerly on expiry — keeps rail edits showing up
+	 * quickly while cutting the scan to a couple of runs per second.
+	 */
+	private static final Long2ObjectOpenHashMap<NodePosCacheEntry> NODE_POS_CACHE = new Long2ObjectOpenHashMap<>();
+	private static final long NODE_POS_CACHE_TTL_MILLIS = 500;
+	/**
+	 * Amortised growth cap. The cache stays tiny (rendered signals only), so clearing it
+	 * whole on overflow is cheaper than any eviction bookkeeping.
+	 */
+	private static final int NODE_POS_CACHE_LIMIT = 1024;
 
 	public RenderSignalBase(int colorIndicatorHeight, int aspects) {
 		this.aspects = aspects;
@@ -70,7 +87,7 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 						final boolean occupied = aspectState.occupiedColors.contains(signalColor);
 						final float x = xStart + j * 0.03125F;
 						final float width = 0.03125F / (filterColors.isEmpty() || filterColors.contains(signalColor) ? 1 : 8);
-						MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, occupied ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+						MainRenderer.scheduleRender(WHITE_TEXTURE, false, occupied ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
 							storedMatrixTransformationsNew.transform(matrixStack, offset);
 							IDrawing.drawTexture(
 								matrixStack, vertexConsumer,
@@ -141,6 +158,13 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 
 	@Nullable
 	private static BlockPos getNodePos(ClientLevel world, BlockPos pos, Direction facing) {
+		final long now = System.currentTimeMillis();
+		final long cacheKey = nodePosCacheKey(pos, facing);
+		final NodePosCacheEntry cached = NODE_POS_CACHE.get(cacheKey);
+		if (cached != null && now - cached.timestampMillis <= NODE_POS_CACHE_TTL_MILLIS) {
+			return cached.nodePos;
+		}
+
 		int closestDistance = Integer.MAX_VALUE;
 		BlockPos closestPos = null;
 		for (int z = -4; z <= 4; z++) {
@@ -156,7 +180,38 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 				}
 			}
 		}
+
+		if (cached != null) {
+			cached.timestampMillis = now;
+			cached.nodePos = closestPos;
+		} else {
+			if (NODE_POS_CACHE.size() >= NODE_POS_CACHE_LIMIT) {
+				NODE_POS_CACHE.clear();
+			}
+			NODE_POS_CACHE.put(cacheKey, new NodePosCacheEntry(now, closestPos));
+		}
 		return closestPos;
+	}
+
+	/**
+	 * Lossless bit-packing for the cache key: 21 bits each for the signal X/Z (covers
+	 * &plusmn;1M blocks, far beyond playable coordinates), 12 bits for the Y (covers every
+	 * vanilla-legal dimension height) and 3 bits for the facing ordinal.
+	 */
+	private static long nodePosCacheKey(BlockPos pos, Direction facing) {
+		return ((pos.getX() & 0x1FFFFF) << 43) | ((pos.getZ() & 0x1FFFFF) << 22) | ((pos.getY() & 0xFFF) << 3) | facing.ordinal();
+	}
+
+	private static final class NodePosCacheEntry {
+
+		private long timestampMillis;
+		@Nullable
+		private BlockPos nodePos;
+
+		private NodePosCacheEntry(long timestampMillis, @Nullable BlockPos nodePos) {
+			this.timestampMillis = timestampMillis;
+			this.nodePos = nodePos;
+		}
 	}
 
 	public static class AspectState {

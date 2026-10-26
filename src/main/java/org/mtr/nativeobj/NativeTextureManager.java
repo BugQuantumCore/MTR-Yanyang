@@ -211,8 +211,10 @@ public final class NativeTextureManager {
                         if (resource.isEmpty()) {
                                 return; // absent pack texture — the C++ side skips its draws
                         }
-                        try (final InputStream stream = resource.get().open()) {
-                                final NativeImage image = NativeImage.read(stream);
+                        // The NativeImage is closed on every path (uploaded, budget-skipped
+                        // or failed) — its w·h·4 off-heap bytes would otherwise sit
+                        // until the GC cleaner runs, once per registration.
+                        try (final InputStream stream = resource.get().open(); final NativeImage image = NativeImage.read(stream)) {
                                 if (image != null) {
                                         upload(texture, key, image);
                                 }

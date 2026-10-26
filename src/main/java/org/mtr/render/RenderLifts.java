@@ -46,6 +46,7 @@ public class RenderLifts implements IGui {
         private static final int LIFT_DISPLAY_COLOR = 0xFFFF0000;
         private static final float LIFT_DOOR_VALUE = 0.75F;
         private static final float LIFT_FLOOR_PADDING = 0.25F;
+        private static final ResourceLocation LIFT_ARROW_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/sign/lift_arrow.png");
 
         public static void render(long millisElapsed, Vec3 cameraShakeOffset) {
                 final Minecraft minecraftClient = Minecraft.getInstance();
@@ -244,7 +245,7 @@ public class RenderLifts implements IGui {
                 });
 
                 if (liftDirection != LiftDirection.NONE) {
-                        MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/sign/lift_arrow.png"), false, QueuedRenderLayer.LIGHT_TRANSLUCENT, (matrixStack, vertexConsumer, offset) -> {
+                        MainRenderer.scheduleRender(LIFT_ARROW_TEXTURE, false, QueuedRenderLayer.LIGHT_TRANSLUCENT, (matrixStack, vertexConsumer, offset) -> {
                                 storedMatrixTransformations.transform(matrixStack, offset);
                                 IDrawing.drawTexture(matrixStack, vertexConsumer, -width / 6, 0, width / 3, width / 3, 0, liftDirection == LiftDirection.UP ? 0 : 1, 1, liftDirection == LiftDirection.UP ? 1 : 0, Direction.UP, LIFT_DISPLAY_COLOR, DEFAULT_LIGHT);
                                 matrixStack.popPose();

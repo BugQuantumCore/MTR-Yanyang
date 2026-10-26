@@ -13,6 +13,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -51,8 +52,29 @@ public final class NativeRuntime {
         private static volatile @Nullable NativeRuntime instance;
         private static volatile boolean bootAttempted;
         private static volatile boolean teardownPending;
+        /**
+         * The runtime parked by {@link #disable()} / {@link #shutdown()} for the
+         * render thread's deferred teardown. The previous flow nulled
+         * {@link #instance} before {@link #tickTeardown()} could read it, so
+         * the "deferred teardown" was unreachable dead code and every disable
+         * leaked the native poller thread, its mappings, the native models
+         * and the temp directory for the rest of the process.
+         */
+        private static volatile @Nullable NativeRuntime teardownTarget;
         /** One-shot log for the per-frame Beryl deferral (the skip itself repeats silently). */
         private static volatile boolean berylSkipLogged;
+        /**
+         * The {@code mtr.nativeVulkan} property, read once at class init — the
+         * per-frame gate in {@link #initialise()} stays a constant-time field read.
+         */
+        private static final boolean NATIVE_VULKAN_ENABLED = "true".equals(System.getProperty("mtr.nativeVulkan", "true"));
+        /**
+         * VulkanMod presence, probed once at class init. The deferral paths in
+         * {@link #initialise()} (no VulkanMod, or Beryl active — which never
+         * latch {@link #bootAttempted}) used to repeat the {@code Class.forName}
+         * plus two FabricLoader {@code Method.invoke} calls on EVERY frame.
+         */
+        private static final boolean VULKAN_MOD_LOADED = isVulkanModLoaded();
         /**
          * The JDK 22+ FFM arena that owns the library lookups and the
          * downcall address segments. Kept for the whole session: closing
@@ -112,12 +134,15 @@ public final class NativeRuntime {
          * this is a constant-time check after the first try.
          */
         public static void initialise() {
-                if (instance != null || bootAttempted || !"true".equals(System.getProperty("mtr.nativeVulkan", "true"))) {
+                if (instance != null || bootAttempted || !NATIVE_VULKAN_ENABLED) {
                         return;
                 }
+                // Hoisted out of the try so the catch-all below can unmap the
+                // region on every failure path between creation and publication.
+                WrxRegion region = null;
                 try {
                         // 1. the graphics API must be Vulkan — auto-detected through VulkanMod
-                        if (!isVulkanModLoaded()) {
+                        if (!VULKAN_MOD_LOADED) {
                                 return; // silently: GL is the normal path, nothing to latch
                         }
 
@@ -126,9 +151,9 @@ public final class NativeRuntime {
                         // passes. Recording MTR geometry straight into VulkanMod's command
                         // buffer (the native path) would bypass Beryl entirely — unshaded,
                         // and against render passes the native pipeline was never built
-                        // for. The Java renderer, with the VulkanFrameState per-draw
-                        // bridge, draws MTR models through Beryl's own pipelines instead:
-                        // correctly positioned AND shaded by Beryl.
+                        // for. The Java renderer draws MTR models through Beryl's
+                        // own pipelines instead: correctly positioned AND shaded
+                        // by Beryl.
                         //
                         // This is a RUNTIME check (Beryl's shaders can be toggled while the
                         // client runs), and — crucially — it must NOT latch bootAttempted:
@@ -165,7 +190,7 @@ public final class NativeRuntime {
                         //    wrx.conf sidecar the native constructor boot reads
                         final Path nativesDirectory = extractNatives();
                         final Path regionDirectory = nativesDirectory.resolve("region");
-                        final WrxRegion region = WrxRegion.create(regionDirectory, nativesDirectory, useFfm,
+                        region = WrxRegion.create(regionDirectory, nativesDirectory, useFfm,
                                         64L << 20, 8L << 20,
                                         8L + WrxRegion.FRAME_ITEMS_OFFSET + (long) WrxRegion.FRAME_MAX_ITEMS * WrxRegion.FRAME_ITEM_BYTES);
 
@@ -239,6 +264,29 @@ public final class NativeRuntime {
                 } catch (Throwable throwable) {
                         MTR.LOGGER.error("[wrvk] native pipeline initialisation failed; the Java renderer stays active", throwable);
                         instance = null;
+                        // A failure between region creation and publication (library
+                        // load, FFM downcalls, shader upload, heartbeat wait, queue
+                        // overflow) must not leak the mapping — and, once the library
+                        // started its poller, that poller thread for the whole process
+                        // lifetime. Ask the poller to stop best-effort before
+                        // unmapping; each step is guarded so a failure here can never
+                        // mask the original exception above.
+                        if (region != null) {
+                                try {
+                                        region.publishBuildMessage(WrxRegion.MSG_SHUTDOWN, new byte[0]);
+                                        final long seq = region.buildSeq();
+                                        final long deadline = System.currentTimeMillis() + 2000;
+                                        while (region.buildAck() < seq && System.currentTimeMillis() < deadline) {
+                                                NativeFrameRecorder.spin(50);
+                                        }
+                                } catch (Throwable ignored) {
+                                        // best effort — the poller may never have started
+                                }
+                                try {
+                                        region.close();
+                                } catch (Throwable ignored) {
+                                }
+                        }
                 }
         }
 
@@ -302,7 +350,11 @@ public final class NativeRuntime {
                         final Object loader = loaderClass.getMethod("getInstance").invoke(null);
                         final Object mods = loaderClass.getMethod("isModLoaded", String.class).invoke(loader, "vulkanmod");
                         return Boolean.TRUE.equals(mods);
-                } catch (ReflectiveOperationException e) {
+                } catch (Throwable e) {
+                        // broadened from ReflectiveOperationException: the probe now also
+                        // runs at class init (VULKAN_MOD_LOADED), where an escaping
+                        // throwable would fail the whole class instead of just this
+                        // probe — every failure still means "not loaded" (GL path)
                         return false;
                 }
         }
@@ -432,9 +484,17 @@ public final class NativeRuntime {
         // message helpers
         // ---------------------------------------------------------------------------
 
-        /** Publish a build message and wait for the native side to process it. */
+        /**
+         * Publish a build message and wait for the native side to process it.
+         *
+         * <p>Wire format: every caller builds {@code [u32 type][body]}, but the
+         * queue header already carries the type — the native reader expects the
+         * payload to start with the body itself (requestId, instance, key or
+         * count at payload offset 0), so the 4-byte type prefix is stripped
+         * here and never reaches the payload.</p>
+         */
         void publish(byte[] message) {
-                region.publishBuildMessage(messageType(message), message);
+                region.publishBuildMessage(messageType(message), Arrays.copyOfRange(message, 4, message.length));
                 drainBuilds();
         }
 
@@ -679,10 +739,16 @@ public final class NativeRuntime {
          * frame — never from a worker thread that might be mid-queue.
          */
         static void disable() {
-                // Drop the instance so no new work starts. The region stays
-                // mapped until the render thread finalises the teardown
-                // (tickTeardown) — never from a worker thread that might be
-                // mid-queue, and never between a drain's begin/end frame write.
+                // Park the runtime for the deferred teardown BEFORE dropping the
+                // instance — the previous flow nulled instance first, so
+                // tickTeardown's read always saw null and the teardown never ran.
+                // The region stays mapped until the render thread finalises the
+                // teardown (tickTeardown) — never from a worker thread that might
+                // be mid-queue, and never between a drain's begin/end frame write.
+                final NativeRuntime runtime = instance;
+                if (runtime != null) {
+                        parkForTeardown(runtime);
+                }
                 instance = null;
                 teardownPending = true;
         }
@@ -694,8 +760,16 @@ public final class NativeRuntime {
          * the temp directory. Safe to call repeatedly.
          */
         public static void shutdown() {
+                final NativeRuntime runtime = instance;
+                if (runtime != null) {
+                        parkForTeardown(runtime);
+                }
                 instance = null;
                 teardownPending = true;
+                // A disconnect tears this native session down for good — re-arm
+                // the boot latch so a later reconnect boots a fresh pipeline
+                // instead of inheriting the dead session.
+                bootAttempted = false;
                 tickTeardown();
         }
 
@@ -708,12 +782,35 @@ public final class NativeRuntime {
                         return;
                 }
                 teardownPending = false;
-                final NativeRuntime runtime = instance;
-                instance = null;
+                // Consume the slot disable()/shutdown() parked. The live instance
+                // reference is deliberately left alone: a fresh boot (possible
+                // once shutdown() re-armed the latch) must never be killed here
+                // by a stale pending flag.
+                final NativeRuntime runtime = teardownTarget;
+                teardownTarget = null;
                 if (runtime == null) {
                         return;
                 }
                 runtime.teardown();
+        }
+
+        /**
+         * Park {@code runtime} in the deferred-teardown slot for the render
+         * thread's {@link #tickTeardown()}. When a previous disable parked a
+         * runtime that was never consumed (two disables inside one frame),
+         * that one is torn down best-effort right here so two runtimes can
+         * never pile up and leak.
+         */
+        private static void parkForTeardown(NativeRuntime runtime) {
+                final NativeRuntime parked = teardownTarget;
+                if (parked != null && parked != runtime) {
+                        try {
+                                parked.teardown();
+                        } catch (Throwable throwable) {
+                                MTR.LOGGER.error("[wrvk] deferred teardown of a parked runtime failed", throwable);
+                        }
+                }
+                teardownTarget = runtime;
         }
 
         private void teardown() {

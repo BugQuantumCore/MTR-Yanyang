@@ -392,6 +392,9 @@ public final class MTRClient {
                         CustomResourceLoader.reload();
                         ReleasedDynamicTextureRegistry.INSTANCE.reload();
                         PassengerSkinManager.reload();
+                        // The skin pool may have changed: drop per-passenger animation and render caches.
+                        PassengerModelRenderer.clear();
+                        PassengerRenderCache.clear();
                 });
                 EventRegistryClient.registerWorldRenderEvent(MainRenderer::render);
                 EventRegistryClient.registerWorldRenderEndEvent(BlockEntityRenderCulling::end);

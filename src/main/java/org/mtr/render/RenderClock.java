@@ -18,6 +18,8 @@ import org.mtr.tool.Drawing;
 
 public class RenderClock extends BlockEntityRendererExtension<BlockClock.ClockBlockEntity> implements IGui, IBlock {
 
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
+
 	@Override
 	public void render(BlockClock.ClockBlockEntity blockEntity, PoseStack matrixStack2, MultiBufferSource vertexConsumerProvider, ClientLevel world, LocalPlayer player, float tickDelta, int light, int overlay) {
 		final BlockPos pos = blockEntity.getBlockPos();
@@ -29,7 +31,7 @@ public class RenderClock extends BlockEntityRendererExtension<BlockClock.ClockBl
 			storedMatrixTransformations.add(matrixStack -> Drawing.rotateYDegrees(matrixStack, 90));
 		}
 
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			final long time = world.getDayTime() + 6000;
 

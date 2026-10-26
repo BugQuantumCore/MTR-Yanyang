@@ -145,6 +145,12 @@ public final class ResourcePackCreatorOperationServlet extends AbstractResourceP
 				if (tempVehicleSoundBase != null) {
 					switch (mode.toLowerCase(Locale.ENGLISH)) {
 						case "speed":
+							// Dispose the previous sound base so repeated test clicks don't leave its
+							// looping instances (motor/run/flange/noise/shoe/compressor) active in the
+							// sound engine forever.
+							if (vehicleSoundBase != null) {
+								vehicleSoundBase.dispose();
+							}
 							vehicleSoundBase = tempVehicleSoundBase;
 							motorSoundExpiry = System.currentTimeMillis() + 5000;
 							speed = targetSpeed;

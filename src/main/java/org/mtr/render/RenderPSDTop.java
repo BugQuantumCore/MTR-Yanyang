@@ -23,6 +23,7 @@ public class RenderPSDTop extends RenderRouteBase<BlockPSDTop.PSDTopBlockEntity>
 	private static final float BOTTOM_END_DIAGONAL_OFFSET = END_FRONT_OFFSET - BOTTOM_DIAGONAL_OFFSET / Mth.SQRT_OF_TWO;
 	private static final float COLOR_STRIP_START = 14.5F / 16;
 	private static final float COLOR_STRIP_END = 15 / 16F;
+	private static final ResourceLocation PSD_TOP_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/psd_top.png");
 
 	public RenderPSDTop() {
 		super(2 - SMALL_OFFSET_16, 7.5F, 1.5F, 0.125F, true, 3, BlockPSDTop.ARROW_DIRECTION);
@@ -53,7 +54,7 @@ public class RenderPSDTop extends RenderRouteBase<BlockPSDTop.PSDTopBlockEntity>
 		if (!airLeft && !airRight || persistent) {
 			return;
 		}
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/psd_top.png"), false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(PSD_TOP_TEXTURE, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			if (airLeft) {
 				// back

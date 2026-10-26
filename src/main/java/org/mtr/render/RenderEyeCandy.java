@@ -22,13 +22,19 @@ import org.mtr.tool.Drawing;
 
 public class RenderEyeCandy extends BlockEntityRendererExtension<BlockEyeCandy.EyeCandyBlockEntity> implements IGui {
 
+	/** Icon shown over the block while the player holds a rail tool or the eye candy item. */
+	private static final ResourceLocation EYE_CANDY_ITEM_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/item/eye_candy.png");
+
 	@Override
 	public void render(BlockEyeCandy.EyeCandyBlockEntity blockEntity, PoseStack matrixStack2, MultiBufferSource vertexConsumerProvider, ClientLevel world, LocalPlayer player, float tickDelta, int light, int overlay) {
 		final StoredMatrixTransformations storedMatrixTransformations = new StoredMatrixTransformations(0.5 + blockEntity.getBlockPos().getX(), blockEntity.getBlockPos().getY(), 0.5 + blockEntity.getBlockPos().getZ());
-		final int newLight = blockEntity.isFullBrightness() ? DEFAULT_LIGHT : light;
+		// The model colour-dim path expects a RAW 0-15 brightness (MainRenderer divides it
+		// by 0xF); feeding it the packed lightmap handed to this renderer always read as
+		// full-bright, so the model never dimmed at night or in tunnels. Mirrors RenderRails.
+		final int newLight = blockEntity.isFullBrightness() ? DEFAULT_LIGHT : world.getMaxLocalRawBrightness(blockEntity.getBlockPos());
 
 		if ((RenderRails.isHoldingRailRelated(player) || player.isHolding(Blocks.EYE_CANDY.get().asItem())) && Minecraft.getInstance().screen == null) {
-			MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/item/eye_candy.png"), false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
+			MainRenderer.scheduleRender(EYE_CANDY_ITEM_TEXTURE, false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
 				storedMatrixTransformations.transform(matrixStack, offset);
 				matrixStack.translate(0, 0.5, 0);
 				MTRClient.transformToFacePlayer(matrixStack, blockEntity.getBlockPos().getX() + 0.5, blockEntity.getBlockPos().getY() + 0.5, blockEntity.getBlockPos().getZ() + 0.5);

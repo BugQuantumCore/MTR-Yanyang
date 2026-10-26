@@ -76,6 +76,9 @@ public class DynamicTextureCache implements IGui {
         private static final ResourceLocation DEFAULT_WHITE_RESOURCE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
         private static final ResourceLocation DEFAULT_TRANSPARENT_RESOURCE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/transparent.png");
         private static final int MAX_IMAGE_SIZE = 2048;
+        // Bounded font-loading retries before the logical-font fallback (see loadBundledFont).
+        private static final int FONT_LOAD_ATTEMPTS = 3;
+        private static final String FALLBACK_LOGICAL_FONT = "Dialog";
 
         /**
          * Clear all asset-related cache and mark all dynamic textures to be drawn.
@@ -287,6 +290,43 @@ public class DynamicTextureCache implements IGui {
                 return pixels;
         }
 
+        /**
+         * Load one of the bundled TrueType fonts used for dynamic text rendering, retrying a
+         * bounded number of times before falling back to a logical (system) font.
+         *
+         * <p>The previous {@code while (font == null)} spin retried forever when the resource
+         * was missing ({@code ResourceManagerHelper.readResource} then never invokes its
+         * consumer) or corrupt ({@code Font.createFont} throwing on every iteration), wedging
+         * the single {@link org.mtr.render.WorkerThread} task loop: dynamic texture generation
+         * and occlusion culling stalled permanently behind a 100% CPU error-log flood.
+         * Bounded retries keep the worker alive, and the logical fallback keeps texture
+         * generation working — glyphs the fallback cannot shape render as missing glyphs
+         * rather than hanging the game.</p>
+         *
+         * @param fontPath path of the font under the {@code mtr} namespace, e.g. {@code font/noto-sans-semibold.ttf}
+         * @param fontName human-readable font name used in log messages
+         * @return the loaded font, or a logical font once every attempt has failed
+         */
+        private Font loadBundledFont(String fontPath, String fontName) {
+                for (int attempt = 1; attempt <= FONT_LOAD_ATTEMPTS; attempt++) {
+                        final Font[] loadedFont = {null};
+                        final int attemptNumber = attempt;
+                        ResourceManagerHelper.readResource(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, fontPath), inputStream -> {
+                                try {
+                                        loadedFont[0] = Font.createFont(Font.TRUETYPE_FONT, inputStream);
+                                } catch (Exception e) {
+                                        MTR.LOGGER.error("Failed to load the {} font for dynamic text rendering (attempt {}/{})", fontName, attemptNumber, FONT_LOAD_ATTEMPTS, e);
+                                }
+                        });
+                        if (loadedFont[0] != null) {
+                                return loadedFont[0];
+                        }
+                }
+                // Exactly one warning per fallback, not per retry.
+                MTR.LOGGER.warn("Failed to load the {} font for dynamic text rendering after {} attempts; falling back to the {} logical font until the next resource reload", fontName, FONT_LOAD_ATTEMPTS, FALLBACK_LOGICAL_FONT);
+                return Font.decode(FALLBACK_LOGICAL_FONT);
+        }
+
         private DynamicResource getResource(String key, Supplier<@Nullable NativeImage> supplier, DefaultRenderingColor defaultRenderingColor) {
                 resourceRegistryQueue.process(Runnable::run);
                 final DynamicResource dynamicResource = dynamicResources.get(key);
@@ -301,24 +341,14 @@ public class DynamicTextureCache implements IGui {
                 }
 
                 MainRenderer.WORKER_THREAD.scheduleDynamicTextures(() -> {
-                        while (font == null) {
-                                ResourceManagerHelper.readResource(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "font/noto-sans-semibold.ttf"), inputStream -> {
-                                        try {
-                                                font = Font.createFont(Font.TRUETYPE_FONT, inputStream);
-                                        } catch (Exception e) {
-                                                MTR.LOGGER.error("Failed to load the Noto Sans Semibold font for dynamic text rendering", e);
-                                        }
-                                });
+                        // Bounded font loading (see loadBundledFont): a missing or corrupt mtr:font/*.ttf must
+                        // not wedge the single worker thread behind an unbounded retry spin.
+                        if (font == null) {
+                                font = loadBundledFont("font/noto-sans-semibold.ttf", "Noto Sans Semibold");
                         }
 
-                        while (fontCjk == null) {
-                                ResourceManagerHelper.readResource(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "font/noto-serif-tc-semibold.ttf"), inputStream -> {
-                                        try {
-                                                fontCjk = Font.createFont(Font.TRUETYPE_FONT, inputStream);
-                                        } catch (Exception e) {
-                                                MTR.LOGGER.error("Failed to load the Noto Serif TC Semibold font for dynamic text rendering", e);
-                                        }
-                                });
+                        if (fontCjk == null) {
+                                fontCjk = loadBundledFont("font/noto-serif-tc-semibold.ttf", "Noto Serif TC Semibold");
                         }
 
                         // Set the generator constants on the same thread as the generation itself — setting

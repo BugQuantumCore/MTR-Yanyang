@@ -16,6 +16,7 @@ import org.mtr.block.BlockPSDAPGDoorBase;
 import org.mtr.block.PlatformHelper;
 import org.mtr.client.IDrawing;
 import org.mtr.core.tool.Utilities;
+import org.mtr.core.tool.Vector;
 import org.mtr.registry.Items;
 
 import java.util.function.Consumer;
@@ -37,8 +38,24 @@ public class RenderVehicleHelper {
 	 * @return whether the doorway is close to platform blocks, unlocked platform screen doors, or unlocked automatic platform gates
 	 */
 	public static boolean canOpenDoors(AABB doorway, PositionAndRotation positionAndRotation, @Nullable Consumer<BlockPSDAPGDoorBase.BlockEntityBase> doorBlockEntityCallback) {
-		final ClientLevel clientWorld = Minecraft.getInstance().level;
+		final Minecraft minecraftClient = Minecraft.getInstance();
+		final ClientLevel clientWorld = minecraftClient.level;
 		if (clientWorld == null) {
+			return false;
+		}
+
+		// Render-distance gate, cheapest check first: the scan below walks a ~100-block box
+		// per doorway per car per frame while a vehicle is stopped, but a car beyond the
+		// render distance — and the platform doors it would refresh — can't be seen. This
+		// deliberately uses the plain orthogonal distance (no behind-camera test, unlike
+		// CullingHelper.getDistanceFromCamera): door state must keep updating for every
+		// in-range car whether or not it is on screen, and door block entities close
+		// themselves shortly after their last refresh (BlockPSDAPGDoorBase.tick), so
+		// skipping the scan never leaves a door stuck open.
+		final Vector vehiclePosition = positionAndRotation.position;
+		final Vec3 cameraPosition = minecraftClient.gameRenderer.getMainCamera().getPosition();
+		final double renderDistance = minecraftClient.levelRenderer.getLastViewDistance() * 16;
+		if (Math.abs(vehiclePosition.x() - cameraPosition.x) + Math.abs(vehiclePosition.y() - cameraPosition.y) + Math.abs(vehiclePosition.z() - cameraPosition.z) > renderDistance) {
 			return false;
 		}
 

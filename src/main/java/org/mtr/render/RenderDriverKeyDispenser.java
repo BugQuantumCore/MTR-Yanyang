@@ -23,6 +23,8 @@ public class RenderDriverKeyDispenser extends BlockEntityRendererExtension<Block
 	private static final double ROTATION_OFFSET = Math.sqrt(2) / 2;
 	private static final double ROTATION_SCALE = 14 / ROTATION_OFFSET / 16 / 2;
 	private static final int ROTATION_DURATION = 5000;
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
+	private static final ResourceLocation DRIVER_KEY_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/item/driver_key.png");
 
 	@Override
 	public void render(BlockDriverKeyDispenser.DriverKeyDispenserBlockEntity blockEntity, PoseStack matrixStack2, MultiBufferSource vertexConsumerProvider, ClientLevel world, LocalPlayer player, float tickDelta, int light, int overlay) {
@@ -30,7 +32,7 @@ public class RenderDriverKeyDispenser extends BlockEntityRendererExtension<Block
 		final StoredMatrixTransformations storedMatrixTransformations = new StoredMatrixTransformations(0.5 + blockEntity.getBlockPos().getX(), blockEntity.getBlockPos().getY(), 0.5 + blockEntity.getBlockPos().getZ());
 
 		if (depot == null) {
-			MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
+			MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
 				storedMatrixTransformations.transform(matrixStack, offset);
 				matrixStack.translate(0, 0.5, 0);
 				MTRClient.transformToFacePlayer(matrixStack, blockEntity.getBlockPos().getX() + 0.5, blockEntity.getBlockPos().getY() + 0.5, blockEntity.getBlockPos().getZ() + 0.5);
@@ -53,7 +55,7 @@ public class RenderDriverKeyDispenser extends BlockEntityRendererExtension<Block
 			}
 
 			if (!colors.isEmpty()) {
-				MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/item/driver_key.png"), false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
+				MainRenderer.scheduleRender(DRIVER_KEY_TEXTURE, false, QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
 					storedMatrixTransformations.transform(matrixStack, offset);
 					matrixStack.translate(0, 0.5, 0);
 					MTRClient.transformToFacePlayer(matrixStack, blockEntity.getBlockPos().getX() + 0.5, blockEntity.getBlockPos().getY() + 0.5, blockEntity.getBlockPos().getZ() + 0.5);

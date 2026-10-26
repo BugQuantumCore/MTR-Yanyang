@@ -35,6 +35,7 @@ public class RenderLiftButtons extends BlockEntityRendererExtension<BlockLiftBut
 	private static final int HOVER_COLOR = 0xFFFFAAAA;
 	private static final int PRESSED_COLOR = 0xFFFF0000;
 	private static final ResourceLocation BUTTON_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/lift_button.png");
+	private static final ResourceLocation BLACK_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/black.png");
 
 	@Override
 	public void render(BlockLiftButtons.LiftButtonsBlockEntity blockEntity, PoseStack matrixStack2, MultiBufferSource vertexConsumerProvider, ClientLevel world, LocalPlayer player, float tickDelta, int light, int overlay) {
@@ -130,7 +131,7 @@ public class RenderLiftButtons extends BlockEntityRendererExtension<BlockLiftBut
 			});
 
 			// Render the black background
-			MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/black.png"), false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
+			MainRenderer.scheduleRender(BLACK_TEXTURE, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
 				storedMatrixTransformations3.transform(matrixStack, offset);
 				IDrawing.drawTexture(matrixStack, vertexConsumer, 0, -0.9375F, width, 0.40625F, Direction.UP, light);
 				matrixStack.popPose();

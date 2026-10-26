@@ -63,6 +63,18 @@ public final class ReleasedDynamicTextureRegistry extends DynamicReloadableRegis
 		}
 
 		@Override
+		protected void release() {
+			// Close the texture this holder is about to drop: without this, every resource
+			// reload (F3+T, pack change) replaced the ReleasedDynamicTexture without deleting
+			// the old one, leaking its GL texture object per holder — ~24 static GUI holders
+			// here plus every block-texture holder created via INSTANCE.create.
+			final ReleasedDynamicTexture oldTexture = get();
+			if (oldTexture != null) {
+				oldTexture.close();
+			}
+		}
+
+		@Override
 		protected ReleasedDynamicTexture create(ResourceLocation input) {
 			final Optional<Resource> optionalResource = Minecraft.getInstance().getResourceManager().getResource(input);
 			if (optionalResource.isPresent()) {

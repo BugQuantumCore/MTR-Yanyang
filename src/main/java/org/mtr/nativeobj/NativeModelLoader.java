@@ -39,16 +39,31 @@ public final class NativeModelLoader {
                 }
                 try {
                         final int requestId = requestIds.incrementAndGet();
-                        final int objLength = objString.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-                        final ByteBuffer body = ByteBuffer.allocate(4 + objLength + 4096 + mtlFiles.stream().mapToInt(parts -> parts.length * 16 + parts[0].length() + parts[1].length()).sum())
+                        // Byte-exact UTF-8 sizing: putString writes byte counts, so
+                        // reserving String.length() (chars) under-reserves non-ASCII
+                        // MTL content and overflows the body buffer — the model then
+                        // silently falls back to the javagl path. Every string is
+                        // encoded ONCE and the same bytes feed both the size
+                        // reservation and the write.
+                        final byte[] objBytes = objString.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        final List<byte[]> mtlBytes = new ArrayList<>(mtlFiles.size() * 2);
+                        int mtlLength = 0;
+                        for (final String[] mtl : mtlFiles) {
+                                final byte[] nameBytes = mtl[0].getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                                final byte[] contentBytes = mtl[1].getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                                mtlBytes.add(nameBytes);
+                                mtlBytes.add(contentBytes);
+                                mtlLength += nameBytes.length + contentBytes.length;
+                        }
+                        final ByteBuffer body = ByteBuffer.allocate(4 + objBytes.length + 4096 + 16 * mtlBytes.size() + mtlLength)
                                         .order(ByteOrder.LITTLE_ENDIAN);
                         body.putInt(requestId);
                         body.putInt((splitModel ? 1 : 0) | (flipTextureV ? 2 : 0));
-                        putString(body, objString);
+                        putString(body, objBytes);
                         body.putInt(mtlFiles.size());
-                        for (final String[] mtl : mtlFiles) {
-                                putString(body, mtl[0]);
-                                putString(body, mtl[1]);
+                        for (int i = 0; i < mtlFiles.size(); i++) {
+                                putString(body, mtlBytes.get(i * 2));
+                                putString(body, mtlBytes.get(i * 2 + 1));
                         }
                         final byte[] bodyBytes = new byte[body.position()];
                         body.flip();
@@ -236,10 +251,10 @@ public final class NativeModelLoader {
                 }
         }
 
-        private static void putString(ByteBuffer buffer, String value) {
-                final byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                buffer.putInt(bytes.length);
-                buffer.put(bytes);
+        /** Length-prefixed UTF-8 string body: u32 byte count, then the bytes. */
+        private static void putString(ByteBuffer buffer, byte[] utf8Bytes) {
+                buffer.putInt(utf8Bytes.length);
+                buffer.put(utf8Bytes);
         }
 
         public record NativeBuild(List<Group> groups) {

@@ -201,7 +201,12 @@ public class RenderPassengers {
 	private static long findGroundY(ClientLevel clientWorld, double x, double z, long minY, long maxY) {
 		final long quantisedX = (long) Math.floor(x * 2);
 		final long quantisedZ = (long) Math.floor(z * 2);
-		final long cacheKey = quantisedX * GOLDEN_RATIO_FRACTION ^ quantisedZ * 0xC2B2AE3D27D4EB4FL ^ minY * 0x165667B19E3779F9L ^ maxY * 0x27D4EB2F165667C5L;
+		// Lossless bit-packing: 20 bits each for the quantised X/Z column (0.5-block
+		// increments, covers &plusmn;262K blocks — far beyond playable coordinates) and 12
+		// bits each for the scan Y bounds (covers every vanilla-legal dimension height).
+		// The previous XOR-mix key could (rarely) collide across different inputs and
+		// hand back a wrong ground Y.
+		final long cacheKey = (quantisedX & 0xFFFFF) << 44 | (quantisedZ & 0xFFFFF) << 24 | (minY & 0xFFF) << 12 | (maxY & 0xFFF);
 		final long now = System.currentTimeMillis();
 
 		final CachedGroundY cached = GROUND_SCAN_CACHE.getAndMoveToFirst(cacheKey);

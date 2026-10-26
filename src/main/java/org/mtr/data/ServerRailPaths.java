@@ -59,7 +59,16 @@ public final class ServerRailPaths {
 			for (final Network network : NETWORKS.values()) {
 				network.invalidate();
 			}
-			pool.close();
+			// PathComputePool.close() throws IllegalStateException when its workers fail to
+			// stop within the 5 s awaitTermination window. MTR calls stop() from the
+			// server-stopping chain (before Main.stop()), so an uncaught throw here would
+			// abort that chain and skip every later shutdown handler; log and continue.
+			// (InterruptedException is already contained and re-interrupted inside close().)
+			try {
+				pool.close();
+			} catch (RuntimeException e) {
+				MTR.LOGGER.warn("Failed to stop the parallel path computation pool cleanly", e);
+			}
 		}
 		NETWORKS.clear();
 		pool = null;

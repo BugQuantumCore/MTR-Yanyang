@@ -122,6 +122,10 @@ public class CustomResourceLoader {
         // The native Vulkan pipeline owns GPU copies of every built model; free
         // them before the rebuild replaces the loader set (leak safety).
         org.mtr.nativeobj.NativeRuntime.freeAllModelsForReload();
+        // The GL path owns its own copy of every built model (a VAO+VBO per
+        // NewOptimizedModel); close them too before the caches below drop every
+        // Java reference — same leak safety as the native free above.
+        org.mtr.model.NewOptimizedModel.releaseAll();
                 MINECRAFT_MODEL_RESOURCES.clear();
                 MINECRAFT_TEXTURE_RESOURCES.clear();
                 RESOURCE_CACHE.clear();

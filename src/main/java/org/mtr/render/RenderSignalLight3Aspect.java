@@ -9,6 +9,8 @@ import org.mtr.client.IDrawing;
 
 public class RenderSignalLight3Aspect<T extends BlockSignalBase.BlockEntityBase> extends RenderSignalBase<T> {
 
+	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
+
 	public RenderSignalLight3Aspect() {
 		super(15, 3);
 	}
@@ -31,7 +33,7 @@ public class RenderSignalLight3Aspect<T extends BlockSignalBase.BlockEntityBase>
 			}
 		};
 
-		MainRenderer.scheduleRender(ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png"), false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+		MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
 			storedMatrixTransformations.transform(matrixStack, offset);
 			IDrawing.drawTexture(matrixStack, vertexConsumer, -0.09375F, y, -0.19375F, 0.09375F, y + 0.1875F, -0.19375F, Direction.UP, color, DEFAULT_LIGHT);
 			matrixStack.popPose();

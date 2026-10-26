@@ -63,11 +63,11 @@ public final class BveMotorData4 extends BveMotorDataBase { // 4 for BVE4 and Op
 		}
 		int offset = power > 0 ? 0 : 2;
 		int entryIndex = (int) (speed / 0.2F);
-		if (index == getSafe(channels[offset].soundIds, Math.min(channels[offset].maxEntryId, entryIndex))) {
-			return getSafe(channels[offset].pitches, entryIndex);
+		if (index == getSafeInt(channels[offset].soundIds, Math.min(channels[offset].maxEntryId, entryIndex))) {
+			return getSafeFloat(channels[offset].pitches, entryIndex);
 		}
-		if (index == getSafe(channels[offset + 1].soundIds, Math.min(channels[offset + 1].maxEntryId, entryIndex))) {
-			return getSafe(channels[offset + 1].pitches, entryIndex);
+		if (index == getSafeInt(channels[offset + 1].soundIds, Math.min(channels[offset + 1].maxEntryId, entryIndex))) {
+			return getSafeFloat(channels[offset + 1].pitches, entryIndex);
 		}
 		return 0;
 	}
@@ -79,16 +79,32 @@ public final class BveMotorData4 extends BveMotorDataBase { // 4 for BVE4 and Op
 		}
 		int offset = power > 0 ? 0 : 2;
 		int entryIndex = (int) (speed / 0.2F);
-		if (index == getSafe(channels[offset].soundIds, Math.min(channels[offset].maxEntryId, entryIndex))) {
-			return getSafe(channels[offset].volumes, entryIndex) * Math.abs(power);
+		if (index == getSafeInt(channels[offset].soundIds, Math.min(channels[offset].maxEntryId, entryIndex))) {
+			return getSafeFloat(channels[offset].volumes, entryIndex) * Math.abs(power);
 		}
-		if (index == getSafe(channels[offset + 1].soundIds, Math.min(channels[offset + 1].maxEntryId, entryIndex))) {
-			return getSafe(channels[offset + 1].volumes, entryIndex) * Math.abs(power);
+		if (index == getSafeInt(channels[offset + 1].soundIds, Math.min(channels[offset + 1].maxEntryId, entryIndex))) {
+			return getSafeFloat(channels[offset + 1].volumes, entryIndex) * Math.abs(power);
 		}
 		return 0;
 	}
 
-	private static <T> T getSafe(ArrayList<T> list, int index) {
+	// Both accessors guard against EMPTY channel lists: a sound.cfg that defines [Motor]
+	// entries while train.dat lacks the #motor_p1/p2/b1/b2 rows leaves the braking channels
+	// (or all of them) empty, and Math.clamp(index, 0, -1) throws IllegalArgumentException —
+	// reachable every frame from RenderVehicles.render, i.e. a client render crash on a
+	// malformed pack. Typed names avoid the erasure clash a getSafe(List<Integer>, int) /
+	// getSafe(List<Float>, int) overload pair would have.
+	private static int getSafeInt(ArrayList<Integer> list, int index) {
+		if (list.isEmpty()) {
+			return -1; // Never matches a real sound id, so the whole channel is skipped.
+		}
+		return list.get(Math.clamp(index, 0, list.size() - 1));
+	}
+
+	private static float getSafeFloat(ArrayList<Float> list, int index) {
+		if (list.isEmpty()) {
+			return 0; // A zero pitch/volume silences the channel.
+		}
 		return list.get(Math.clamp(index, 0, list.size() - 1));
 	}
 

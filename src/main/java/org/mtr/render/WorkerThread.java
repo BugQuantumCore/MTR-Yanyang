@@ -83,11 +83,12 @@ public final class WorkerThread {
         /**
          * Idempotent loop launcher. Called once per frame from
          * {@link MainRenderer#render}; the loop body only spawns the first time
-         * and then re-arms after a {@value #COOLDOWN}-tick idle period to recover from a
-         * Minecraft client restart without leaking the thread.
+         * and then re-arms after a {@value #COOLDOWN}-frame idle period to recover from
+         * a Minecraft client restart — but only once the previous loop has actually
+         * exited, so the thread is never leaked or duplicated.
          */
         public void start() {
-                if (canStart && isRunning()) {
+                if (canStart && loopThread == null && isRunning()) {
                         canStart = false;
                         worker.submit(() -> {
                                 loopThread = Thread.currentThread();
@@ -106,19 +107,20 @@ public final class WorkerThread {
                                         if (!hasWork()) {
                                                 LockSupport.parkNanos(IDLE_PARK_NANOS);
                                         }
-
-                                        runCooldown = 0;
                                 }
                                 loopThread = null;
                         });
                 }
 
-                if (runCooldown == COOLDOWN) {
-                        canStart = true;
+                // Single-ownership cooldown: this method (the render thread) is the only
+                // writer of the counter, and the launcher re-arms only when the previous
+                // loop has actually exited (loopThread == null). Previously the re-arm had
+                // no liveness check — spawning a fresh never-exiting culling loop every
+                // ~101 frames — while the loop thread clobbered the counter cross-thread.
+                if (loopThread == null && !canStart && ++runCooldown >= COOLDOWN) {
                         runCooldown = 0;
+                        canStart = true;
                         MTR.LOGGER.debug("Restarting worker thread");
-                } else {
-                        runCooldown++;
                 }
         }
 
