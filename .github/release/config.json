@@ -1,6 +1,6 @@
 {
-  "run_id": "40250186781",
-  "tag": "4.1.0-beta-2.yanyang.5",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.5 (1.21.1 & 1.21.4, Fabric & NeoForge) \u2014 genuine premium-account passenger skins, native wire-format fix",
+  "run_id": "40328523684",
+  "tag": "4.1.0-beta-2.yanyang.6",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.6 (1.21.1 & 1.21.4, Fabric & NeoForge) \u2014 no more mid-session crash when turning Beryl shaders off; passenger glow fix",
   "notes_file": "notes.md"
 }
