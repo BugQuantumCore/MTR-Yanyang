@@ -482,7 +482,7 @@ public final class PassengerSkinManager {
 		for (int x = xFrom; x < xTo; x++) {
 			for (int y = yFrom; y < yTo; y++) {
 //? if >= 1.21.4 {
-				image.setPixelABGR(x, y, image.getPixelABGR(x, y) | ALPHA_OPAQUE);
+				image.setPixel(x, y, image.getPixel(x, y) | ALPHA_OPAQUE);
 //? } else {
 				/*image.setPixelRGBA(x, y, image.getPixelRGBA(x, y) | ALPHA_OPAQUE);
 *///? }
@@ -500,7 +500,7 @@ public final class PassengerSkinManager {
 			for (int y = yFrom; y < yTo; y++) {
 				final int alpha;
 //? if >= 1.21.4 {
-				alpha = image.getPixelABGR(x, y) >>> 24 & 0xFF;
+				alpha = image.getPixel(x, y) >>> 24 & 0xFF;
 //? } else {
 				/*alpha = image.getPixelRGBA(x, y) >>> 24 & 0xFF;
 *///? }
@@ -512,7 +512,7 @@ public final class PassengerSkinManager {
 		for (int x = xFrom; x < xTo; x++) {
 			for (int y = yFrom; y < yTo; y++) {
 //? if >= 1.21.4 {
-				image.setPixelABGR(x, y, image.getPixelABGR(x, y) & 0xFFFFFF);
+				image.setPixel(x, y, image.getPixel(x, y) & 0xFFFFFF);
 //? } else {
 				/*image.setPixelRGBA(x, y, image.getPixelRGBA(x, y) & 0xFFFFFF);
 *///? }
