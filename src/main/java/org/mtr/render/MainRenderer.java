@@ -81,13 +81,16 @@ public class MainRenderer {
         private static long timerMillis;
         private static long lastRenderedMillis;
         /**
-         * Beryl pipeline state mirror for the mid-session toggle detector in
-         * {@link #render} — {@code berylStateInitialized} stays {@code false}
+         * Renderer-owner state mirror for the mid-session transition detector in
+         * {@link #render} — {@code rendererOwnerInitialized} stays {@code false}
          * until the first frame establishes the baseline (the first frame must
-         * not trigger a rebuild).
+         * not trigger a rebuild). The owner, not the raw Beryl flag, decides
+         * when models must be rebuilt: {@code javaRenderer} is true while Beryl
+         * drives the frame OR while the native pipeline is latched off (Beryl
+         * at boot / failed boot / VulkanMod absent).
          */
-        private static boolean berylStateInitialized;
-        private static boolean berylActiveLast;
+        private static boolean rendererOwnerInitialized;
+        private static boolean javaRendererLast;
 
         /**
          * Shared off-main-thread worker for occlusion culling and dynamic texture generation.
@@ -173,15 +176,24 @@ public class MainRenderer {
                 // one path at load time, so a toggle triggers a full rebuild — the
                 // same reload F3+T performs. Dual-path models (native mesh + GL
                 // buffer) cover the transition window while the rebuild runs.
+                //
+                // The rebuild fires on OWNER transitions only (Java GL ↔ native
+                // Vulkan), tracked through the native pipeline's live state: with
+                // the native pipeline booted, a Beryl toggle really does swap the
+                // owning renderer; with it latched off (Beryl ran at boot — see
+                // NativeRuntime#initialise) both sides of the toggle draw through
+                // the Java GL path and the already-correct models are reused, so a
+                // toggle costs nothing instead of a multi-second full rebuild.
                 final boolean berylActiveNow = org.mtr.client.VulkanCompat.isVulkanModActive() && org.mtr.client.VulkanCompat.isBerylActive();
-                if (berylStateInitialized && berylActiveNow != berylActiveLast) {
+                final boolean javaRendererNow = berylActiveNow || !org.mtr.nativeobj.NativeRuntime.isActive();
+                if (rendererOwnerInitialized && javaRendererNow != javaRendererLast) {
                         MTR.LOGGER.info("[wrvk] Beryl shader pipeline {} — rebuilding the MTR models for the {} renderer",
                                         berylActiveNow ? "enabled" : "disabled",
-                                        berylActiveNow ? "Java GL" : "native Vulkan");
+                                        javaRendererNow ? "Java GL" : "native Vulkan");
                         org.mtr.client.CustomResourceLoader.reload();
                 }
-                berylActiveLast = berylActiveNow;
-                berylStateInitialized = true;
+                javaRendererLast = javaRendererNow;
+                rendererOwnerInitialized = true;
 
                 final long millisElapsed = getMillisElapsed();
                 timerMillis += millisElapsed;

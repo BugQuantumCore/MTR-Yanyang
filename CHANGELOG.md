@@ -2,6 +2,16 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.6 (2026-10-26)
+
+**Hard crash when turning Beryl shaders off — fixed**
+- Attaching the native Vulkan recorder **mid-session** — in the very frame Beryl hands the frame back to VulkanMod, while its render passes and command buffers are still mid-transition — crashed the game at the driver level with **no Minecraft crash report and no JVM hs_err** (VulkanMod 0.6.7 + Beryl 0.2.0-alpha). The native boot is now **latched off for the whole session when Beryl's shaders are driving the frame**: a session that starts with shaders on keeps the Java renderer after they are toggled off, instead of dying. Reconnecting with shaders off boots the native pipeline cleanly, as always on plain VulkanMod.
+- The Beryl-toggle model rebuild now fires on **renderer-owner transitions only** (Java GL ↔ native Vulkan): with the native pipeline latched off, a toggle reuses the already-correct GL models instead of a multi-second full rebuild, and the log line names the renderer that actually owns the next rebuild.
+- JDK 22+ on the shared-memory transport no longer logs a scary `wr_shutdown downcall unavailable` NPE on every boot — the FFM arena is created for the shutdown lookup too (the queue shutdown path remains the fallback).
+
+**AI passengers glowing under shaders — fixed**
+- On-board riders (AI passengers **and** real players) were drawn with a constant full-bright lightmap (`DEFAULT_LIGHT`): vanilla renders that as flat lighting, but shader pipelines (Beryl) read max lightmap coordinates as emissive — passengers visibly **glowed in tunnels and at night** while the car body around them dimmed correctly. Riders now sample the packed world light at their actual position (+1 Y), matching the platform/walking passenger path.
+
 ## 4.1.0-beta-2.yanyang.5 (2026-10-26)
 
 **AI passenger skins — every passenger wears a genuine premium account's skin**

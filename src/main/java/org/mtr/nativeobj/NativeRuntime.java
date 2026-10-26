@@ -34,7 +34,13 @@ import java.util.stream.Stream;
  * only when VulkanMod is present and every Vulkan handle resolves, and any
  * failure at any stage leaves the fork's Java renderer exactly as it was,
  * with a single log line explaining why. There is no user toggle — the
- * graphics API being Vulkan IS the switch (VulkanMod detection).</p>
+ * graphics API being Vulkan IS the switch (VulkanMod detection). One rule
+ * bounds the whole lifecycle: the attach happens at boot time only (the
+ * first resource reload / first frame window), never mid-session — while
+ * Beryl's shaders are driving the frame the boot is latched OFF for the
+ * session (see {@link #initialise()}), because attaching to VulkanMod's
+ * live device in the transition frame after Beryl hands the frame back
+ * crashes at the driver level with no recoverable report.</p>
  *
  * <p>The communication transport follows the "Java 与 C++ 通信方式" setting:
  * shared memory by default, Panama FFM on JDK 22+. {@link #isJdk22()} drives
@@ -61,7 +67,7 @@ public final class NativeRuntime {
          * and the temp directory for the rest of the process.
          */
         private static volatile @Nullable NativeRuntime teardownTarget;
-        /** One-shot log for the per-frame Beryl deferral (the skip itself repeats silently). */
+        /** One-shot log for the session-long Beryl deferral latch (the skip itself repeats silently). */
         private static volatile boolean berylSkipLogged;
         /**
          * The {@code mtr.nativeVulkan} property, read once at class init — the
@@ -155,18 +161,25 @@ public final class NativeRuntime {
                         // own pipelines instead: correctly positioned AND shaded
                         // by Beryl.
                         //
-                        // This is a RUNTIME check (Beryl's shaders can be toggled while the
-                        // client runs), and — crucially — it must NOT latch bootAttempted:
-                        // a session that starts with Beryl shaders on (or a Beryl jar that
-                        // merely sits in the mods folder with shaders off!) still deserves
-                        // the native pipeline the moment the shaders are off. The check is
-                        // one cached-field reflection read per frame while it defers.
+                        // This LATCHES the boot for the rest of the session: attaching the
+                        // native Vulkan recorder MID-SESSION — in the very frame Beryl
+                        // hands the frame back to VulkanMod, while its render passes and
+                        // command buffers are still mid-transition — has proven fatal at
+                        // the driver level (the process dies outright: no Minecraft crash
+                        // report and no JVM hs_err; user-verified on VulkanMod 0.6.7 +
+                        // Beryl 0.2.0-alpha, 2026-10-26). A session that starts with Beryl
+                        // shaders on therefore keeps the Java renderer for good, even after
+                        // the shaders are toggled off; shutdown() re-arms the latch on
+                        // disconnect so a fresh world join boots the native pipeline
+                        // cleanly when shaders are off. (A Beryl jar with shaders OFF never
+                        // reaches this branch and keeps the always-on behaviour.)
                         if (org.mtr.client.VulkanCompat.isBerylActive()) {
+                                bootAttempted = true;
                                 if (!berylSkipLogged) {
                                         berylSkipLogged = true;
-                                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder is bypassed so Beryl can shade MTR geometry through its own pipelines (Java renderer active)");
+                                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder stays off for this session (a mid-session attach after Beryl hands the frame back crashes at the driver level) — the Java renderer draws MTR geometry through Beryl's pipelines; reconnect with shaders off to boot the native pipeline");
                                 }
-                                return; // no latch — retry next frame (Beryl can be toggled off)
+                                return;
                         }
 
                         // From here on the environment claims Vulkan and Beryl is not
@@ -228,9 +241,16 @@ public final class NativeRuntime {
                         }
                         // The shutdown downcall exists on every JDK >= 22
                         // (independent of the transport); the queue-based
-                        // MSG_SHUTDOWN below covers the older JDKs.
+                        // MSG_SHUTDOWN below covers the older JDKs. The shared
+                        // arena must exist for the library lookup even when the
+                        // transport is shared memory (it is only created inside
+                        // the FFM branch above) — without it the reflective
+                        // SymbolLookup.libraryLookup receives a null Arena and
+                        // the downcall is spurned with an NPE in the log on every
+                        // shared-memory boot (the arena closes again at teardown).
                         if (isJdk22()) {
                                 try {
+                                        sharedFfmArena();
                                         nativeShutdown = downcall(MethodHandles.lookup(), nativesDirectory, "wr_shutdown", int.class);
                                 } catch (Throwable throwable) {
                                         MTR.LOGGER.warn("[wrvk] wr_shutdown downcall unavailable; the queue shutdown path will be used", throwable);

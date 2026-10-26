@@ -498,6 +498,23 @@ public final class RenderVehicles {
                 if (offsetVector != null || CullingHelper.getDistanceFromCamera(playerRenderingPositionAndRotation.position.x(), playerRenderingPositionAndRotation.position.y(), playerRenderingPositionAndRotation.position.z()) <= minecraftClient.levelRenderer.getLastViewDistance() * 8) {
                         final StoredMatrixTransformations storedMatrixTransformations = getStoredMatrixTransformations(offsetVector == null, playerRenderingPositionAndRotation, -oscillationAmount / 2);
 
+                        // Sample the packed world light at the rider's actual position.
+                        // The previous full-bright DEFAULT_LIGHT fed every on-board rider
+                        // (AI passengers and real players alike) a constant-max lightmap
+                        // coordinate: vanilla renders that as flat lighting, but shader
+                        // pipelines (Beryl) read max lightmap coordinates as emissive —
+                        // passengers visibly glowed in tunnels and at night while the car
+                        // body around them dimmed correctly. The platform path
+                        // (RenderPassengers) already samples the real light, so this also
+                        // makes on-board and platform passengers render consistently.
+                        final ClientLevel clientLevel = minecraftClient.level;
+                        final BlockPos riderBlockPos = BlockPos.containing(
+                                        playerRenderingPositionAndRotation.position.x(),
+                                        playerRenderingPositionAndRotation.position.y() + 1,
+                                        playerRenderingPositionAndRotation.position.z());
+                        final int riderLight = clientLevel == null ? IGui.DEFAULT_LIGHT
+                                        : LightTexture.pack(clientLevel.getBrightness(LightLayer.BLOCK, riderBlockPos), clientLevel.getBrightness(LightLayer.SKY, riderBlockPos));
+
                         // Render player
                         MainRenderer.scheduleRender(QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                 storedMatrixTransformations.transform(matrixStack, offset);
@@ -505,15 +522,15 @@ public final class RenderVehicles {
                                 Drawing.rotateYRadians(matrixStack, (float) (Math.PI + additionalRotation));
                                 if (aiPassenger == null) {
 //? if >= 1.21.4 {
-                                        minecraftClient.getEntityRenderDispatcher().render(playerEntity, 0, 0, 0, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), IGui.DEFAULT_LIGHT);
+                                        minecraftClient.getEntityRenderDispatcher().render(playerEntity, 0, 0, 0, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), riderLight);
 //? } else {
-                                        /*minecraftClient.getEntityRenderDispatcher().render(playerEntity, 0, 0, 0, 0, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), IGui.DEFAULT_LIGHT);
+                                        /*minecraftClient.getEntityRenderDispatcher().render(playerEntity, 0, 0, 0, 0, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), riderLight);
 //
 *///? }
                                 } else {
                                         // AI standee: same expected matrix state, rendered through the model
                                         // renderer with the phone-possible standing pose.
-                                        PassengerModelRenderer.renderPassenger(minecraftClient.level, aiPassenger, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), IGui.DEFAULT_LIGHT);
+                                        PassengerModelRenderer.renderPassenger(clientLevel, aiPassenger, 0, matrixStack, minecraftClient.renderBuffers().bufferSource(), riderLight);
                                 }
                                 matrixStack.popPose();
                         });
