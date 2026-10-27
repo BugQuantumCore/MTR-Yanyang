@@ -125,6 +125,12 @@ public final class PassengerModelRenderer {
 
 		final float ageInTicks = clientLevel.getGameTime() % 100000 + 1;
 
+		// Beryl's entity shader converts the block-light coordinate into squared warm
+		// emission, and MTR platforms sit at light level 15 — a truthful light still
+		// glows there. Clamp the block component so passengers read as lamp-lit
+		// instead of beacon-like; harmless (a passthrough) on GL and plain VulkanMod.
+		light = org.mtr.client.VulkanCompat.capBlockLightForBeryl(light);
+
 		// Deterministic age: mostly adults (with ±3% height jitter), some children
 		// (uniformly scaled down — equal-ratio, vanilla baby-mob proportions).
 		final boolean isChild = hashLong(passengerId, 7) < CHILD_CHANCE;

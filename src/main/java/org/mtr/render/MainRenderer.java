@@ -91,6 +91,42 @@ public class MainRenderer {
          */
         private static boolean rendererOwnerInitialized;
         private static boolean javaRendererLast;
+        /**
+         * Grace frames left after the most recent Beryl state flip. While the
+         * countdown runs, {@link #render} keeps ticking the simulation but drops
+         * every queued MTR draw (vehicles, lifts, rails, passengers, models,
+         * scheduled renders), keeping MTR geometry entirely off the GPU while
+         * Beryl's transition settles — see {@link #BERYL_TRANSITION_GRACE_FRAMES}.
+         */
+        private static int berylTransitionCountdown;
+        /**
+         * Set when the renderer OWNER flipped (native Vulkan &harr; Java GL) during the
+         * grace window; the deferred {@code CustomResourceLoader.reload()} runs on
+         * the first frame after the window instead of on the transition frame
+         * itself (a multi-second blocking reload inside the frame that swaps
+         * Beryl's MainPass and rebuilds every terrain section is exactly the kind
+         * of load that takes the driver down).
+         */
+        private static boolean rebuildPendingAfterBerylTransition;
+        /**
+         * Length of the MTR draw pause around a Beryl pipeline flip.
+         *
+         * <p>Beryl 0.2.0-alpha toggles its pipeline on the render thread's key
+         * handling — mid-session, between two frames. The flip replaces
+         * VulkanMod's MainPass object, swaps the terrain vertex format and
+         * builder, and forces a full terrain rebuild
+         * ({@code LevelRenderer.setBlocksDirty()}); opening any screen (for
+         * example Beryl's own options screen, where the shaders checkbox lives)
+         * additionally frees every Beryl GPU object
+         * ({@code MemoryManager.addFrameOp(RenderingPipeline::clearResources)}).
+         * MTR's per-frame load — thousands of model quads, hundreds of passenger
+         * models, dynamic texture uploads — submitted into that transition
+         * window has repeatedly killed the driver outright (hard process death,
+         * no Minecraft crash report and no JVM hs_err). Pausing MTR's drawing
+         * for a second while Beryl settles removes every MTR draw from that
+         * window at the cost of a one-second invisible-trains pause.</p>
+         */
+        private static final int BERYL_TRANSITION_GRACE_FRAMES = 60;
 
         /**
          * Shared off-main-thread worker for occlusion culling and dynamic texture generation.
@@ -173,24 +209,27 @@ public class MainRenderer {
                 // Beryl's keybind toggles its shader pipeline while the client runs,
                 // and the renderer that must own the models changes with it (native
                 // under plain VulkanMod, Java GL under Beryl). Models are built for
-                // one path at load time, so a toggle triggers a full rebuild — the
-                // same reload F3+T performs. Dual-path models (native mesh + GL
-                // buffer) cover the transition window while the rebuild runs.
+                // one path at load time, so an owner change needs a full rebuild —
+                // the same reload F3+T performs. Dual-path models (native mesh + GL
+                // buffer) cover the pause while the deferred rebuild runs.
                 //
-                // The rebuild fires on OWNER transitions only (Java GL ↔ native
-                // Vulkan), tracked through the native pipeline's live state: with
-                // the native pipeline booted, a Beryl toggle really does swap the
-                // owning renderer; with it latched off (Beryl ran at boot — see
-                // NativeRuntime#initialise) both sides of the toggle draw through
-                // the Java GL path and the already-correct models are reused, so a
-                // toggle costs nothing instead of a multi-second full rebuild.
+                // ANY Beryl state flip opens the transition grace window first (see
+                // BERYL_TRANSITION_GRACE_FRAMES): the reload — when the OWNER really
+                // changed, tracked through the native pipeline's live state — fires on
+                // the first frame after the window, never inside the transition frame.
+                // With the native pipeline latched off (Beryl ran at boot — see
+                // NativeRuntime#initialise) both sides of the toggle draw through the
+                // Java GL path, the already-correct models are reused and the grace
+                // window only costs the one-second draw pause.
                 final boolean berylActiveNow = org.mtr.client.VulkanCompat.isVulkanModActive() && org.mtr.client.VulkanCompat.isBerylActive();
                 final boolean javaRendererNow = berylActiveNow || !org.mtr.nativeobj.NativeRuntime.isActive();
                 if (rendererOwnerInitialized && javaRendererNow != javaRendererLast) {
-                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline {} — rebuilding the MTR models for the {} renderer",
+                        MTR.LOGGER.info("[wrvk] Beryl shader pipeline {} — pausing MTR drawing for {} frames while the transition settles, then reloading the models for the {} renderer",
                                         berylActiveNow ? "enabled" : "disabled",
+                                        BERYL_TRANSITION_GRACE_FRAMES,
                                         javaRendererNow ? "Java GL" : "native Vulkan");
-                        org.mtr.client.CustomResourceLoader.reload();
+                        berylTransitionCountdown = BERYL_TRANSITION_GRACE_FRAMES;
+                        rebuildPendingAfterBerylTransition = true;
                 }
                 javaRendererLast = javaRendererNow;
                 rendererOwnerInitialized = true;
@@ -212,6 +251,34 @@ public class MainRenderer {
                 // Tick the riding cool down (dismount player if they are no longer riding a vehicle) and store the player offset cache
                 VehicleRidingMovement.tick();
                 ArrivalsCacheClient.INSTANCE.tick();
+
+                // Beryl transition grace window: the simulation above keeps ticking
+                // (trains stay on schedule) but every MTR draw is dropped while Beryl
+                // swaps its MainPass / vertex format and the full terrain rebuild churns
+                // (see BERYL_TRANSITION_GRACE_FRAMES). Queued draw state is cleared so
+                // nothing buffered before the flip bursts out at the end of the window;
+                // a deferred owner rebuild (native Vulkan ↔ Java GL) fires on the first
+                // frame AFTER the window instead of inside the transition frame.
+                if (berylTransitionCountdown > 0) {
+                        berylTransitionCountdown--;
+                        MODEL_RENDERS.clear();
+                        MODEL_RENDERS_TRANSLUCENT.clear();
+                        for (int i = 0; i < TOTAL_RENDER_STAGES; i++) {
+                                final ObjectArrayList<Object2ObjectLinkedOpenHashMap<ResourceLocation, ObjectArrayList<ScheduledRender>>> rendersList = RENDERS.get(i);
+                                for (int j = 0; j < QUEUED_RENDER_LAYERS.length; j++) {
+                                        final Object2ObjectLinkedOpenHashMap<ResourceLocation, ObjectArrayList<ScheduledRender>> pendingMap = rendersList.get(j);
+                                        pendingMap.forEach((identifier, renderList) -> renderList.clear());
+                                        pendingMap.clear();
+                                }
+                        }
+                        TEXT_RENDERS.clear();
+                        if (berylTransitionCountdown == 0 && rebuildPendingAfterBerylTransition) {
+                                rebuildPendingAfterBerylTransition = false;
+                                MTR.LOGGER.info("[wrvk] Beryl transition settled — rebuilding the MTR models for the {} renderer", javaRendererLast ? "Java GL" : "native Vulkan");
+                                org.mtr.client.CustomResourceLoader.reload();
+                        }
+                        return;
+                }
 
                 final Vec3 cameraShakeOffset = clientPlayerEntity.position().subtract(offset);
                 RenderVehicles.render(millisElapsed, cameraShakeOffset);

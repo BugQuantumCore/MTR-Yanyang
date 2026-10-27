@@ -169,6 +169,43 @@ public final class VulkanCompat {
                 return true;
         }
 
+        /**
+         * Ceiling for the block-light component fed to MTR-rendered humanoids (AI passengers
+         * and riding players) while Beryl's shader pipeline drives the frame.
+         *
+         * <p>Beryl's entity vertex shader ({@code entity.vsh}, verified against
+         * 0.2.0-alpha) turns the block-light lightmap coordinate into an <b>additive warm
+         * emission</b> — {@code texColor * ((uv/256)^2 * 2) * vec3(1.0, 0.7, 0.5)} — instead of
+         * the vanilla lightmap texture sample. At block light 15 that is a {@code 1.76&times;}
+         * warm bloom on every entity; MTR stations keep light level 15 across whole platforms
+         * (mob-spawn-proofing), so every passenger rendered with a truthful packed light
+         * still glows after the yanyang.6 light-sampling fix — the real light simply IS 15.
+         * Capping the block component at {@code 8} keeps a gentle warm lamp-lit tint
+         * ({@code 0.5&times;}) without the beacon-like glow, while tunnels, daylight and the
+         * sky component stay untouched. Plain VulkanMod and OpenGL use the vanilla lightmap
+         * curve and keep the truthful value.</p>
+         */
+        public static final int BERYL_HUMANOID_BLOCK_LIGHT_CAP = 8;
+
+        /**
+         * Caps the block-light component of a packed lightmap value for an MTR-rendered
+         * humanoid while Beryl is driving the frame; a passthrough everywhere else.
+         *
+         * @param packedLight {@code LightTexture.pack(blockLight, skyLight)}
+         * @return the same packed value with the block component clamped to
+         *         {@link #BERYL_HUMANOID_BLOCK_LIGHT_CAP} when Beryl is active, unchanged otherwise
+         */
+        public static int capBlockLightForBeryl(int packedLight) {
+                if (!isBerylActive()) {
+                        return packedLight;
+                }
+                final int blockLight = packedLight >> 4 & 0xF;
+                if (blockLight <= BERYL_HUMANOID_BLOCK_LIGHT_CAP) {
+                        return packedLight;
+                }
+                return BERYL_HUMANOID_BLOCK_LIGHT_CAP << 4 | packedLight & 0xF;
+        }
+
         private VulkanCompat() {
         }
 }

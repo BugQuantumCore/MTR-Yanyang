@@ -2,6 +2,18 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.7 (2026-10-27)
+
+Both yanyang.6 follow-ups below were diagnosed against the actual Beryl 0.2.0-alpha bytecode + shaders (decompiled `RenderingPipeline`, its keybind/options mixins and `entity.vsh`/`terrain.fsh`), not inferred from log lines.
+
+**Beryl toggle hard crash — second, deeper fix**
+- yanyang.6 latched the native recorder off, but the crash persisted because the *toggle itself* is far heavier than the attach it replaced: Beryl flips its pipeline on the render thread mid-session, swaps VulkanMod's `MainPass` object, reverts the terrain vertex format/builder, forces a **full terrain rebuild** (`LevelRenderer.setBlocksDirty()`), and — when toggled from its options screen — frees **every Beryl GPU object** (`clearResources`). MTR kept submitting its full per-frame load (thousands of model quads, hundreds of passenger models) straight into that transition window, and on an owner flip even ran the **multi-second blocking `CustomResourceLoader.reload()` inside the transition frame itself**. Any of that can take the driver down with no crash report and no hs_err.
+- MTR now opens a **60-frame transition grace window** on any Beryl state flip: the simulation keeps ticking (trains stay on schedule) but every MTR draw — vehicles, lifts, rails, passengers, models, scheduled renders, dynamic-texture uploads — is dropped while Beryl settles, then resumes automatically. The owner rebuild (native Vulkan ↔ Java GL) now fires on the **first frame after** the window instead of inside the transition frame. The one-second invisible-trains pause replaces a hard crash.
+
+**Passenger glow under Beryl — real root cause**
+- yanyang.6 sampled the truthful packed light, but the glow persisted at lit stations — because Beryl's entity vertex shader (`entity.vsh`, shared with `terrain.fsh`) turns the **block-light coordinate itself** into a squared warm emission: `texColor × ((uv/256)² × 2) × vec3(1.0, 0.7, 0.5)`. At block light 15 that is a **1.76×** warm bloom on every entity — and MTR platforms deliberately sit at light level 15 (mob-spawn-proofing), so the *truthful* light feeds the emission directly. Tunnels and daylight were already fixed by the light sampling; lit platforms were not.
+- While Beryl drives the frame, the block-light component fed to **every MTR-rendered humanoid** (AI passengers, platform and on-board, plus real riding players, phone cuboid included) is now clamped at **8** — a gentle 0.5× lamp-lit warm tint instead of a beacon. Plain VulkanMod and OpenGL keep the truthful value (vanilla lightmap curve, no emission), so nothing changes outside Beryl. The cap lives in `VulkanCompat.capBlockLightForBeryl` with the shader math documented; raise `BERYL_HUMANOID_BLOCK_LIGHT_CAP` if you prefer brighter passengers.
+
 ## 4.1.0-beta-2.yanyang.6 (2026-10-26)
 
 **Hard crash when turning Beryl shaders off — fixed**

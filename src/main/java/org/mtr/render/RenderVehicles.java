@@ -507,13 +507,19 @@ public final class RenderVehicles {
                         // body around them dimmed correctly. The platform path
                         // (RenderPassengers) already samples the real light, so this also
                         // makes on-board and platform passengers render consistently.
+                        //
+                        // Beryl goes further: its entity shader turns the block-light
+                        // coordinate itself into squared warm emission, and MTR platforms
+                        // sit at light level 15 — so a truthful light STILL glows at lit
+                        // stations. capBlockLightForBeryl clamps the block component while
+                        // Beryl drives the frame (a passthrough everywhere else).
                         final ClientLevel clientLevel = minecraftClient.level;
                         final BlockPos riderBlockPos = BlockPos.containing(
                                         playerRenderingPositionAndRotation.position.x(),
                                         playerRenderingPositionAndRotation.position.y() + 1,
                                         playerRenderingPositionAndRotation.position.z());
-                        final int riderLight = clientLevel == null ? IGui.DEFAULT_LIGHT
-                                        : LightTexture.pack(clientLevel.getBrightness(LightLayer.BLOCK, riderBlockPos), clientLevel.getBrightness(LightLayer.SKY, riderBlockPos));
+                        final int riderLight = org.mtr.client.VulkanCompat.capBlockLightForBeryl(clientLevel == null ? IGui.DEFAULT_LIGHT
+                                        : LightTexture.pack(clientLevel.getBrightness(LightLayer.BLOCK, riderBlockPos), clientLevel.getBrightness(LightLayer.SKY, riderBlockPos)));
 
                         // Render player
                         MainRenderer.scheduleRender(QueuedRenderLayer.INTERIOR, (matrixStack, vertexConsumer, offset) -> {
