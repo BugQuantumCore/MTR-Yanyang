@@ -1,37 +1,39 @@
 中文说明 / English notes
 
-**MTR-Yanyang 4.1.0-beta-2.yanyang.6** 本次更新：
+**MTR-Yanyang 4.1.0-beta-2.yanyang.7** 本次更新：
 
-**关闭光影时游戏直接崩溃（严重修复）**
-- 症状：开着 Beryl 光影进入世界后，在游戏内关闭光影的瞬间游戏直接崩溃——**既没有 Minecraft 崩溃报告，也没有 JVM hs_err 崩溃日志**
-- 根因：旧逻辑在检测到 Beryl 光影激活时**不闩锁**原生 Vulkan 管线的引导开关（每帧重试，等待"光影关闭的那一刻"）。于是关闭光影后的第一帧，原生录制器就在 VulkanMod 的渲染通道与命令缓冲仍在 Beryl 交接过渡的当口**中途挂接**到正在活动的 Vulkan 设备上——驱动层直接把进程带走（这正是无崩溃报告的原因：JVM 根本来不及反应）
-- 修复：**Beryl 光影运行期间，原生管线引导在整个会话内闩锁关闭**——中途挂接从此不可能发生。光影开启进入的会话，关闭光影后继续由 Java 渲染器绘制（安全且被 Beryl 正确着色）；断开重连（关闭光影状态）后照常干净引导原生管线；纯 VulkanMod（无光影）行为完全不变
-- 附带：光影开/关切换不再一律触发整套模型重建（多秒卡顿）——只在**渲染器所有权真正切换**（Java GL ↔ 原生 Vulkan）时重建；JDK 22+ 共享内存传输下每次引导日志里那个吓人的 `wr_shutdown downcall unavailable` NPE 也已消除
+**关闭光影瞬间崩溃（第二轮修复——找到真正的根因）**
+- 症状：yanyang.6 之后，在游戏内切换 Beryl 光影（尤其关闭）时游戏仍然直接崩溃——依旧**没有 Minecraft 崩溃报告、没有 JVM hs_err**
+- 本轮直接反编译了 **Beryl 0.2.0-alpha 的字节码与着色器**（RenderingPipeline 切换路径、按键/选项界面 mixin、entity.vsh / terrain.fsh 光照曲线），确认了真正的根因：**切换本身**远比 yanyang.6 闩锁掉的"原生挂接"更重——Beryl 在渲染线程的按键处理中当场替换 VulkanMod 的 MainPass 对象、回退地形顶点格式与构建器、并触发**全量地形重建**（setBlocksDirty）；若从 Beryl 的设置界面切换，还会**释放 Beryl 的全部 GPU 对象**（clearResources）。而 MTR 每帧的全部绘制负载（数千模型面、数百乘客模型、动态纹理上传）照常砸进这个过渡窗口；渲染器所有权真正切换时，甚至**在过渡帧里同步执行多秒阻塞的整套模型重载**——任一环节都足以让驱动层带走进程
+- 修复：任何 Beryl 状态翻转后，MTR 打开 **60 帧过渡静默窗口**：模拟照常推进（列车不误点），但 MTR 的全部绘制（车辆、电梯、轨道、乘客、模型、计划绘制、动态纹理上传）在 Beryl 落定前全部丢弃并清空队列，随后自动恢复；所有权重建（Java GL ↔ 原生 Vulkan）改到**窗口结束后的第一帧**执行。切换光影时约一秒钟的"列车隐身"，取代一次硬崩溃
 
-**AI 乘客在光影下发光（修复）**
-- 症状：Beryl 光影下，车厢里的 AI 乘客（以及真实玩家）明显**发光**——隧道里、夜晚尤其刺眼，而车厢本身在正确变暗
-- 根因：车厢内乘客一直以**恒定全亮光照**（`DEFAULT_LIGHT` = 0xF000F0）绘制。原版渲染器把它显示成"始终平亮"，但光影管线会把最大光照贴图坐标当作**自发光**处理
-- 修复：乘客与玩家现在按各自实际位置采样世界光照（位置 +1 Y，方块光+天空光打包），与站台/步行乘客的取光方式完全一致——光影下不再发光，原版下夜晚/隧道中乘客也会正确随环境变暗
+**光影下乘客发光（真正的根因）**
+- 症状：yanyang.6 采样了真实光照，但站台上的乘客在 Beryl 光影下**仍然发光**
+- 根因（本轮从 Beryl 的 entity.vsh 中确认）：Beryl 的实体着色器把**方块光坐标本身**变换为**平方暖色自发光**——`texColor × ((uv/256)² × 2) × 暖色调`，方块光 15 时约 **1.76 倍**暖色泛光。而 MTR 站台为了防刷怪**全域保持光照等级 15**——真实光照恰恰就是 15，等于直接喂给了自发光。隧道与白天场景已由 yanyang.6 修好；被灯光照亮的站台没有
+- 修复：Beryl 驱动帧期间，喂给**每一个 MTR 绘制的人形**（AI 乘客：站台 / 步行 / 车内，真实乘车玩家，连同手机模型）的方块光分量被钳制在 **8**——约 0.5 倍的"灯下暖光"取代刺眼泛光；纯 VulkanMod 与 OpenGL 走原版光照贴图曲线，保持真实光照，外观完全不变。想更亮可调 `VulkanCompat.BERYL_HUMANOID_BLOCK_LIGHT_CAP`
 
 **验证**
-- 两条 CI 流水线在提交 d4849c7 上全绿：Build 1.21.x（1.21.1/1.21.4 × Fabric/NeoForge 四目标编译）+ Native Vulkan OBJ pipeline（SPIR-V 编译、6 平台原生库、装配、内置 8 平台的模组构建）
+- 两条 CI 流水线在提交 d034f01 上全绿：Build 1.21.x（1.21.1 / 1.21.4 × Fabric / NeoForge 四目标编译）+ Native Vulkan OBJ pipeline（SPIR-V 编译、6 平台原生库、装配、内置 8 平台 natives 的模组构建）
+- 修复基于 Beryl 0.2.0-alpha 实际字节码与着色器反编译实证，而非日志推测
 
 加载器 / 版本：**1.21.1 与 1.21.4 × Fabric / NeoForge**。原生 Vulkan 管线仅在检测到 VulkanMod 时自动启用（Beryl 光影运行的会话除外），其余情况走原 OpenGL 路径。
 
 ---
 
-**MTR-Yanyang 4.1.0-beta-2.yanyang.6**:
+**MTR-Yanyang 4.1.0-beta-2.yanyang.7**:
 
-**Hard crash when turning the shaders off (critical fix)**
-- Symptom: with Beryl shaders on in-game, the exact moment you toggled them off the game died outright — **no Minecraft crash report and no JVM hs_err log**
-- Root cause: the old logic deliberately did NOT latch the native Vulkan boot when Beryl was detected (it retried every frame, "waiting for the moment the shaders go off"). So the first frame after the toggle attached the native recorder MID-SESSION onto VulkanMod's live device, in the middle of Beryl's render-pass/command-buffer handover — the driver took the whole process down before the JVM could react
-- Fix: **while Beryl's shaders are driving the frame, the native boot is latched off for the entire session** — a mid-session attach can never happen again. A session that started with shaders on keeps the safe Java renderer after you toggle them off; disconnecting and rejoining (with shaders off) boots the native pipeline cleanly as always; plain VulkanMod behaviour is unchanged
-- Bonus: a Beryl toggle no longer always triggers the multi-second full model rebuild — it now fires only on a real **renderer-owner transition** (Java GL ↔ native Vulkan); and the scary `wr_shutdown downcall unavailable` NPE in the log on every JDK 22+ shared-memory boot is gone
+**Beryl toggle hard crash — second round, real root cause found**
+- Symptom: after yanyang.6, toggling Beryl shaders in-game (especially off) still killed the game outright — still **no Minecraft crash report and no JVM hs_err**
+- This round decompiled **Beryl 0.2.0-alpha's actual bytecode and shaders** (the `RenderingPipeline` toggle path, its keybind/options-screen mixins, and the `entity.vsh` / `terrain.fsh` lighting curves) instead of inferring from logs. The toggle itself is far heavier than the native attach yanyang.6 latched away: Beryl flips on the render thread's key handling — swapping VulkanMod's `MainPass` object, reverting the terrain vertex format/builder, and forcing a **full terrain rebuild** (`setBlocksDirty()`); toggled from its options screen it additionally **frees every Beryl GPU object** (`clearResources`). MTR kept submitting its full per-frame load straight into that window, and on a real owner flip even ran the **multi-second blocking model reload inside the transition frame** — any of which takes the driver down
+- Fix: after any Beryl state flip, MTR opens a **60-frame transition grace window**: the simulation keeps ticking (trains stay on schedule) but every MTR draw — vehicles, lifts, rails, passengers, models, scheduled renders, dynamic-texture uploads — is dropped and its queues cleared until Beryl settles, then everything resumes automatically. The owner rebuild (Java GL ↔ native Vulkan) now fires on the **first frame after** the window. A ~1-second invisible-trains pause replaces a hard crash
 
-**AI passengers glowing under shaders (fix)**
-- Symptom: under Beryl, on-board AI passengers (and real players) visibly **glowed** — worst in tunnels and at night — while the car body around them dimmed correctly
-- Root cause: riders inside vehicles were drawn with a constant **full-bright lightmap** (`DEFAULT_LIGHT` = 0xF000F0). Vanilla shows that as flat lighting; shader pipelines read max lightmap coordinates as **emissive**
-- Fix: riders now sample the packed world light (block + sky) at their actual position (+1 Y), exactly like the platform/walking passengers — no more glow under shaders, and they dim with the environment in vanilla too
+**Passenger glow under shaders — real root cause**
+- Symptom: yanyang.6 sampled the truthful light, but passengers at stations still glowed under Beryl
+- Root cause (confirmed from Beryl's `entity.vsh`): Beryl's entity shader turns the **block-light coordinate itself** into a squared warm emission — `texColor × ((uv/256)² × 2) × warm`, about a **1.76×** warm bloom at block light 15. MTR platforms deliberately keep light level 15 everywhere (mob-proofing) — the truthful light IS 15, feeding the emission directly. Tunnels and daylight were already fixed; lit platforms were not
+- Fix: while Beryl drives the frame, the block-light component fed to **every MTR-rendered humanoid** (AI passengers — platform, walking, on-board — plus real riding players, phone cuboid included) is clamped at **8**: a ~0.5× lamp-lit warm tint instead of a beacon. Plain VulkanMod and OpenGL keep the truthful value (vanilla lightmap curve), so nothing changes outside Beryl. Prefer brighter passengers? Raise `VulkanCompat.BERYL_HUMANOID_BLOCK_LIGHT_CAP`
 
 **Verification**
-- Both CI pipelines green on commit d4849c7: Build 1.21.x (all four 1.21.1/1.21.4 × Fabric/NeoForge targets) + Native Vulkan OBJ pipeline (SPIR-V, 6 platform natives, assemble, build-mod with all 8 platforms embedded)
+- Both CI pipelines green on d034f01: Build 1.21.x (1.21.1 / 1.21.4 × Fabric / NeoForge) + Native Vulkan OBJ pipeline (SPIR-V, 6-platform native libs, assemble, build-mod with the 8-platform natives bundled)
+- The fixes are grounded in decompiled Beryl 0.2.0-alpha evidence, not log-line inference
+
+Loader / versions: **1.21.1 & 1.21.4 × Fabric / NeoForge**. The native Vulkan pipeline only enables itself when VulkanMod is detected (except in sessions where Beryl's shaders are driving the frame); everything else stays on the original OpenGL path.

@@ -1,6 +1,6 @@
 {
-  "run_id": "40328523684",
-  "tag": "4.1.0-beta-2.yanyang.6",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.6 (1.21.1 & 1.21.4, Fabric & NeoForge) \u2014 no more mid-session crash when turning Beryl shaders off; passenger glow fix",
+  "run_id": "40525276226",
+  "tag": "4.1.0-beta-2.yanyang.7",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.7 (1.21.1 & 1.21.4, Fabric & NeoForge) — Beryl toggle crash really fixed (transition grace window); passenger glow root-caused in Beryl's shader and capped",
   "notes_file": "notes.md"
 }
