@@ -31,9 +31,9 @@ on:
 #   windows-arm64   native, windows-11-arm  (MSVC ARM64)
 #   linux-x64       native, ubuntu-latest
 #   linux-arm64     native, ubuntu-24.04-arm
-#   macos-arm64     native, macos-14
+#   macos-arm64     native, macos-15
 #   android-arm64   cross, ubuntu-latest + Android NDK (bionic, API 26)
-#   ios-arm64       cross, macos-14 + iOS SDK (arm64, ad-hoc signed)
+#   ios-arm64       cross, macos-15 + iOS SDK (arm64, ad-hoc signed)
 #   ipados-arm64    iPadOS shares the iphoneos platform binary with iOS —
 #                   the assemble job copies the ios-arm64 artifact; a
 #                   separate platform directory exists because the jar
@@ -75,7 +75,7 @@ jobs:
             cross: ''
             rustTargets: ''
           - name: macos-arm64
-            os: macos-14
+            os: macos-15
             platform: macos-arm64
             library: libwrvk.dylib
             cross: ''
@@ -87,7 +87,7 @@ jobs:
             cross: android
             rustTargets: aarch64-linux-android
           - name: ios-arm64
-            os: macos-14
+            os: macos-15
             platform: ios-arm64
             library: libwrvk.dylib
             cross: ios
