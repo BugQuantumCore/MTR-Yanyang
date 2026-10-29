@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <!-- do_not_remove: published-with-gradle-metadata -->
+<modelVersion>4.0.0</modelVersion>
+  <groupId>com.github.crowdin</groupId>
+  <artifactId>crowdin-api-client-java</artifactId>
+  <version>1.36.0</version>
+  <name>crowdin/crowdin-api-client-java</name>
+  <description>Java client library for Crowdin API</description>
+  <url>https://jitpack.io/#crowdin/crowdin-api-client-java</url>
+  <inceptionYear>2019</inceptionYear>
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://api.github.com/licenses/mit</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>crowdin</id>
+      <name>Crowdin</name>
+      <email>support@crowdin.com</email>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git://github.com/crowdin/crowdin-api-client-java.git</connection>
+    <developerConnection>scm:git://github.com/crowdin/crowdin-api-client-java.git</developerConnection>
+    <url>git://github.com/crowdin/crowdin-api-client-java.git</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>4.5.14</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.22.3</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>
