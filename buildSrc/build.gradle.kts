@@ -31,6 +31,10 @@ java {
 publishing {
 	publications {
 		create<MavenPublication>("maven") {
+			// The downstream MTR buildSrc resolves
+			// "org.mtr:transport-simulation-core-build-tools"; publish under that
+			// id instead of the default ("buildSrc").
+			artifactId = "transport-simulation-core-build-tools"
 			from(components["java"])
 		}
 	}

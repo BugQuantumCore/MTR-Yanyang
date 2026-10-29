@@ -56,7 +56,10 @@ public class VehicleExtraData extends VehicleExtraDataSchema {
 	}
 
 	public VehicleExtraData copy(int pathUpdateIndex) {
-		final VehicleExtraData newVehicleExtraData = new VehicleExtraData(new JsonReader(Utilities.getJsonObjectFromData(this)));
+		final JsonObject jsonObject = Utilities.getJsonObjectFromData(this);
+		// Detach the path from the JSON round-trip; the slice below re-attaches the original references, so re-parsing the entire path would be wasted work
+		jsonObject.remove("path");
+		final VehicleExtraData newVehicleExtraData = new VehicleExtraData(new JsonReader(jsonObject));
 		newVehicleExtraData.path.clear();
 
 		for (int i = pathUpdateIndex; i <= path.size(); i++) {

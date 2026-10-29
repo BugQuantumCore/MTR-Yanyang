@@ -95,6 +95,12 @@ public class Simulator extends Data implements Utilities {
 	private static final int SIMULATION_DIFFERENCE_LOGGING_THRESHOLD = 120000;
 	private static final int MAX_PASSENGER_DIRECTIONS_REQUESTS = 512;
 	/**
+	 * Maximum wall-clock time a single catch-up loop may take before giving up and skipping the
+	 * simulation to the current time. Guards against ticks that take at least the wall time of the
+	 * interval they simulate, which would otherwise make the loop non-converging and uninterruptible.
+	 */
+	private static final long MAX_CATCH_UP_MILLIS = 30_000;
+	/**
 	 * Default in-game day length in real-time milliseconds (20 in-game minutes).
 	 */
 	private static final long DEFAULT_GAME_MILLIS_PER_DAY = 20L * 60 * MILLIS_PER_SECOND;
@@ -423,15 +429,27 @@ public class Simulator extends Data implements Utilities {
 	/**
 	 * Simulates the system in one-second intervals until the simulation is all caught up
 	 *
+	 * <p>Bounded by {@link #MAX_CATCH_UP_MILLIS} of wall time: when one or more ticks take at least
+	 * the wall time of the interval they simulate (or the thread is interrupted), the simulation
+	 * clock jumps to the current time instead of looping forever.</p>
+	 *
 	 * @return the number of ticks it took
 	 */
 	private int tickUntilCaughtUp() {
 		int ticks = 0;
+		final long startMillis = System.currentTimeMillis();
 		while (true) {
 			ticks++;
 			final long totalDifference = System.currentTimeMillis() - getCurrentMillis();
 			if (totalDifference > MILLIS_PER_SECOND) {
 				tick(MILLIS_PER_SECOND);
+				if (System.currentTimeMillis() - startMillis >= MAX_CATCH_UP_MILLIS || Thread.currentThread().isInterrupted()) {
+					// If a tick takes at least the wall time of the interval it simulates, catching up can never converge; bail to now so the loop (and a concurrent stop) can finish
+					final long remainingDifference = System.currentTimeMillis() - getCurrentMillis();
+					setCurrentMillis(System.currentTimeMillis());
+					log.warn("Simulation for {} was {}ms behind after {} tick(s) / {} second(s) of catch-up, skipping to current time (interrupted: {})", dimension, remainingDifference, ticks, (float) (System.currentTimeMillis() - startMillis) / MILLIS_PER_SECOND, Thread.currentThread().isInterrupted());
+					return ticks;
+				}
 			} else {
 				tick(totalDifference);
 				return ticks;

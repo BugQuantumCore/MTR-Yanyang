@@ -22,6 +22,9 @@ public final class Graph extends RefreshableObject<Long2ObjectOpenHashMap<Long2O
 	@Override
 	public Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<IndependentConnection>> refresh(int currentRefreshStep) {
 		if (currentRefreshStep == 0) {
+			// Clear stale walking connections and leaked route references left over from the previous refresh cycle
+			independentConnections.clear();
+
 			// Grid cell size: choose half of maxWalkingDistance for efficient neighborhood search
 			final double gridSize = DirectionsFinder.MAX_WALKING_DISTANCE / 2D;
 

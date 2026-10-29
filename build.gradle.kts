@@ -55,6 +55,10 @@ java {
 publishing {
 	publications {
 		create<MavenPublication>("maven") {
+			// The downstream MTR build resolves "org.mtr:transport-simulation-core";
+			// Maven artifact ids are case-sensitive, so the project name (which
+			// keeps its upper case for the GitHub Packages UI) cannot be used here.
+			artifactId = "transport-simulation-core"
 			artifact(tasks.shadowJar)
 			artifact(tasks.named("sourcesJar"))
 			artifact(tasks.named("javadocJar"))
@@ -88,6 +92,7 @@ tasks {
 			exclude(dependency("it.unimi.dsi:fastutil"))
 			exclude(dependency("org.eclipse.jetty:jetty-servlet"))
 			exclude(dependency("org.msgpack:msgpack-core"))
+			exclude(dependency("org.apache.logging.log4j:log4j-slf4j2-impl"))
 		}
 		relocate("com", "org.mtr.libraries.com") { skipStringConstants = true }
 		relocate("it", "org.mtr.libraries.it") { skipStringConstants = true }
@@ -178,18 +183,25 @@ tasks {
 		Generator.generateTypeScript(project, "schema/map", "website/src/app/entity/generated")
 
 		val npmCommand = if (org.gradle.internal.os.OperatingSystem.current().isWindows) "npm.cmd" else "npm"
+		// Gradle 9 removed Project.exec; spawn the processes directly so npm
+		// output still streams to the console (same pattern as the MTR build)
+		fun runCommand(vararg args: String) {
+			val process = ProcessBuilder(listOf(npmCommand, *args))
+				.directory(websiteDir)
+				.redirectOutput(ProcessBuilder.Redirect.INHERIT)
+				.redirectError(ProcessBuilder.Redirect.INHERIT)
+				.start()
+			val exitCode = process.waitFor()
+			if (exitCode != 0) {
+				throw GradleException("npm command failed with exit code $exitCode in $websiteDir (command: ${args.joinToString()})")
+			}
+		}
 		try {
-			project.exec {
-				workingDir(websiteDir)
-				commandLine(npmCommand, "install", "--no-audit", "--no-fund")
-			}
-			project.exec {
-				workingDir(websiteDir)
-				commandLine(npmCommand, "run", "build")
-			}
+			runCommand("install", "--no-audit", "--no-fund")
+			runCommand("run", "build")
 		} catch (e: Exception) {
 			throw GradleException(
-				"Failed to build the Transport System Map website. " +
+				"Failed to build the Transport System Map website (cause: " + e.message + "). " +
 					"Please install Node.js, then run `npm install` and `npm run build` inside the `website` directory before building Transport-Simulation-Core. " +
 					"Without the built website, the generated WebserverResources is empty and mods shading this library would ship a broken Transport System Map page.",
 				e)
