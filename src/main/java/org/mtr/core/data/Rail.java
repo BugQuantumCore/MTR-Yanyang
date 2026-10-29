@@ -527,7 +527,7 @@ public final class Rail extends RailSchema {
 		return railConnections == null ? new ObjectArrayList<>() : railConnections.values();
 	}
 
-	public enum Shape {QUADRATIC, TWO_RADII, CABLE}
+	public enum Shape {QUADRATIC, TWO_RADII, CABLE, CUBIC_PARABOLA, HALF_WAVE_SINE}
 
 	public enum BlockReservation {DO_NOT_RESERVE, PRE_RESERVE, CURRENTLY_RESERVE}
 }
