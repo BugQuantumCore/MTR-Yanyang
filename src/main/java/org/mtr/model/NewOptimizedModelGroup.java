@@ -86,7 +86,12 @@ public final class NewOptimizedModelGroup {
                                         // lives exactly as long as the group, and groups are
                                         // rebuilt together with their native models on every
                                         // resource reload).
-                                        final Consumer<VertexConsumer> vertexCallback = storedVertexDataList.isEmpty() ? null : vertexConsumer -> StoredVertexData.apply(storedVertexDataList, vertexConsumer);
+                                        // The baked lightmap coordinate is per render stage: full-brightness stages keep
+                                        // the full-bright constant (their glow under Beryl's squared-emission shader is
+                                        // the feature), EXTERIOR meshes get the Beryl-safe pack(4, 15). See
+                                        // VulkanCompat#staticModelBakedLight.
+                                        final int bakedLight = org.mtr.client.VulkanCompat.staticModelBakedLight(renderStage.isFullBrightness);
+                                        final Consumer<VertexConsumer> vertexCallback = storedVertexDataList.isEmpty() ? null : vertexConsumer -> StoredVertexData.apply(storedVertexDataList, vertexConsumer, bakedLight);
                                         final int stride = drawMode == VertexFormat.Mode.QUADS ? 4 : drawMode == VertexFormat.Mode.TRIANGLES ? 3 : 0;
                                         final NativeModel cached = nativeUploadCache
                                                         .computeIfAbsent(renderStage, key -> new Object2ObjectOpenHashMap<>())

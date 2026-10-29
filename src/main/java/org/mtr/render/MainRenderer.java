@@ -498,9 +498,9 @@ public class MainRenderer {
                                 // exact 0 in fully dark ones (block 0, sky 0) — multiplying
                                 // ColorModulator to 0 erases everything Beryl's own lighting just
                                 // computed (ambient, GGX direct light, shadow occlusion) and leaves
-                                // pitch-black silhouettes. With the yanyang.8 zero-block bake the
-                                // correct division of labour under Beryl is: the shader pack owns
-                                // the light, the colour modulator stays neutral.
+                                // pitch-black silhouettes. With the corrected per-stage Beryl bake
+                                // (VulkanCompat#staticModelBakedLight) the division of labour under Beryl
+                                // is: the shader pack owns the light, the colour modulator stays neutral.
                                 final float lightMultiplier = renderStage.isFullBrightness || org.mtr.client.VulkanCompat.isBerylActive() ? 1 : (float) renderDetailsEntry.rightInt() / 0xF;
                                 newOptimizedModel.render(matrixStack.last().pose(), lightMultiplier, RenderSystem.getShader());
                                 matrixStack.popPose();

@@ -192,6 +192,21 @@ public final class VulkanCompat {
          * Caps the block-light component of a packed lightmap value for an MTR-rendered
          * humanoid while Beryl is driving the frame; a passthrough everywhere else.
          *
+         * <p>In the packed lightmap format the block component lives in bits 20-23
+         * ({@code blockLight << 20}) and the sky component in bits 4-7 ({@code skyLight << 4}):
+         * {@code LightTexture.pack} builds exactly that, and {@code setLight} splits the int
+         * back into the two lightmap texture coordinates ({@code u2} = block &times; 16 in the
+         * high half — the lightmap texture's horizontal axis is block light — and
+         * {@code v2} = sky &times; 16 in the low half; {@code LightTexture.FULL_BRIGHT} =
+         * {@code 0xF000F0} = {@code pack(15, 15)} is the canonical witness). The yanyang.7/8
+         * version read {@code >> 4 & 0xF} — the <em>sky</em> nibble — and rebuilt the light
+         * as {@code cap << 4 | light & 0xF}, dropping the real block bits entirely and
+         * rewriting the sky nibble: with sky above the cap every rider was force-fed
+         * {@code 0x40} (block 0, sky 4 — glow-free but dim, and the real sky light was
+         * lost), while with sky at or below the cap the light passed through untouched and
+         * lit-platform riders kept the full uncapped block light. The surgery now clamps
+         * the actual block nibble and preserves the sky nibble exactly.</p>
+         *
          * @param packedLight {@code LightTexture.pack(blockLight, skyLight)}
          * @return the same packed value with the block component clamped to
          *         {@link #BERYL_HUMANOID_BLOCK_LIGHT_CAP} when Beryl is active, unchanged otherwise
@@ -200,60 +215,82 @@ public final class VulkanCompat {
                 if (!isBerylActive()) {
                         return packedLight;
                 }
-                final int blockLight = packedLight >> 4 & 0xF;
+                final int blockLight = packedLight >> 20 & 0xF;
                 if (blockLight <= BERYL_HUMANOID_BLOCK_LIGHT_CAP) {
                         return packedLight;
                 }
-                return BERYL_HUMANOID_BLOCK_LIGHT_CAP << 4 | packedLight & 0xF;
+                return BERYL_HUMANOID_BLOCK_LIGHT_CAP << 20 | packedLight & 0xFF0FFFFF;
         }
 
         /**
-         * The lightmap coordinate baked into every static {@code NewOptimizedModel} vertex
-         * buffer at build time, keyed to the renderer that will own the finished model.
+         * Block-light component baked into EXTERIOR static models while Beryl owns the GL
+         * models — the static-mesh companion of {@link #BERYL_HUMANOID_BLOCK_LIGHT_CAP}.
+         *
+         * <p>yanyang.8 baked the raw value {@code 0xF00000} believing it to be
+         * {@code LightTexture.pack(0, 15)}. In the packed lightmap format the high 16 bits
+         * are {@code u2} — the <em>block</em> axis of the lightmap texture — so
+         * {@code 0xF00000} is actually {@code pack(15, 0)} ({@code 0xF000F0} =
+         * {@code pack(15, 15)} = {@code LightTexture.FULL_BRIGHT} is the canonical witness).
+         * Every static model therefore shipped with full block emission and zero sky
+         * light: Beryl's entity shader fed the 240/256 block coordinate straight into its
+         * squared warm-emission term while the collapsed sky component closed the ambient
+         * and GGX direct-light gates — entire trains rendered as flat orange-glowing
+         * silhouettes with no shading, in every scene, day or night. That is the yanyang.8
+         * "model rendering much worse" regression.</p>
+         *
+         * <p>The corrected EXTERIOR bake is {@code pack(4, 15)}: block 4 — the same ceiling
+         * the humanoid cap settled on after block 8 still read as glowing — leaves a faint
+         * lamp-lit warmth instead of dead-black silhouettes, while sky 15 keeps Beryl's
+         * ambient, GGX direct lighting, shadow-map occlusion and fog fully working (Beryl's
+         * {@code light.z} direct-light gate needs {@code lightY > 0.707}, which a zeroed
+         * sky coordinate never opens).</p>
+         */
+        public static final int BERYL_STATIC_EXTERIOR_BLOCK_LIGHT = 4;
+
+        /**
+         * The lightmap coordinate baked into a static {@code NewOptimizedModel} vertex
+         * buffer at build time, keyed to the renderer that will own the finished model and
+         * to the render stage the mesh belongs to.
          *
          * <p>Every MTR static model — train bodies, doors, rails, signs, PIDS casings, lift
          * shells — is built once into a GPU vertex buffer whose {@code UV2} (lightmap)
          * attribute is frozen at upload. The vanilla-GL path deliberately bakes
-         * {@code DEFAULT_LIGHT} = {@code LightTexture.pack(15, 15)} (block 15, sky 15) and
-         * dims per draw through the shader colour — the long-standing MTR cartoon look.
-         * Beryl's entity pipeline, however, computes lighting from that baked coordinate
-         * (verified against its {@code entity.vsh}/{@code entity.fsh} 0.2.0-alpha):
-         * the sky part {@code lightY = (uv/256)^2} drives ambient, and the <b>block</b>
-         * part {@code lightX = (uv/256)^2 * (1 - lightY) * 2} is added straight to the
-         * fragment as a <b>warm emission</b> — {@code texColor * lightX * vec3(1, 0.7, 0.5)}.
-         * With the baked block component at 15 the emission is
-         * {@code (240/256)^2 &times; 2 &asymp; 1.55&times;} in every dark or roofed scene
-         * (where {@code lightY} collapses and its emission-suppressing {@code (1 - lightY)}
-         * factor vanishes): <b>entire trains glowing warm at night and inside stations</b> —
-         * the user-visible "vehicles still glow under Beryl" after yanyang.7 clamped only
-         * the per-drawn humanoids.</p>
+         * {@code DEFAULT_LIGHT} = {@code LightTexture.pack(15, 15)} and dims per draw
+         * through the shader colour — the long-standing MTR cartoon look. Beryl's entity
+         * pipeline, however, computes lighting from that baked coordinate (verified against
+         * its {@code entity.vsh}/{@code entity.fsh} 0.2.0-alpha): the sky part drives
+         * ambient and the direct-light gate, and the block part is added straight to the
+         * fragment as a warm emission — {@code texColor * lightX * vec3(1, 0.7, 0.5)}.</p>
          *
-         * <p>While Beryl owns the GL models the bake is therefore {@code pack(0, 15)}:
-         * block 0 zeroes the emission term everywhere, while sky 15 keeps Beryl's own
-         * ambient light, GGX direct lighting, shadow-map occlusion and fog fully working
-         * (Beryl's {@code light.z} direct-light gate needs {@code lightY > 0.707}, which a
-         * zeroed sky coordinate would never open, leaving the model lit only by
-         * {@code MinAmbientLight} — an unshaded silhouette). Per-draw brightness continues
-         * through {@code ColorModulator}, which Beryl's fragment shader applies after the
-         * emission fix (see {@code MainRenderer#renderModel}). Plain GL, plain VulkanMod and
-         * the native pipeline keep {@code IGui.DEFAULT_LIGHT} = {@code 0xF000F0}, so nothing
-         * changes outside Beryl.</p>
+         * <p>While Beryl owns the GL models the bake is therefore per render stage:</p>
+         * <ul>
+         * <li><b>Full-brightness stages</b> ({@code LIGHT}, {@code ALWAYS_ON_LIGHT},
+         * {@code INTERIOR}, {@code INTERIOR_TRANSLUCENT}) keep the full-bright
+         * {@code pack(15, 15)}. These stages are self-lit by design under every other
+         * renderer, and Beryl's block-light emission is exactly what makes headlight and
+         * light-module parts glow — yanyang.8's uniform zero-block bake silenced the train
+         * model light modules and left interiors dark, the "module group emissive is
+         * wrong" report.</li>
+         * <li><b>{@code EXTERIOR}</b> — the only stage that follows the scene light — bakes
+         * {@code pack(4, 15)}: a faint lamp-lit warmth, never a beacon.</li>
+         * </ul>
          *
-         * <p>Called from the model build ({@code StoredVertexData#apply}), which only ever
-         * runs inside {@code CustomResourceLoader#reload()} — the same rebuild that fires
-         * after every Beryl owner flip (the transition grace window defers it), so the bake
-         * variant always matches the renderer that will actually draw the buffer.</p>
+         * <p>Called from the model build ({@code NewOptimizedModelGroup#build}), which only
+         * ever runs inside {@code CustomResourceLoader#reload()} — the same rebuild that
+         * fires after every Beryl owner flip (the transition grace window defers it), so
+         * the bake variant always matches the renderer that will actually draw the
+         * buffer.</p>
+         *
+         * @param isFullBrightness whether the mesh belongs to a full-brightness render stage
+         * @return the lightmap coordinate to bake: the vanilla MTR full-bright constant
+         *         ({@code IGui.DEFAULT_LIGHT} = {@code 0xF000F0}) for non-Beryl renderers
+         *         and for full-brightness stages, {@code pack(4, 15)} for EXTERIOR under Beryl
          */
-        public static final int BERYL_STATIC_MODEL_LIGHT = 0xF00000; // LightTexture.pack(0, 15)
-
-        /**
-         * @return the lightmap coordinate to bake into a static {@code NewOptimizedModel}
-         *         vertex buffer: {@link #BERYL_STATIC_MODEL_LIGHT} while Beryl's shader
-         *         pipeline will draw the model, the vanilla MTR full-bright constant
-         *         ({@code IGui.DEFAULT_LIGHT} = {@code 0xF000F0}) everywhere else
-         */
-        public static int staticModelBakedLight() {
-                return isBerylActive() ? BERYL_STATIC_MODEL_LIGHT : 0xF000F0;
+        public static int staticModelBakedLight(boolean isFullBrightness) {
+                if (!isBerylActive() || isFullBrightness) {
+                        return 0xF000F0;
+                }
+                return BERYL_STATIC_EXTERIOR_BLOCK_LIGHT << 20 | 0xF0;
         }
 
         private VulkanCompat() {

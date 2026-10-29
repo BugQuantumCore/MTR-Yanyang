@@ -46,7 +46,7 @@ public record StoredVertexData(
 		}
 	}
 
-	public static void apply(ObjectArrayList<StoredVertexData> storedVertexDataList, VertexConsumer vertexConsumer) {
+	public static void apply(ObjectArrayList<StoredVertexData> storedVertexDataList, VertexConsumer vertexConsumer, int bakedLight) {
 		storedVertexDataList.forEach(storedVertexData -> vertexConsumer.addVertex(
 			storedVertexData.x,
 			storedVertexData.y,
@@ -55,11 +55,13 @@ public record StoredVertexData(
 			storedVertexData.u,
 			storedVertexData.v,
 			OverlayTexture.NO_OVERLAY,
-			// The baked lightmap coordinate must not feed Beryl's squared-emission
-			// shader a full-bright block component (a 1.55x warm glow on every static
-			// model in dark/roofed scenes); VulkanCompat picks the Beryl-safe bake
-			// (block 0, sky 15) exactly while Beryl's pipeline owns the GL models.
-			org.mtr.client.VulkanCompat.staticModelBakedLight(),
+			// The baked lightmap coordinate is chosen per render stage by the caller
+			// (NewOptimizedModelGroup#build → VulkanCompat#staticModelBakedLight):
+			// full-brightness stages keep the full-bright constant — their warm glow
+			// under Beryl's squared-emission shader is the feature — while EXTERIOR
+			// meshes get the Beryl-safe pack(4, 15) and never bloom like the yanyang.8
+			// swapped-halves regression did.
+			bakedLight,
 			storedVertexData.normalX,
 			storedVertexData.normalY,
 			storedVertexData.normalZ
