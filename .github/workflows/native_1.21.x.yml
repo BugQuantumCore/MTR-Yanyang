@@ -9,7 +9,6 @@ on:
       - 'src/main/java/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
-      - '.github/tsc-fork-ci.patch'
       - '.github/workflows/native_1.21.x.yml'
   pull_request:
     branches: [ '1.21.x' ]
@@ -19,7 +18,6 @@ on:
       - 'src/main/java/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
-      - '.github/tsc-fork-ci.patch'
       - '.github/workflows/native_1.21.x.yml'
   workflow_dispatch:
 
@@ -332,16 +330,15 @@ jobs:
         with:
           path: Minecraft-Transit-Railway
 
-      - name: Checkout Transport-Simulation-Core (Yanyang fork)
+      - name: Checkout Transport-Simulation-Core (in-repo fork branch)
         uses: actions/checkout@v4
         with:
-          repository: Yanyang-Technology-Group/Transport-Simulation-Core
-          ref: '8d72d57f8efe594efed9d26e90859e88fd05ed94'  # Yanyang TSC master 8d72d57, pinned for the committed patch
+          # The Yanyang Technology Group optimized TSC, branched into this
+          # repository as tsc-1.21.x — every TSC change is a real commit on
+          # that branch, so there is no patch to apply at build time.
+          repository: BugQuantumCore/MTR-Yanyang
+          ref: 'tsc-1.21.x'
           path: Transport-Simulation-Core
-
-      - name: Apply the TSC CI patches
-        run: git apply --3way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
-        working-directory: ./Transport-Simulation-Core
 
       - name: Download natives
         uses: actions/download-artifact@v4

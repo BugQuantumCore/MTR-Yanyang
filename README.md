@@ -37,8 +37,11 @@ Requires JDK 21+ and Node.js 24.
 
 ```bash
 # 1) Build the Transport-Simulation-Core fork into mavenLocal (org.mtr:transport-simulation-core)
-git clone https://github.com/Yanyang-Technology-Group/Transport-Simulation-Core
-cd Transport-Simulation-Core && git apply --3way ../MTR-Yanyang/.github/tsc-fork-ci.patch
+#    The TSC fork lives on the tsc-1.21.x branch of this repository — based on the
+#    Yanyang Technology Group optimized TSC, with all patches (build plumbing and the
+#    rail easement curves) as real commits. No patch step needed any more.
+git clone -b tsc-1.21.x https://github.com/BugQuantumCore/MTR-Yanyang Transport-Simulation-Core
+cd Transport-Simulation-Core
 ./gradlew -p buildSrc publishToMavenLocal && ./gradlew publishToMavenLocal
 
 # 2) Build the mod (each version × loader is a stonecutter project)

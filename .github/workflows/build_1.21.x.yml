@@ -26,18 +26,16 @@ jobs:
           ref: '1.21.x'
           path: Minecraft-Transit-Railway
 
-      - name: Checkout Transport-Simulation-Core (Yanyang fork)
+      - name: Checkout Transport-Simulation-Core (in-repo fork branch)
         uses: actions/checkout@v4
         with:
-          repository: Yanyang-Technology-Group/Transport-Simulation-Core
-          ref: '8d72d57f8efe594efed9d26e90859e88fd05ed94'  # Yanyang TSC master 8d72d57, pinned for the committed patch
+          # The Yanyang Technology Group optimized TSC, branched into this
+          # repository as tsc-1.21.x — every TSC change (build plumbing and
+          # the easement-curve work) is a real commit on that branch, so
+          # there is no patch to apply at build time any more.
+          repository: BugQuantumCore/MTR-Yanyang
+          ref: 'tsc-1.21.x'
           path: Transport-Simulation-Core
-
-      - name: Apply the TSC CI patches
-        # Publishes the build tools under the artifact id MTR resolves and
-        # replaces Project.exec (removed in Gradle 9) for the website build.
-        run: git apply --3way ../Minecraft-Transit-Railway/.github/tsc-fork-ci.patch
-        working-directory: ./Transport-Simulation-Core
 
       - name: Set up JDK 21 (TSC toolchain)
         uses: actions/setup-java@v4
@@ -59,8 +57,8 @@ jobs:
 
       - name: Publish Transport-Simulation-Core to mavenLocal
         # The fork has no GitHub Packages credentials for the upstream
-        # Minecraft-Transit-Railway packages, so build TSC from the public
-        # Yanyang fork and resolve it from mavenLocal instead (see the
+        # Minecraft-Transit-Railway packages, so build TSC from the in-repo
+        # tsc-1.21.x branch and resolve it from mavenLocal instead (see the
         # mavenLocal() entries in buildSrc, build-fabric and build-neoforge).
         run: |
           ./gradlew -p buildSrc publishToMavenLocal --console=plain
