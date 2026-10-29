@@ -151,19 +151,26 @@ public final class RailModifierScreen extends WindowBase {
 			speedInputComponent = null;
 		}
 
+		GuiHelper.createSpacing(scrollComponent1);
+		GuiHelper.createLabel(scrollComponent1, TranslationProvider.GUI_MTR_RAIL_SHAPE.getString());
+		shapeButtonComponent = (ButtonComponent) new ButtonComponent(true)
+			.setChildOf(scrollComponent1)
+			.setY(new SiblingConstraint())
+			.setWidth(new RelativeConstraint());
+
+		// The horizontal easement shapes (cubic parabola, half-wave sine) apply to any
+		// rail with horizontal curvature; the vertical radius below only to sloped rails.
+		shapeButtonComponent.onClick(() -> {
+			shape = switch (shape) {
+				case QUADRATIC -> Rail.Shape.TWO_RADII;
+				case TWO_RADII -> Rail.Shape.CUBIC_PARABOLA;
+				case CUBIC_PARABOLA -> Rail.Shape.HALF_WAVE_SINE;
+				default -> Rail.Shape.QUADRATIC;
+			};
+			update(false);
+		});
+
 		if (rail.railMath.minY != rail.railMath.maxY) {
-			GuiHelper.createSpacing(scrollComponent1);
-			GuiHelper.createLabel(scrollComponent1, TranslationProvider.GUI_MTR_RAIL_SHAPE.getString());
-			shapeButtonComponent = (ButtonComponent) new ButtonComponent(true)
-				.setChildOf(scrollComponent1)
-				.setY(new SiblingConstraint())
-				.setWidth(new RelativeConstraint());
-
-			shapeButtonComponent.onClick(() -> {
-				shape = shape == Rail.Shape.QUADRATIC ? Rail.Shape.TWO_RADII : Rail.Shape.QUADRATIC;
-				update(false);
-			});
-
 			GuiHelper.createSpacing(scrollComponent1);
 			GuiHelper.createLabel(scrollComponent1, TranslationProvider.GUI_MTR_RAIL_VERTICAL_RADIUS.getString());
 			radiusInputComponent = (NumberInputComponent) new NumberInputComponent(0, rail.railMath.getMaxVerticalRadius(), 0.01, true, null)
@@ -174,7 +181,6 @@ public final class RailModifierScreen extends WindowBase {
 			radiusInputComponent.setValue(rail.railMath.getVerticalRadius());
 			radiusInputComponent.setSuffix(" m");
 		} else {
-			shapeButtonComponent = null;
 			radiusInputComponent = null;
 		}
 
@@ -327,7 +333,12 @@ public final class RailModifierScreen extends WindowBase {
 
 	private void update(boolean sendPacket) {
 		if (shapeButtonComponent != null) {
-			shapeButtonComponent.setText((shape == Rail.Shape.QUADRATIC ? TranslationProvider.GUI_MTR_RAIL_SHAPE_QUADRATIC : TranslationProvider.GUI_MTR_RAIL_SHAPE_TWO_RADII).getString());
+			shapeButtonComponent.setText(switch (shape) {
+				case TWO_RADII -> TranslationProvider.GUI_MTR_RAIL_SHAPE_TWO_RADII.getString();
+				case CUBIC_PARABOLA -> TranslationProvider.GUI_MTR_RAIL_SHAPE_CUBIC_PARABOLA.getString();
+				case HALF_WAVE_SINE -> TranslationProvider.GUI_MTR_RAIL_SHAPE_HALF_WAVE_SINE.getString();
+				default -> TranslationProvider.GUI_MTR_RAIL_SHAPE_QUADRATIC.getString();
+			});
 		}
 
 		if (radiusInputComponent != null) {

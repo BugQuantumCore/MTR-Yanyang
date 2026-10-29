@@ -3,5 +3,7 @@
   "options.mtr.java_cpp_communication_method.shared_memory": "共享内存",
   "options.mtr.java_cpp_communication_method.shared_memory.description": "性能好，但小概率出现稳定性问题",
   "options.mtr.java_cpp_communication_method.panama_ffm": "Panama FFM",
-  "options.mtr.java_cpp_communication_method.panama_ffm.description": "性能较好，需 JDK 22 以上"
+  "options.mtr.java_cpp_communication_method.panama_ffm.description": "性能较好，需 JDK 22 以上",
+  "gui.mtr.rail_shape_cubic_parabola": "三次抛物线缓和曲线",
+  "gui.mtr.rail_shape_half_wave_sine": "半波正弦缓和曲线"
 }

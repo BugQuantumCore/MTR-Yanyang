@@ -362,6 +362,8 @@
   "gui.mtr.rail_shape": "Shape",
   "gui.mtr.rail_shape_quadratic": "Quadratic",
   "gui.mtr.rail_shape_two_radii": "Two Radii",
+  "gui.mtr.rail_shape_cubic_parabola": "Cubic Parabola",
+  "gui.mtr.rail_shape_half_wave_sine": "Half-Wave Sine",
   "gui.mtr.rail_speed": "Speed",
   "gui.mtr.rail_tilt": "Rail Cant",
   "gui.mtr.rail_tilt_angle_degrees_1": "Point 1 (Start)",

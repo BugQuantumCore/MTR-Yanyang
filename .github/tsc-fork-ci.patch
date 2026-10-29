@@ -464,3 +464,889 @@ index 558e66b..008f933 100644
  			} else {
  				tick(totalDifference);
  				return ticks;
+
+diff --git a/src/main/java/org/mtr/core/data/EasedRailPath.java b/src/main/java/org/mtr/core/data/EasedRailPath.java
+new file mode 100644
+index 0000000..918d8bc
+--- /dev/null
++++ b/src/main/java/org/mtr/core/data/EasedRailPath.java
+@@ -0,0 +1,397 @@
++package org.mtr.core.data;
++
++import org.jspecify.annotations.Nullable;
++import org.mtr.core.tool.Angle;
++
++/**
++ * Horizontal easement (transition curve) geometry for a whole rail — the block-scale
++ * counterpart of the real-world cubic parabola and half-wave sine transition curves
++ * (三次抛物线 / 半波正弦缓和曲线) used by mainline railways.
++ *
++ * <p>Instead of the classic abrupt straight-to-arc joins, the entire rail becomes one
++ * curvature-continuous path whose curvature starts and ends at zero (so it meets the
++ * adjoining rails' ends without a curvature step) and follows the requested profile in
++ * between:</p>
++ * <ul>
++ * <li><b>Cubic parabola</b> — piecewise-<em>linear</em> curvature, so every component of
++ * the path is a cubic parabola easement (linear curvature ramp = quadratic heading ramp =
++ * cubic lateral offset). The profile ramps up, holds a circular plateau and ramps back
++ * down, i.e. the real straight–easement–circle–easement–straight sequence, with the
++ * plateau shrinking to a point when the bend is gentle enough for a pure double
++ * easement.</li>
++ * <li><b>Half-wave sine</b> — a single half-wave of a sine as the curvature diagram, the
++ * smoothest of the classic profiles: no corner in the curvature anywhere, not even at
++ * the peak.</li>
++ * </ul>
++ *
++ * <p>The heading profile is parameterised as {@code headingChange * profileA(tau) +
++ * flex * profileB(tau)} where {@code profileA} carries the mandatory total heading change
++ * (zero at the start, one at the end, zero slope at both ends, so the end curvature is
++ * zero) and {@code profileB} is a heading-neutral flex bump (zero and zero-slope at both
++ * ends, unit peak) supplying whatever extra lateral reach the two nodes demand. The two
++ * remaining unknowns — the total arc length and the flex amplitude — are pinned against
++ * the two endpoint coordinates with a damped 2×2 Newton iteration.</p>
++ *
++ * <p>The solved path is integrated once into a uniform sample table (world coordinates
++ * plus heading per sample). Rendering, vehicle placement, bounds and radius queries all
++ * interpolate that same table, so trains follow the displayed track by construction. All
++ * heavy work happens at construction time; per-query cost is a constant-time
++ * interpolation. Any geometry the families cannot represent (extreme heading changes,
++ * rails doubling back behind their start node, solver failure) returns {@code null} and
++ * the caller falls back to the classic segment solver, so eased shapes are always a
++ * strictly-optional refinement.</p>
++ */
++final class EasedRailPath {
++
++	/**
++	 * Total arc length of the eased path, in blocks. Always at least the chord length
++	 * between the two nodes.
++	 */
++	final double length;
++	/**
++	 * Uniform spacing between table samples, in blocks.
++	 */
++	final double step;
++	/**
++	 * World X coordinate for each sample; sample {@code i} sits at distance
++	 * {@code i * step} from the first node, block-centred.
++	 */
++	final double[] x;
++	/**
++	 * World Z coordinate for each sample; sample {@code i} sits at distance
++	 * {@code i * step} from the first node, block-centred.
++	 */
++	final double[] z;
++	/**
++	 * World heading for each sample, in bearing radians clockwise from east (+X toward
++	 * +Z), matching {@link Angle#angleRadians}.
++	 */
++	final double[] heading;
++	/**
++	 * Smallest horizontal radius on the first half of the path; 0 when that half is
++	 * straight, matching the segment solver's convention.
++	 */
++	final double minRadius1;
++	/**
++	 * Smallest horizontal radius on the second half of the path; 0 when that half is
++	 * straight.
++	 */
++	final double minRadius2;
++
++	private static final double MAX_HEADING_CHANGE = Math.toRadians(135);
++	private static final double MIN_ALONG = 0.5;
++	private static final double STRAIGHT_EPSILON = 1E-9;
++	private static final double SOLVE_TOLERANCE = 1E-4;
++	private static final int MAX_SOLVE_ITERATIONS = 16;
++	private static final int MIN_SOLVE_STEPS = 32;
++	private static final int MAX_SOLVE_STEPS = 128;
++	private static final double SOLVE_STEP_TARGET = 0.5;
++	private static final double FLEX_LIMIT = Math.PI;
++	private static final double TABLE_STEP = 0.25;
++	private static final int MAX_TABLE_SAMPLES = 1024;
++	private static final int MIN_TABLE_SAMPLES = 4;
++
++	private EasedRailPath(double length, double step, double[] x, double[] z, double[] heading, double minRadius1, double minRadius2) {
++		this.length = length;
++		this.step = step;
++		this.x = x;
++		this.z = z;
++		this.heading = heading;
++		this.minRadius1 = minRadius1;
++		this.minRadius2 = minRadius2;
++	}
++
++	/**
++	 * Solves and integrates the eased path between the two nodes.
++	 *
++	 * @param position1    the first rail node, world block coordinates
++	 * @param angle1       the travel heading at the first node
++	 * @param position2    the second rail node, world block coordinates
++	 * @param angle2       the travel heading at the second node
++	 * @param halfWaveSine {@code true} for the half-wave sine profile, {@code false} for
++	 *                     the cubic parabola profile
++	 * @return the sampled path, or {@code null} when the geometry is outside what the
++	 * families can represent (the caller then falls back to the classic segment solver)
++	 */
++	@Nullable
++	static EasedRailPath build(Position position1, Angle angle1, Position position2, Angle angle2, boolean halfWaveSine) {
++		final double originX = position1.getX() + 0.5;
++		final double originZ = position1.getZ() + 0.5;
++		final double cos1 = angle1.cos;
++		final double sin1 = angle1.sin;
++		final double differenceX = position2.getX() - position1.getX();
++		final double differenceZ = position2.getZ() - position1.getZ();
++		final double headingChange = headingChange(angle1, angle2);
++
++		// Local frame: +t along the first node's heading, +n to its right (bearing +90°).
++		final double along = differenceX * cos1 + differenceZ * sin1;
++		final double lateral = differenceZ * cos1 - differenceX * sin1;
++		final double chord = Math.hypot(along, lateral);
++
++		if (chord < STRAIGHT_EPSILON || along < MIN_ALONG || Math.abs(headingChange) > MAX_HEADING_CHANGE) {
++			return null;
++		}
++		if (Math.abs(headingChange) < STRAIGHT_EPSILON && Math.abs(lateral) < STRAIGHT_EPSILON) {
++			return straightPath(originX, originZ, position2.getX() + 0.5, position2.getZ() + 0.5, chord, angle1.angleRadians);
++		}
++
++		final double[] solution = solve(halfWaveSine, headingChange, along, lateral, chord);
++		if (solution == null) {
++			return null;
++		}
++
++		return integrate(halfWaveSine, headingChange, solution[0], solution[1], originX, originZ, cos1, sin1, angle1.angleRadians, position2, angle2);
++	}
++
++	/**
++	 * @return the total heading change between the two node headings, wrapped to
++	 * (-180°, 180°] in bearing radians
++	 */
++	private static double headingChange(Angle angle1, Angle angle2) {
++		double headingChange = angle2.angleRadians - angle1.angleRadians;
++		while (headingChange > Math.PI) {
++			headingChange -= 2 * Math.PI;
++		}
++		while (headingChange <= -Math.PI) {
++			headingChange += 2 * Math.PI;
++		}
++		return headingChange;
++	}
++
++	/**
++	 * Damped 2×2 Newton solve for the arc length and the flex amplitude. The total
++	 * heading is exact by construction; the two remaining unknowns are pinned by the two
++	 * endpoint coordinates. Two attempts are made from different initial guesses before
++	 * giving up.
++	 */
++	@Nullable
++	private static double[] solve(boolean halfWaveSine, double headingChange, double along, double lateral, double chord) {
++		final double minArcLength = chord + 1E-6;
++		final double maxArcLength = chord * 2 + 24;
++
++		double arcLength = chord * 1.05 + 0.1;
++		final double[] straightEnd = integrateEnd(halfWaveSine, headingChange, arcLength, 0);
++		final double flex = clampFlex((lateral - straightEnd[1]) / Math.max(arcLength / 2, 1E-6));
++		final double[] solution = solveFrom(halfWaveSine, headingChange, along, lateral, minArcLength, maxArcLength, arcLength, flex);
++		if (solution != null) {
++			return solution;
++		}
++
++		// Second attempt: estimate the required mid-path heading of the S-bend directly.
++		final double arcLengthRetry = chord * 1.25 + 0.5;
++		return solveFrom(halfWaveSine, headingChange, along, lateral, minArcLength, maxArcLength, arcLengthRetry, clampFlex(2 * Math.atan2(lateral, along)));
++	}
++
++	private static double clampFlex(double flex) {
++		return Math.max(-FLEX_LIMIT, Math.min(FLEX_LIMIT, flex));
++	}
++
++	/**
++	 * One damped Newton run from the supplied initial guess. Returns the converged pair
++	 * of arc length and flex amplitude, or {@code null} if it did not settle.
++	 */
++	@Nullable
++	private static double[] solveFrom(boolean halfWaveSine, double headingChange, double along, double lateral, double minArcLength, double maxArcLength, double arcLength, double flex) {
++		for (int iteration = 0; iteration < MAX_SOLVE_ITERATIONS; iteration++) {
++			final double[] end = integrateEnd(halfWaveSine, headingChange, arcLength, flex);
++			final double errorAlong = end[0] - along;
++			final double errorLateral = end[1] - lateral;
++			if (Math.abs(errorAlong) + Math.abs(errorLateral) < SOLVE_TOLERANCE) {
++				return new double[]{arcLength, flex};
++			}
++
++			final double stepLength = Math.max(1E-3, arcLength * 1E-5);
++			final double stepFlex = 1E-4;
++			final double[] endLength = integrateEnd(halfWaveSine, headingChange, arcLength + stepLength, flex);
++			final double[] endFlex = integrateEnd(halfWaveSine, headingChange, arcLength, flex + stepFlex);
++
++			final double alongPerLength = (endLength[0] - end[0]) / stepLength;
++			final double lateralPerLength = (endLength[1] - end[1]) / stepLength;
++			final double alongPerFlex = (endFlex[0] - end[0]) / stepFlex;
++			final double lateralPerFlex = (endFlex[1] - end[1]) / stepFlex;
++
++			final double determinant = alongPerLength * lateralPerFlex - alongPerFlex * lateralPerLength;
++			if (!Double.isFinite(determinant) || Math.abs(determinant) < 1E-12) {
++				return null;
++			}
++
++			arcLength = Math.max(minArcLength, Math.min(maxArcLength, arcLength + (errorLateral * alongPerFlex - errorAlong * lateralPerFlex) / determinant));
++			flex = clampFlex(flex + (errorAlong * lateralPerLength - errorLateral * alongPerLength) / determinant);
++		}
++
++		return null;
++	}
++
++	/**
++	 * Integrates the heading profile once, at solve resolution, and returns the local
++	 * endpoint coordinates (along, lateral) reached by walking {@code arcLength} blocks.
++	 */
++	private static double[] integrateEnd(boolean halfWaveSine, double headingChange, double arcLength, double flex) {
++		final int steps = (int) Math.max(MIN_SOLVE_STEPS, Math.min(MAX_SOLVE_STEPS, Math.ceil(arcLength / SOLVE_STEP_TARGET)));
++		final double step = arcLength / steps;
++		double along = 0;
++		double lateral = 0;
++
++		for (int index = 0; index < steps; index++) {
++			final double tau = (index + 0.5) / steps;
++			final double theta = headingChange * profileA(tau, halfWaveSine) + flex * profileB(tau, halfWaveSine);
++			along += step * Math.cos(theta);
++			lateral += step * Math.sin(theta);
++		}
++
++		return new double[]{along, lateral};
++	}
++
++	/**
++	 * Builds the final uniform sample table: midpoint integration at render resolution,
++	 * then a smooth (zero-slope at both ends) correction that absorbs the solver residual
++	 * so the path lands exactly on both nodes with exactly the requested end headings.
++	 */
++	private static EasedRailPath integrate(boolean halfWaveSine, double headingChange, double arcLength, double flex, double originX, double originZ, double cos1, double sin1, double heading1, Position position2, Angle angle2) {
++		final int sampleCount = (int) Math.max(MIN_TABLE_SAMPLES, Math.min(MAX_TABLE_SAMPLES, Math.ceil(arcLength / TABLE_STEP)));
++		final double step = arcLength / sampleCount;
++		final double[] x = new double[sampleCount + 1];
++		final double[] z = new double[sampleCount + 1];
++		final double[] heading = new double[sampleCount + 1];
++
++		x[0] = originX;
++		z[0] = originZ;
++		heading[0] = heading1;
++
++		double along = 0;
++		double lateral = 0;
++		double maxCurvature1 = 0;
++		double maxCurvature2 = 0;
++
++		for (int index = 1; index <= sampleCount; index++) {
++			final double tauMid = (index - 0.5) / sampleCount;
++			final double thetaMid = headingChange * profileA(tauMid, halfWaveSine) + flex * profileB(tauMid, halfWaveSine);
++			along += step * Math.cos(thetaMid);
++			lateral += step * Math.sin(thetaMid);
++
++			final double curvature = (headingChange * slopeA(tauMid, halfWaveSine) + flex * slopeB(tauMid, halfWaveSine)) / arcLength;
++			if (index <= sampleCount / 2) {
++				maxCurvature1 = Math.max(maxCurvature1, Math.abs(curvature));
++			} else {
++				maxCurvature2 = Math.max(maxCurvature2, Math.abs(curvature));
++			}
++
++			final double tau = (double) index / sampleCount;
++			final double theta = headingChange * profileA(tau, halfWaveSine) + flex * profileB(tau, halfWaveSine);
++			x[index] = originX + along * cos1 - lateral * sin1;
++			z[index] = originZ + along * sin1 + lateral * cos1;
++			heading[index] = heading1 + theta;
++		}
++
++		// Anchor the path exactly on the second node. The residual is sub-millimetre for
++		// ordinary geometry (at most a couple of centimetres for extreme hairpins) and is
++		// spread smoothly across the whole path, so no kink is introduced.
++		final double residualX = position2.getX() + 0.5 - x[sampleCount];
++		final double residualZ = position2.getZ() + 0.5 - z[sampleCount];
++		for (int index = 1; index <= sampleCount; index++) {
++			final double tau = (double) index / sampleCount;
++			final double weight = tau * tau * (3 - 2 * tau);
++			x[index] += residualX * weight;
++			z[index] += residualZ * weight;
++		}
++
++		heading[sampleCount] = angle2.angleRadians;
++
++		return new EasedRailPath(
++			arcLength, step, x, z, heading,
++			maxCurvature1 > 1E-9 ? 1 / maxCurvature1 : 0,
++			maxCurvature2 > 1E-9 ? 1 / maxCurvature2 : 0
++		);
++	}
++
++	/**
++	 * @return a straight sample table for aligned node pairs (zero heading change, zero
++	 * lateral offset)
++	 */
++	private static EasedRailPath straightPath(double originX, double originZ, double targetX, double targetZ, double length, double heading) {
++		final int sampleCount = (int) Math.max(MIN_TABLE_SAMPLES, Math.min(MAX_TABLE_SAMPLES, Math.ceil(length / TABLE_STEP)));
++		final double step = length / sampleCount;
++		final double[] x = new double[sampleCount + 1];
++		final double[] z = new double[sampleCount + 1];
++		final double[] headingTable = new double[sampleCount + 1];
++
++		for (int index = 0; index <= sampleCount; index++) {
++			final double tau = (double) index / sampleCount;
++			x[index] = originX + (targetX - originX) * tau;
++			z[index] = originZ + (targetZ - originZ) * tau;
++			headingTable[index] = heading;
++		}
++
++		return new EasedRailPath(length, step, x, z, headingTable, 0, 0);
++	}
++
++	/**
++	 * Heading ramp carrying the mandatory heading change. Zero at the start, one at the
++	 * end, zero slope at both ends, so the curvature starts and ends at zero.
++	 */
++	private static double profileA(double tau, boolean halfWaveSine) {
++		if (halfWaveSine) {
++			return (1 - Math.cos(Math.PI * tau)) / 2;
++		}
++		if (tau <= 0.25) {
++			return 8 * tau * tau / 3;
++		}
++		if (tau <= 0.75) {
++			return 4 * tau / 3 - 1D / 6;
++		}
++		return 1 - 8 * (1 - tau) * (1 - tau) / 3;
++	}
++
++	/**
++	 * Slope of {@link #profileA}, i.e. the shape of the base curvature diagram times the
++	 * arc length: a half-wave sine, or a symmetric trapezoid whose ramps are the linear
++	 * curvature climbs of a cubic parabola easement.
++	 */
++	private static double slopeA(double tau, boolean halfWaveSine) {
++		if (halfWaveSine) {
++			return Math.PI * Math.sin(Math.PI * tau) / 2;
++		}
++		if (tau <= 0.25) {
++			return 16 * tau / 3;
++		}
++		if (tau <= 0.75) {
++			return 4D / 3;
++		}
++		return 16 * (1 - tau) / 3;
++	}
++
++	/**
++	 * Heading-neutral flex bump with unit peak, zero at both ends and zero slope at both
++	 * ends. It adds mid-path lateral reach without changing the total heading change.
++	 */
++	private static double profileB(double tau, boolean halfWaveSine) {
++		if (halfWaveSine) {
++			return (1 - Math.cos(2 * Math.PI * tau)) / 2;
++		}
++		if (tau <= 0.25) {
++			return 8 * tau * tau;
++		}
++		if (tau <= 0.75) {
++			final double offset = tau - 0.25;
++			return 0.5 + 4 * offset - 8 * offset * offset;
++		}
++		return 8 * (1 - tau) * (1 - tau);
++	}
++
++	/**
++	 * Slope of {@link #profileB}, i.e. the shape of the flex curvature diagram times the
++	 * arc length. Still piecewise linear for the cubic parabola family.
++	 */
++	private static double slopeB(double tau, boolean halfWaveSine) {
++		if (halfWaveSine) {
++			return Math.PI * Math.sin(2 * Math.PI * tau);
++		}
++		if (tau <= 0.25) {
++			return 16 * tau;
++		}
++		if (tau <= 0.75) {
++			return 4 - 16 * (tau - 0.25);
++		}
++		return -16 * (1 - tau);
++	}
++}
+diff --git a/src/main/java/org/mtr/core/data/Rail.java b/src/main/java/org/mtr/core/data/Rail.java
+index 9eaf2dc..6558528 100644
+--- a/src/main/java/org/mtr/core/data/Rail.java
++++ b/src/main/java/org/mtr/core/data/Rail.java
+@@ -527,7 +527,7 @@ public final class Rail extends RailSchema {
+ 		return railConnections == null ? new ObjectArrayList<>() : railConnections.values();
+ 	}
+ 
+-	public enum Shape {QUADRATIC, TWO_RADII, CABLE}
++	public enum Shape {QUADRATIC, TWO_RADII, CABLE, CUBIC_PARABOLA, HALF_WAVE_SINE}
+ 
+ 	public enum BlockReservation {DO_NOT_RESERVE, PRE_RESERVE, CURRENTLY_RESERVE}
+ }
+diff --git a/src/main/java/org/mtr/core/data/RailMath.java b/src/main/java/org/mtr/core/data/RailMath.java
+index 1f7de94..a399459 100644
+--- a/src/main/java/org/mtr/core/data/RailMath.java
++++ b/src/main/java/org/mtr/core/data/RailMath.java
+@@ -60,6 +60,15 @@ public class RailMath {
+ 	private final boolean isStraight1;
+ 	private final boolean isStraight2;
+ 
++	private final boolean easedValid;
++	private final double easedLength;
++	private final double easedStep;
++	private final double[] easedX;
++	private final double[] easedZ;
++	private final double[] easedHeading;
++	private final double easedMinRadius1;
++	private final double easedMinRadius2;
++
+ 	private static final double ACCEPT_THRESHOLD = 1E-4;
+ 	private static final int CABLE_CURVATURE_SCALE = 1000;
+ 	private static final int MAX_CABLE_DIP = 8;
+@@ -84,148 +93,200 @@ public class RailMath {
+ 		final long xEnd = position2.getX();
+ 		final long zEnd = position2.getZ();
+ 
+-		// Coordinate system translation and rotation
+-		final Vector vecDifference = new Vector(position2.getX() - position1.getX(), 0, position2.getZ() - position1.getZ());
+-		final Vector vecDifferenceRotated = vecDifference.rotateY((float) angle1.angleRadians);
+-
+-		// First we check the Delta Side > 0
+-		// 1. If they are same angle
+-		// 1. a. If aligned -> Use One Segment
+-		// 1. b. If not aligned -> Use two Circle, r = (dv^2 + dp^2) / (4dv).
+-		// 2. If they are right angle -> r = min ( dx,dz ), work around, actually equation 3. can be used.
+-		// 3. Check if one segment and one circle is available
+-		// 3. a. If available -> (Segment First) r2 = dv / ( sin(diff) * tan(diff/2) ) = dv / ( 1 - cos(diff)
+-		// 							for case 2, diff = 90 degrees, r = dv
+-		//					-> (Circle First) r1 = ( dp - dv / tan(diff) ) / tan (diff/2)
+-		// TODO 3. b. If not -> r = very complex one. In this case, we need two circles to connect.
+-		final double deltaForward = vecDifferenceRotated.z();
+-		final double deltaSide = vecDifferenceRotated.x();
+-		if (angle1.isParallel(angle2)) { // 1
+-			if (Math.abs(deltaForward) < ACCEPT_THRESHOLD) { // 1. a.
+-				h1 = angle1.cos;
+-				k1 = angle1.sin;
+-				if (Math.abs(h1) >= 0.5 && Math.abs(k1) >= 0.5) {
+-					r1 = (h1 * zStart - k1 * xStart) / h1 / h1;
+-					tStart1 = xStart / h1;
+-					tEnd1 = xEnd / h1;
+-				} else {
+-					final double divisor = angle1.add(angle1).cos;
+-					r1 = (h1 * zStart - k1 * xStart) / divisor;
+-					tStart1 = (h1 * xStart - k1 * zStart) / divisor;
+-					tEnd1 = (h1 * xEnd - k1 * zEnd) / divisor;
+-				}
+-				h2 = 0;
+-				k2 = 0;
+-				r2 = 0;
+-				reverseT1 = tStart1 > tEnd1;
+-				reverseT2 = false;
+-				isStraight1 = true;
+-				isStraight2 = true;
+-				tStart2 = 0;
+-				tEnd2 = 0;
+-			} else { // 1. b
+-				if (Math.abs(deltaSide) > ACCEPT_THRESHOLD) {
+-					final double radius = (deltaForward * deltaForward + deltaSide * deltaSide) / (4 * deltaForward);
+-					r1 = Math.abs(radius);
+-					r2 = r1;
+-					h1 = xStart - radius * angle1.sin;
+-					k1 = zStart + radius * angle1.cos;
+-					h2 = xEnd - radius * angle2.sin;
+-					k2 = zEnd + radius * angle2.cos;
+-					reverseT1 = deltaForward < 0 != deltaSide < 0;
+-					reverseT2 = !reverseT1;
+-					tStart1 = getTBounds(xStart, h1, zStart, k1, r1);
+-					tEnd1 = getTBounds(xStart + vecDifference.x() / 2, h1, zStart + vecDifference.z() / 2, k1, r1, tStart1, reverseT1);
+-					tStart2 = getTBounds(xStart + vecDifference.x() / 2, h2, zStart + vecDifference.z() / 2, k2, r2);
+-					tEnd2 = getTBounds(xEnd, h2, zEnd, k2, r2, tStart2, reverseT2);
+-					isStraight1 = false;
+-					isStraight2 = false;
+-				} else {
+-					// Banned node perpendicular to the rail nodes direction
+-					h1 = 0;
+-					k1 = 0;
+-					h2 = 0;
+-					k2 = 0;
+-					r1 = 0;
+-					r2 = 0;
+-					tStart1 = 0;
+-					tStart2 = 0;
+-					tEnd1 = 0;
+-					tEnd2 = 0;
+-					reverseT1 = false;
+-					reverseT2 = false;
+-					isStraight1 = true;
+-					isStraight2 = true;
+-				}
+-			}
+-		} else { // 3.
+-			// Check if it needs invert
+-			final Angle newAngle1 = vecDifferenceRotated.x() < -ACCEPT_THRESHOLD ? angle1.getOpposite() : angle1;
+-			final Angle newAngle2 = angle2.cos * vecDifference.x() + angle2.sin * vecDifference.z() < -ACCEPT_THRESHOLD ? angle2.getOpposite() : angle2;
+-			final double angleForward = Math.atan2(deltaForward, deltaSide);
+-			final Angle railAngleDifference = newAngle2.sub(newAngle1);
+-			final double angleDifference = railAngleDifference.angleRadians;
+-
+-			if (Math.signum(angleForward) == Math.signum(angleDifference)) {
+-				final double absAngleForward = Math.abs(angleForward);
+-
+-				if (absAngleForward - Math.abs(angleDifference / 2) < ACCEPT_THRESHOLD) { // Segment First
+-					final double offsetSide = Math.abs(deltaForward / railAngleDifference.halfTan);
+-					final double remainingSide = deltaSide - offsetSide;
+-					final double deltaXEnd = xStart + remainingSide * newAngle1.cos;
+-					final double deltaZEnd = zStart + remainingSide * newAngle1.sin;
+-					h1 = newAngle1.cos;
+-					k1 = newAngle1.sin;
++		final EasedRailPath easedPath = shape == Rail.Shape.CUBIC_PARABOLA || shape == Rail.Shape.HALF_WAVE_SINE ? EasedRailPath.build(position1, angle1, position2, angle2, shape == Rail.Shape.HALF_WAVE_SINE) : null;
++
++		if (easedPath != null) {
++			h1 = 0;
++			k1 = 0;
++			h2 = 0;
++			k2 = 0;
++			r1 = 0;
++			r2 = 0;
++			tStart1 = 0;
++			tEnd1 = easedPath.length;
++			tStart2 = 0;
++			tEnd2 = 0;
++			reverseT1 = false;
++			reverseT2 = false;
++			isStraight1 = true;
++			isStraight2 = true;
++			easedValid = true;
++			easedLength = easedPath.length;
++			easedStep = easedPath.step;
++			easedX = easedPath.x;
++			easedZ = easedPath.z;
++			easedHeading = easedPath.heading;
++			easedMinRadius1 = easedPath.minRadius1;
++			easedMinRadius2 = easedPath.minRadius2;
++		} else {
++			easedValid = false;
++			easedLength = 0;
++			easedStep = 1;
++			easedX = null;
++			easedZ = null;
++			easedHeading = null;
++			easedMinRadius1 = 0;
++			easedMinRadius2 = 0;
++
++			// Coordinate system translation and rotation
++			final Vector vecDifference = new Vector(position2.getX() - position1.getX(), 0, position2.getZ() - position1.getZ());
++			final Vector vecDifferenceRotated = vecDifference.rotateY((float) angle1.angleRadians);
++
++			// First we check the Delta Side > 0
++			// 1. If they are same angle
++			// 1. a. If aligned -> Use One Segment
++			// 1. b. If not aligned -> Use two Circle, r = (dv^2 + dp^2) / (4dv).
++			// 2. If they are right angle -> r = min ( dx,dz ), work around, actually equation 3. can be used.
++			// 3. Check if one segment and one circle is available
++			// 3. a. If available -> (Segment First) r2 = dv / ( sin(diff) * tan(diff/2) ) = dv / ( 1 - cos(diff)
++			// 							for case 2, diff = 90 degrees, r = dv
++			//					-> (Circle First) r1 = ( dp - dv / tan(diff) ) / tan (diff/2)
++			// TODO 3. b. If not -> r = very complex one. In this case, we need two circles to connect.
++			final double deltaForward = vecDifferenceRotated.z();
++			final double deltaSide = vecDifferenceRotated.x();
++			if (angle1.isParallel(angle2)) { // 1
++				if (Math.abs(deltaForward) < ACCEPT_THRESHOLD) { // 1. a.
++					h1 = angle1.cos;
++					k1 = angle1.sin;
+ 					if (Math.abs(h1) >= 0.5 && Math.abs(k1) >= 0.5) {
+ 						r1 = (h1 * zStart - k1 * xStart) / h1 / h1;
+ 						tStart1 = xStart / h1;
+-						tEnd1 = deltaXEnd / h1;
++						tEnd1 = xEnd / h1;
+ 					} else {
+-						final double divisor = newAngle1.add(newAngle1).cos;
++						final double divisor = angle1.add(angle1).cos;
+ 						r1 = (h1 * zStart - k1 * xStart) / divisor;
+ 						tStart1 = (h1 * xStart - k1 * zStart) / divisor;
+-						tEnd1 = (h1 * deltaXEnd - k1 * deltaZEnd) / divisor;
++						tEnd1 = (h1 * xEnd - k1 * zEnd) / divisor;
+ 					}
+-					isStraight1 = true;
++					h2 = 0;
++					k2 = 0;
++					r2 = 0;
+ 					reverseT1 = tStart1 > tEnd1;
+-					final double radius = deltaForward / (1 - railAngleDifference.cos);
+-					r2 = Math.abs(radius);
+-					h2 = deltaXEnd - radius * newAngle1.sin;
+-					k2 = deltaZEnd + radius * newAngle1.cos;
+-					reverseT2 = (deltaForward < 0);
+-					tStart2 = getTBounds(deltaXEnd, h2, deltaZEnd, k2, r2);
+-					tEnd2 = getTBounds(xEnd, h2, zEnd, k2, r2, tStart2, reverseT2);
+-					isStraight2 = false;
+-				} else if (absAngleForward - Math.abs(angleDifference) < ACCEPT_THRESHOLD) { // Circle First
+-					final double crossSide = deltaForward / railAngleDifference.tan;
+-					final double remainingSide = (deltaSide - crossSide) * (1 + railAngleDifference.cos);
+-					final double remainingForward = (deltaSide - crossSide) * (railAngleDifference.sin);
+-					final double deltaXEnd = xStart + remainingSide * newAngle1.cos - remainingForward * newAngle1.sin;
+-					final double deltaZEnd = zStart + remainingSide * newAngle1.sin + remainingForward * newAngle1.cos;
+-					final double radius = (deltaSide - deltaForward / railAngleDifference.tan) / railAngleDifference.halfTan;
+-					r1 = Math.abs(radius);
+-					h1 = xStart - radius * newAngle1.sin;
+-					k1 = zStart + radius * newAngle1.cos;
+-					isStraight1 = false;
+-					reverseT1 = (deltaForward < 0);
+-					tStart1 = getTBounds(xStart, h1, zStart, k1, r1);
+-					tEnd1 = getTBounds(deltaXEnd, h1, deltaZEnd, k1, r1, tStart1, reverseT1);
+-					h2 = newAngle2.cos;
+-					k2 = newAngle2.sin;
+-					if (Math.abs(h2) >= 0.5 && Math.abs(k2) >= 0.5) {
+-						r2 = (h2 * deltaZEnd - k2 * deltaXEnd) / h2 / h2;
+-						tStart2 = deltaXEnd / h2;
+-						tEnd2 = xEnd / h2;
++					reverseT2 = false;
++					isStraight1 = true;
++					isStraight2 = true;
++					tStart2 = 0;
++					tEnd2 = 0;
++				} else { // 1. b
++					if (Math.abs(deltaSide) > ACCEPT_THRESHOLD) {
++						final double radius = (deltaForward * deltaForward + deltaSide * deltaSide) / (4 * deltaForward);
++						r1 = Math.abs(radius);
++						r2 = r1;
++						h1 = xStart - radius * angle1.sin;
++						k1 = zStart + radius * angle1.cos;
++						h2 = xEnd - radius * angle2.sin;
++						k2 = zEnd + radius * angle2.cos;
++						reverseT1 = deltaForward < 0 != deltaSide < 0;
++						reverseT2 = !reverseT1;
++						tStart1 = getTBounds(xStart, h1, zStart, k1, r1);
++						tEnd1 = getTBounds(xStart + vecDifference.x() / 2, h1, zStart + vecDifference.z() / 2, k1, r1, tStart1, reverseT1);
++						tStart2 = getTBounds(xStart + vecDifference.x() / 2, h2, zStart + vecDifference.z() / 2, k2, r2);
++						tEnd2 = getTBounds(xEnd, h2, zEnd, k2, r2, tStart2, reverseT2);
++						isStraight1 = false;
++						isStraight2 = false;
+ 					} else {
+-						final double divisor = newAngle2.add(newAngle2).cos;
+-						r2 = (h2 * deltaZEnd - k2 * deltaXEnd) / divisor;
+-						tStart2 = (h2 * deltaXEnd - k2 * deltaZEnd) / divisor;
+-						tEnd2 = (h2 * xEnd - k2 * zEnd) / divisor;
++						// Banned node perpendicular to the rail nodes direction
++						h1 = 0;
++						k1 = 0;
++						h2 = 0;
++						k2 = 0;
++						r1 = 0;
++						r2 = 0;
++						tStart1 = 0;
++						tStart2 = 0;
++						tEnd1 = 0;
++						tEnd2 = 0;
++						reverseT1 = false;
++						reverseT2 = false;
++						isStraight1 = true;
++						isStraight2 = true;
+ 					}
+-					isStraight2 = true;
+-					reverseT2 = tStart2 > tEnd2;
+-				} else { // Out of available range
+-					// TODO complex one. Normally we don't need it.
++				}
++			} else { // 3.
++				// Check if it needs invert
++				final Angle newAngle1 = vecDifferenceRotated.x() < -ACCEPT_THRESHOLD ? angle1.getOpposite() : angle1;
++				final Angle newAngle2 = angle2.cos * vecDifference.x() + angle2.sin * vecDifference.z() < -ACCEPT_THRESHOLD ? angle2.getOpposite() : angle2;
++				final double angleForward = Math.atan2(deltaForward, deltaSide);
++				final Angle railAngleDifference = newAngle2.sub(newAngle1);
++				final double angleDifference = railAngleDifference.angleRadians;
++
++				if (Math.signum(angleForward) == Math.signum(angleDifference)) {
++					final double absAngleForward = Math.abs(angleForward);
++
++					if (absAngleForward - Math.abs(angleDifference / 2) < ACCEPT_THRESHOLD) { // Segment First
++						final double offsetSide = Math.abs(deltaForward / railAngleDifference.halfTan);
++						final double remainingSide = deltaSide - offsetSide;
++						final double deltaXEnd = xStart + remainingSide * newAngle1.cos;
++						final double deltaZEnd = zStart + remainingSide * newAngle1.sin;
++						h1 = newAngle1.cos;
++						k1 = newAngle1.sin;
++						if (Math.abs(h1) >= 0.5 && Math.abs(k1) >= 0.5) {
++							r1 = (h1 * zStart - k1 * xStart) / h1 / h1;
++							tStart1 = xStart / h1;
++							tEnd1 = deltaXEnd / h1;
++						} else {
++							final double divisor = newAngle1.add(newAngle1).cos;
++							r1 = (h1 * zStart - k1 * xStart) / divisor;
++							tStart1 = (h1 * xStart - k1 * zStart) / divisor;
++							tEnd1 = (h1 * deltaXEnd - k1 * deltaZEnd) / divisor;
++						}
++						isStraight1 = true;
++						reverseT1 = tStart1 > tEnd1;
++						final double radius = deltaForward / (1 - railAngleDifference.cos);
++						r2 = Math.abs(radius);
++						h2 = deltaXEnd - radius * newAngle1.sin;
++						k2 = deltaZEnd + radius * newAngle1.cos;
++						reverseT2 = (deltaForward < 0);
++						tStart2 = getTBounds(deltaXEnd, h2, deltaZEnd, k2, r2);
++						tEnd2 = getTBounds(xEnd, h2, zEnd, k2, r2, tStart2, reverseT2);
++						isStraight2 = false;
++					} else if (absAngleForward - Math.abs(angleDifference) < ACCEPT_THRESHOLD) { // Circle First
++						final double crossSide = deltaForward / railAngleDifference.tan;
++						final double remainingSide = (deltaSide - crossSide) * (1 + railAngleDifference.cos);
++						final double remainingForward = (deltaSide - crossSide) * (railAngleDifference.sin);
++						final double deltaXEnd = xStart + remainingSide * newAngle1.cos - remainingForward * newAngle1.sin;
++						final double deltaZEnd = zStart + remainingSide * newAngle1.sin + remainingForward * newAngle1.cos;
++						final double radius = (deltaSide - deltaForward / railAngleDifference.tan) / railAngleDifference.halfTan;
++						r1 = Math.abs(radius);
++						h1 = xStart - radius * newAngle1.sin;
++						k1 = zStart + radius * newAngle1.cos;
++						isStraight1 = false;
++						reverseT1 = (deltaForward < 0);
++						tStart1 = getTBounds(xStart, h1, zStart, k1, r1);
++						tEnd1 = getTBounds(deltaXEnd, h1, deltaZEnd, k1, r1, tStart1, reverseT1);
++						h2 = newAngle2.cos;
++						k2 = newAngle2.sin;
++						if (Math.abs(h2) >= 0.5 && Math.abs(k2) >= 0.5) {
++							r2 = (h2 * deltaZEnd - k2 * deltaXEnd) / h2 / h2;
++							tStart2 = deltaXEnd / h2;
++							tEnd2 = xEnd / h2;
++						} else {
++							final double divisor = newAngle2.add(newAngle2).cos;
++							r2 = (h2 * deltaZEnd - k2 * deltaXEnd) / divisor;
++							tStart2 = (h2 * deltaXEnd - k2 * deltaZEnd) / divisor;
++							tEnd2 = (h2 * xEnd - k2 * zEnd) / divisor;
++						}
++						isStraight2 = true;
++						reverseT2 = tStart2 > tEnd2;
++					} else { // Out of available range
++						// TODO complex one. Normally we don't need it.
++						h1 = 0;
++						k1 = 0;
++						h2 = 0;
++						k2 = 0;
++						r1 = 0;
++						r2 = 0;
++						tStart1 = 0;
++						tStart2 = 0;
++						tEnd1 = 0;
++						tEnd2 = 0;
++						reverseT1 = false;
++						reverseT2 = false;
++						isStraight1 = true;
++						isStraight2 = true;
++					}
++				} else {
++					// TODO 3. b. If not -> r = very complex one. Normally we don't need it.
+ 					h1 = 0;
+ 					k1 = 0;
+ 					h2 = 0;
+@@ -241,22 +302,6 @@ public class RailMath {
+ 					isStraight1 = true;
+ 					isStraight2 = true;
+ 				}
+-			} else {
+-				// TODO 3. b. If not -> r = very complex one. Normally we don't need it.
+-				h1 = 0;
+-				k1 = 0;
+-				h2 = 0;
+-				k2 = 0;
+-				r1 = 0;
+-				r2 = 0;
+-				tStart1 = 0;
+-				tStart2 = 0;
+-				tEnd1 = 0;
+-				tEnd2 = 0;
+-				reverseT1 = false;
+-				reverseT2 = false;
+-				isStraight1 = true;
+-				isStraight2 = true;
+ 			}
+ 		}
+ 
+@@ -314,6 +359,12 @@ public class RailMath {
+ 	}
+ 
+ 	public Vector getPosition(double rawValue, boolean reverse) {
++		if (easedValid) {
++			final double clampedValue = Utilities.clampSafe(rawValue, 0, easedLength);
++			final double value = reverse ? easedLength - clampedValue : clampedValue;
++			final double y = getPositionY(value);
++			return easedPosition(value, y, 0);
++		}
+ 		final double count1 = getLength1();
+ 		final double count2 = getLength2();
+ 		final double clampedValue = Utilities.clampSafe(rawValue, 0, count1 + count2);
+@@ -357,6 +408,9 @@ public class RailMath {
+ 	}
+ 
+ 	public DoubleDoubleImmutablePair getHorizontalRadii() {
++		if (easedValid) {
++			return new DoubleDoubleImmutablePair(easedMinRadius1, easedMinRadius2);
++		}
+ 		return new DoubleDoubleImmutablePair(isStraight1 ? 0 : Math.abs(r1), isStraight2 ? 0 : Math.abs(r2));
+ 	}
+ 
+@@ -367,8 +421,58 @@ public class RailMath {
+ 	}
+ 
+ 	public void render(RenderRail callback, double interval, float offsetRadius1, float offsetRadius2) {
+-		renderSegment(h1, k1, r1, tStart1, tEnd1, 0, interval, offsetRadius1, offsetRadius2, reverseT1, isStraight1, callback);
+-		renderSegment(h2, k2, r2, tStart2, tEnd2, Math.abs(tEnd1 - tStart1), interval, offsetRadius1, offsetRadius2, reverseT2, isStraight2, callback);
++		if (easedValid) {
++			renderEased(callback, interval, offsetRadius1, offsetRadius2);
++		} else {
++			renderSegment(h1, k1, r1, tStart1, tEnd1, 0, interval, offsetRadius1, offsetRadius2, reverseT1, isStraight1, callback);
++			renderSegment(h2, k2, r2, tStart2, tEnd2, Math.abs(tEnd1 - tStart1), interval, offsetRadius1, offsetRadius2, reverseT2, isStraight2, callback);
++		}
++	}
++
++	/**
++	 * Walks the eased sample table in lockstep with the classic {@code renderSegment}
++	 * loop, emitting the same four-corner segments the segment solver does, so every
++	 * downstream consumer (rail models, ribbons, bounds, distance queries) sees an
++	 * identical stream for eased and classic rails alike.
++	 */
++	private void renderEased(RenderRail callback, double interval, float offsetRadius1, float offsetRadius2) {
++		final double count = easedLength;
++		final double increment = count < 0.5 || interval <= 0 ? 0.5 : count / Math.round(count) * interval;
++		Vector previousCorner1 = null;
++		Vector previousCorner2 = null;
++
++		for (double distance = 0; distance < count + increment - 0.001; distance += increment) {
++			final double value = Math.min(distance, count);
++			final double y = getPositionY(value);
++			final double tiltAngle = getTiltAngle(value, false);
++			final Vector center = easedPosition(value, y, 0);
++			final Vector corner1 = offsetRadius2 == 0 ? center : applyTiltAngleOffset(easedPosition(value, y, offsetRadius2), center, -tiltAngle);
++			final Vector corner2 = offsetRadius1 == 0 ? center : applyTiltAngleOffset(easedPosition(value, y, offsetRadius1), center, tiltAngle);
++
++			if (previousCorner1 != null) {
++				callback.renderRail(previousCorner1.x(), previousCorner1.y(), previousCorner1.z(), previousCorner2.x(), previousCorner2.y(), previousCorner2.z(), corner1.x(), corner1.y(), corner1.z(), corner2.x(), corner2.y(), corner2.z(), tiltAngle);
++			}
++
++			previousCorner1 = corner2;
++			previousCorner2 = corner1;
++		}
++	}
++
++	/**
++	 * @return the eased path position at arc length {@code value}, optionally offset
++	 * by {@code radiusOffset} blocks along the local normal (toward the path's right)
++	 */
++	private Vector easedPosition(double value, double y, double radiusOffset) {
++		final double position = Utilities.clampSafe(value / easedStep, 0, easedX.length - 1);
++		final int sample = (int) Math.min(Math.floor(position), easedX.length - 2);
++		final double ratio = position - sample;
++		final double x = easedX[sample] + (easedX[sample + 1] - easedX[sample]) * ratio;
++		final double z = easedZ[sample] + (easedZ[sample + 1] - easedZ[sample]) * ratio;
++		if (radiusOffset == 0) {
++			return new Vector(x, y, z);
++		}
++		final double heading = easedHeading[sample] + (easedHeading[sample + 1] - easedHeading[sample]) * ratio;
++		return new Vector(x + radiusOffset * Math.sin(heading), y, z - radiusOffset * Math.cos(heading));
+ 	}
+ 
+ 	ObjectImmutableList<DoubleDoubleImmutablePair> getTiltPointsAndAngles(boolean reversed) {
+@@ -454,7 +558,7 @@ public class RailMath {
+ 	}
+ 
+ 	boolean isValid() {
+-		return h1 != 0 || k1 != 0 || h2 != 0 || k2 != 0 || r1 != 0 || r2 != 0 || tStart1 != 0 || tStart2 != 0 || tEnd1 != 0 || tEnd2 != 0;
++		return easedValid || h1 != 0 || k1 != 0 || h2 != 0 || k2 != 0 || r1 != 0 || r2 != 0 || tStart1 != 0 || tStart2 != 0 || tEnd1 != 0 || tEnd2 != 0;
+ 	}
+ 
+ 	private double getLength1() {
