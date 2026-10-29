@@ -2,6 +2,22 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.8 (2026-10-29)
+
+Diagnosed against the freshly decompiled Beryl 0.2.0-alpha `entity.vsh`/`entity.fsh`/`particle.vsh` plus the vanilla 1.21.1 `LightTexture.pack` bytecode and the VulkanMod 0.6.7 `VBO.drawWithShader` translation — this round found the piece the yanyang.7 passenger clamp could not cover.
+
+**Vehicles and every static MTR model glowing warm under Beryl — the real remaining "glow"**
+- yanyang.7 clamped the block-light fed to the **per-drawn** humanoids (passengers, riding players), but the glow persisted — because the biggest emitter was never the passengers. **Every** `NewOptimizedModel` (train bodies, doors, rails, signs, PIDS casings, lift shells) bakes its `UV2` lightmap attribute into a static GPU buffer once at build time, and that bake was the vanilla-GL full-bright constant `DEFAULT_LIGHT = pack(15, 15)`. Beryl's entity shader reads that frozen coordinate as a squared warm emission — `texColor × (240/256)² × 2 × (1 − lightY) × vec3(1, 0.7, 0.5)` ≈ **1.55× warm glow** in exactly the scenes where `lightY` collapses (night, roofed stations), i.e. **entire trains glowing at night and inside stations**.
+- While Beryl owns the GL models, the baked coordinate is now `pack(0, 15)`: block 0 zeroes the emission term; sky 15 keeps Beryl's own ambient, GGX direct lighting, shadow-map occlusion and fog fully working (a zeroed sky too would close Beryl's direct-light gate `light.z` and leave unshaded silhouettes). Plain GL, plain VulkanMod and the native pipeline keep the full-bright bake — the MTR cartoon look is unchanged outside Beryl. The bake variant is chosen at build time, and models are only ever built inside the post-transition rebuild, so it always matches the renderer that draws them.
+- `renderModel` pins the per-draw `ColorModulator` at **1** while Beryl drives the frame: the old `packed/0xF` formula hits exact **0** in fully dark scenes (block 0, sky 0) and multiplied every pixel by zero — erasing what Beryl's own lighting just computed and leaving pitch-black silhouettes. Under Beryl the division of labour is now clean: the shader pack owns the light, the colour modulator stays neutral. (The formula stays untouched on the GL/VulkanMod paths — it degenerates to 1 in almost every scene there anyway.)
+- The humanoid block-light cap drops from 8 to **4**: yanyang.7's cap of 8 still fed the emission a `(128/256)² × 2 = 0.5×` warm bloom that read as glowing on real scenes; 4 leaves `≈ 0.118×` — a faint "standing under a lamp" warmth instead of a beacon.
+
+**Confirmed Beryl-side, not fixable from MTR**
+- Particles glowing under Beryl is Beryl's own doing: its `particle.vsh` carries the **same squared-emission formula** (`lightX = (UV2.x/256)² × (1 − lightY)`), and vanilla fills particle lightmap coordinates with the real block light. Any particle near a light source of 10+ will bloom warm — that is the shader pack's design, outside MTR's reach.
+
+**AI passenger size / phone pose — verified, no defect found**
+- The passenger transform chain was re-derived against the freshly decompiled vanilla 1.21.1 `LivingEntityRenderer.render` bytecode: the MTR chain (`ageScale → flip(-1,-1,1) → 0.9375 → translate(0,-1.501,0) → YP180`) is mathematically identical to vanilla's (`scale(getAgeScale()) → setupRotations YP(180−yaw) → flip → scale() → translate(0,-1.501,0)`) — `Player.getAgeScale()` is where the `0.9375` comes from, and every element of the chain (diagonal scales, the Y-180 rotation and the Y-translation) commutes, so the children's feet stay on the ground exactly like vanilla babies. The phone pivot `(0, 8.2, −7.6)` sits within 0.05 blocks of the computed hand-convergence point of the −50° arm pose. If size/phone issues still reproduce **with shaders off** (the native Vulkan path), that is a different pipeline — send that log and it will be fixed there.
+
 ## 4.1.0-beta-2.yanyang.7 (2026-10-27)
 
 Both yanyang.6 follow-ups below were diagnosed against the actual Beryl 0.2.0-alpha bytecode + shaders (decompiled `RenderingPipeline`, its keybind/options mixins and `entity.vsh`/`terrain.fsh`), not inferred from log lines.

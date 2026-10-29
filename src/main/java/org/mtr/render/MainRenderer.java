@@ -492,7 +492,17 @@ public class MainRenderer {
                         renderLayer.setupRenderState();
                         renderDetails.forEach(renderDetailsEntry -> {
                                 renderDetailsEntry.left().transform(matrixStack, offset);
-                                newOptimizedModel.render(matrixStack.last().pose(), renderStage.isFullBrightness ? 1 : (float) renderDetailsEntry.rightInt() / 0xF, RenderSystem.getShader());
+                                // Per-draw dimming travels through ColorModulator. While Beryl drives
+                                // the frame the multiplier is pinned at 1: the packed/15 formula below
+                                // degenerates to 1 in almost every lit scene anyway, but it hits
+                                // exact 0 in fully dark ones (block 0, sky 0) — multiplying
+                                // ColorModulator to 0 erases everything Beryl's own lighting just
+                                // computed (ambient, GGX direct light, shadow occlusion) and leaves
+                                // pitch-black silhouettes. With the yanyang.8 zero-block bake the
+                                // correct division of labour under Beryl is: the shader pack owns
+                                // the light, the colour modulator stays neutral.
+                                final float lightMultiplier = renderStage.isFullBrightness || org.mtr.client.VulkanCompat.isBerylActive() ? 1 : (float) renderDetailsEntry.rightInt() / 0xF;
+                                newOptimizedModel.render(matrixStack.last().pose(), lightMultiplier, RenderSystem.getShader());
                                 matrixStack.popPose();
                         });
                         renderLayer.clearRenderState();

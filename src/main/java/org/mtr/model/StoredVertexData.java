@@ -55,7 +55,11 @@ public record StoredVertexData(
 			storedVertexData.u,
 			storedVertexData.v,
 			OverlayTexture.NO_OVERLAY,
-			IGui.DEFAULT_LIGHT,
+			// The baked lightmap coordinate must not feed Beryl's squared-emission
+			// shader a full-bright block component (a 1.55x warm glow on every static
+			// model in dark/roofed scenes); VulkanCompat picks the Beryl-safe bake
+			// (block 0, sky 15) exactly while Beryl's pipeline owns the GL models.
+			org.mtr.client.VulkanCompat.staticModelBakedLight(),
 			storedVertexData.normalX,
 			storedVertexData.normalY,
 			storedVertexData.normalZ

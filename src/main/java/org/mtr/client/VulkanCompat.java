@@ -180,12 +180,13 @@ public final class VulkanCompat {
          * warm bloom on every entity; MTR stations keep light level 15 across whole platforms
          * (mob-spawn-proofing), so every passenger rendered with a truthful packed light
          * still glows after the yanyang.6 light-sampling fix — the real light simply IS 15.
-         * Capping the block component at {@code 8} keeps a gentle warm lamp-lit tint
-         * ({@code 0.5&times;}) without the beacon-like glow, while tunnels, daylight and the
-         * sky component stay untouched. Plain VulkanMod and OpenGL use the vanilla lightmap
+         * The yanyang.7 cap of 8 still left a {@code (128/256)^2 &times; 2 = 0.5&times;} warm
+         * bloom that read as glowing on the user's scenes, so the cap is now 4 —
+         * {@code (64/256)^2 &times; 2 &asymp; 0.118&times;}, a faint "standing under a lamp"
+         * warmth instead of a beacon. Plain VulkanMod and OpenGL use the vanilla lightmap
          * curve and keep the truthful value.</p>
          */
-        public static final int BERYL_HUMANOID_BLOCK_LIGHT_CAP = 8;
+        public static final int BERYL_HUMANOID_BLOCK_LIGHT_CAP = 4;
 
         /**
          * Caps the block-light component of a packed lightmap value for an MTR-rendered
@@ -204,6 +205,55 @@ public final class VulkanCompat {
                         return packedLight;
                 }
                 return BERYL_HUMANOID_BLOCK_LIGHT_CAP << 4 | packedLight & 0xF;
+        }
+
+        /**
+         * The lightmap coordinate baked into every static {@code NewOptimizedModel} vertex
+         * buffer at build time, keyed to the renderer that will own the finished model.
+         *
+         * <p>Every MTR static model — train bodies, doors, rails, signs, PIDS casings, lift
+         * shells — is built once into a GPU vertex buffer whose {@code UV2} (lightmap)
+         * attribute is frozen at upload. The vanilla-GL path deliberately bakes
+         * {@code DEFAULT_LIGHT} = {@code LightTexture.pack(15, 15)} (block 15, sky 15) and
+         * dims per draw through the shader colour — the long-standing MTR cartoon look.
+         * Beryl's entity pipeline, however, computes lighting from that baked coordinate
+         * (verified against its {@code entity.vsh}/{@code entity.fsh} 0.2.0-alpha):
+         * the sky part {@code lightY = (uv/256)^2} drives ambient, and the <b>block</b>
+         * part {@code lightX = (uv/256)^2 * (1 - lightY) * 2} is added straight to the
+         * fragment as a <b>warm emission</b> — {@code texColor * lightX * vec3(1, 0.7, 0.5)}.
+         * With the baked block component at 15 the emission is
+         * {@code (240/256)^2 &times; 2 &asymp; 1.55&times;} in every dark or roofed scene
+         * (where {@code lightY} collapses and its emission-suppressing {@code (1 - lightY)}
+         * factor vanishes): <b>entire trains glowing warm at night and inside stations</b> —
+         * the user-visible "vehicles still glow under Beryl" after yanyang.7 clamped only
+         * the per-drawn humanoids.</p>
+         *
+         * <p>While Beryl owns the GL models the bake is therefore {@code pack(0, 15)}:
+         * block 0 zeroes the emission term everywhere, while sky 15 keeps Beryl's own
+         * ambient light, GGX direct lighting, shadow-map occlusion and fog fully working
+         * (Beryl's {@code light.z} direct-light gate needs {@code lightY > 0.707}, which a
+         * zeroed sky coordinate would never open, leaving the model lit only by
+         * {@code MinAmbientLight} — an unshaded silhouette). Per-draw brightness continues
+         * through {@code ColorModulator}, which Beryl's fragment shader applies after the
+         * emission fix (see {@code MainRenderer#renderModel}). Plain GL, plain VulkanMod and
+         * the native pipeline keep {@code IGui.DEFAULT_LIGHT} = {@code 0xF000F0}, so nothing
+         * changes outside Beryl.</p>
+         *
+         * <p>Called from the model build ({@code StoredVertexData#apply}), which only ever
+         * runs inside {@code CustomResourceLoader#reload()} — the same rebuild that fires
+         * after every Beryl owner flip (the transition grace window defers it), so the bake
+         * variant always matches the renderer that will actually draw the buffer.</p>
+         */
+        public static final int BERYL_STATIC_MODEL_LIGHT = 0xF00000; // LightTexture.pack(0, 15)
+
+        /**
+         * @return the lightmap coordinate to bake into a static {@code NewOptimizedModel}
+         *         vertex buffer: {@link #BERYL_STATIC_MODEL_LIGHT} while Beryl's shader
+         *         pipeline will draw the model, the vanilla MTR full-bright constant
+         *         ({@code IGui.DEFAULT_LIGHT} = {@code 0xF000F0}) everywhere else
+         */
+        public static int staticModelBakedLight() {
+                return isBerylActive() ? BERYL_STATIC_MODEL_LIGHT : 0xF000F0;
         }
 
         private VulkanCompat() {
