@@ -1,6 +1,6 @@
 {
-  "run_id": "40873708868",
-  "tag": "4.1.0-beta-2.yanyang.8",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.8 (1.21.1 & 1.21.4, Fabric & NeoForge) — the remaining glow root-caused in the baked model lightmap; trains and all static models stop blooming under Beryl",
+  "run_id": "40913995523",
+  "tag": "4.1.0-beta-2.yanyang.9",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.9 (1.21.1 & 1.21.4, Fabric & NeoForge) — swapped-halves bake fixed: per-stage emissive & scene light restored under Beryl; cubic parabola & half-wave sine easement curves; TSC fork now the in-repo tsc-1.21.x branch",
   "notes_file": "notes.md"
 }

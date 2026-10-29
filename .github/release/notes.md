@@ -1,47 +1,33 @@
 中文说明 / English notes
 
-**MTR-Yanyang 4.1.0-beta-2.yanyang.8** 本次更新：
+**MTR-Yanyang 4.1.0-beta-2.yanyang.9** 本次更新：
 
-**光影下"异常发光"的真正大头——列车与全部静态模型的烘焙光照（本轮根因修复）**
-- 症状：yanyang.7 之后，乘客不再像灯泡了，但**整列列车（以及门、轨道、站牌、PIDS、电梯）在夜晚和站台里仍然泛着暖光**
-- 根因（本轮从 Beryl 0.2.0-alpha 的 `entity.vsh`/`entity.fsh` 与原版 1.21.1 `LightTexture.pack` 字节码实证）：每一个 MTR 静态模型（`NewOptimizedModel`）在构建时把 **UV2 光照图坐标一次性烘焙进静态 GPU 顶点缓冲**，烘焙值一直是纯 GL 路径的全亮常量 `pack(15, 15)`。而 Beryl 的实体着色器把这个**冻住的方块光分量**直接当**平方暖色自发光**：`纹理 × (240/256)² × 2 × (1 − lightY) × 暖色调 ≈ 1.55 倍`——恰恰在 `lightY` 塌陷的夜晚、带顶棚的站台里最亮。**整列车的暖光就是从这一行烘焙里来的**
-- 修复：Beryl 拥有 GL 模型期间，烘焙坐标改为 `pack(0, 15)`——**方块光 0 消灭自发光项**；**天空光 15 保住 Beryl 自己的环境光、GGX 直射光、阴影贴图遮蔽与雾效**（连天空光也清零会关掉 Beryl 的直射光闸门，只剩最低环境光，模型变成无光影剪影）。纯 GL、纯 VulkanMod、原生管线的烘焙保持全亮常量——**MTR 一贯的卡通风观感在这些路径下完全不变**
-- 同时：Beryl 驱动帧期间，静态模型的逐次绘制亮度（ColorModulator）固定为 1——旧公式在完全黑暗场景恰好等于 0，会把 Beryl 光影刚算好的光照整帧乘没，留下纯黑剪影。光影包负责打光，颜色调制器保持中性。（GL / VulkanMod 路径公式原样保留）
-- 乘客方块光钳制从 8 收紧到 **4**：8 在实测场景仍带约 0.5 倍暖光晕，4 只剩约 0.12 倍的"灯下微光"
+**"上一次更新后模型渲染错误更严重、列车模型模块组自发光出错"——根因找到并修复（yanyang.8 的烘焙常量字节序写反了）**
+- 症状：yanyang.8 之后，列车在光影下变成**没有明暗层次的橙色发光剪影**，白天黑夜都一样；灯光模块（头灯、尾灯、灯带）的自发光也"错"了——和车身一样发光，分不清哪是灯
+- 根因（本轮实证）：打包光照格式里，**高 16 位是光照图的 U 轴（方块光），低 16 位是 V 轴（天空光）**——`LightTexture.FULL_BRIGHT = 0xF000F0 = pack(15,15)` 就是最直接的证据。yanyang.8 想烘焙 `pack(0, 15)`（方块光清零、天空光保留），却写下了 `0xF00000`——**它实际是 `pack(15, 0)`**，与意图完全相反：每个静态模型带着**满格方块光 + 零天空光**进管线。满格方块光喂给 Beryl 的平方暖色自发光项（全天候 1.76 倍），塌陷的天空光则关掉了环境光与 GGX 直射光闸门——**整列车变成无阴影、无直射光的橙色发光板**
+- 修复：烘焙值修正为**按渲染阶段区分**（`VulkanCompat#staticModelBakedLight`）：
+  - **全亮度层**（`LIGHT`、`ALWAYS_ON_LIGHT`、`INTERIOR`、`INTERIOR_TRANSLUCENT`——在其它渲染器下本来就按"常亮"设计）保留全亮 `pack(15, 15)`：Beryl 的方块光自发光恰恰就是灯光模块发光的来源，**头灯、尾灯、灯带的自发光恢复工作**；夜晚透过车窗看，内饰是亮的——就是列车夜间"开着灯"该有的样子
+  - **`EXTERIOR`（车身）**烘焙 `pack(4, 15)`：方块光 4（与乘客钳制同一档位，约 0.12 倍"灯下微光"，不再发光），天空光 15 终于正确生效——Beryl 的环境光、GGX 直射光、阴影遮蔽与雾效重新作用到车身上，**橙光剪影消失，列车恢复光影层次**
+- 一并修复乘客钳制的位运算（`capBlockLightForBeryl`）：旧代码 `>> 4` 读到的是**天空光**而不是方块光（方块光在 bit 20-23）——它"碰巧"起作用的方式是把高天空光场景的乘客整包换成 `0x40`（暗淡且丢失真实天空光），而低天空光场景（夜晚室内站台）的乘客方块光根本没被钳制、仍然发光。新位运算钳的是真正的方块光、原样保留真实天空光——**乘客亮度昼夜一致**
+- 以上全部只在 Beryl 驱动帧时生效；纯 GL、纯 VulkanMod、原生管线的观感**一个字节都没变**
 
-**粒子发光——确认是 Beryl 自身行为，MTR 无法修复**
-- 你观察到粒子也异常发光——正确：本轮反编译确认 Beryl 的 `particle.vsh` 携带**完全相同的平方自发光公式**，而原版给粒子填的是真实方块光。光源等级 10+ 附近的粒子就会泛暖光——这是光影包自己的设计，在 MTR 的管辖之外
+**新增 2 条 MTR 轨道缓和曲线：三次抛物线 / 半波正弦（三次拋物線 / 半波正弦緩和曲線）**
+- 轨道修改器（rail modifier）的 Shape 控件现在对所有有水平弧度的轨道可用，循环切换：**Quadratic → Two Radii → Cubic Parabola（三次抛物线）→ Half-Wave Sine（半波正弦）**；竖曲线半径输入仍只在坡道轨道显示
+- 两条新形状都是**全轨曲率连续**的缓和曲线——曲率在两端为零，与相邻轨道连接处没有曲率突变：
+  - **三次抛物线**：分段线性曲率（直线—缓和—圆曲线—缓和—直线，干线铁路的经典序列）
+  - **半波正弦**：单一正弦半波作曲率图，经典线形中最顺滑的一种——曲率处处无折角
+- **性能**：全部求解发生在轨道构建时（阻尼牛顿迭代 + 一次性积分成共享采样表），渲染、列车定位、碰撞箱、半径查询全部**插值同一张表**——列车按显示出来的轨道行走是"结构性保证"；**零逐帧成本**，渲染路径与原来完全一样（`RailGeometryCache` 缓存机制不变）
+- 超出线形家族表达能力的几何（急回转 hairpin、起点后方折返、求解失败）**自动回退经典分段求解器**——缓和曲线只是增强，绝不破坏任何既有轨道
+- 中文（简/繁）界面翻译已附
 
-**AI 乘客大小 / 手机姿势——已对照原版字节码逐项验证，未发现缺陷**
-- 乘客变换链已对照**刚反编译的原版 1.21.1 `LivingEntityRenderer.render` 字节码**重新推导：MTR 链（年龄缩放在最外层 → 翻转 → 0.9375 → −1.501 → YP180）与原版链（`getAgeScale()` 缩放 → YP(180−yaw) → 翻转 → 缩放 → −1.501）**数学上完全等价**——0.9375 正是原版 `Player.getAgeScale()` 的返回值，链上每个元素（对角缩放、Y 轴 180° 旋转、Y 平移）两两可交换，儿童的脚和原版幼年生物一样贴地。手机枢轴 `(0, 8.2, −7.6)` 与 −50° 手臂姿势的手部会合点偏差小于 0.05 格
-- **请求**：如果关闭光影（原生 Vulkan 管线）时仍能看到大小 / 手机姿势异常，那走的是另一条渲染管线——请发来那个场景的日志，将在原生路径单独修复
+**TSC 集成重构——TSC fork 现在是本仓库的一个分支（按维护者要求）**
+- Transport-Simulation-Core 的修改不再是 CI 时打的补丁文件，而是 **`tsc-1.21.x` 分支**上的真实提交：
+  - 基底：**晏阳技术组优化版 TSC**（`Yanyang-Technology-Group/Transport-Simulation-Core` @ `8d72d57`——历代 yanyang 构建用的同一基底，与 MTR 4.1.x 的兼容性不变）
+  - 分支上的曲线提交：`Rail.Shape` 新增两形状、`EasedRailPath`、`RailMath` 缓和路径分支，以及 `Simulator` 追帧循环 30 秒墙钟上限（不收敛的 tick 循环再也不会永久挂死维度）、`Graph` 清理刷新间残留步行连接、`VehicleExtraData.copy` 跳过重新解析路径、TSC 构建不再重复打包 `log4j-slf4j2-impl`
+- 两条 CI 流水线直接检出该分支，补丁文件已删除；以后 TSC 侧改动**逐提交可审**，不再是黑盒大补丁
+
+**CI 稳定性：crowdin 客户端已 vendor，构建不再依赖 jitpack 的间歇 401**
+- 本轮四目标矩阵曾被 jitpack.io 的 `maven-metadata.xml` 间歇性 401 全数击落（仓库代码没有任何变化）。构建时工具链现在从仓库内 `buildSrc/vendor`（MIT 许可的上游 1.36.0 原版构件）离线解析 crowdin 客户端，jitpack 仅作未来升版本的回退
 
 **验证**
-- 两条 CI 流水线在提交 cb2874c 上运行：Build 1.21.x（1.21.1 / 1.21.4 × Fabric / NeoForge 四目标编译）+ Native Vulkan OBJ pipeline（SPIR-V、6 平台原生库、装配、内置 8 平台 natives 的模组构建）
-- 全部结论基于 Beryl 0.2.0-alpha `entity.vsh`/`entity.fsh`/`particle.vsh`、VulkanMod 0.6.7 `VBO.drawWithShader` 与原版 1.21.1 `LightTexture.pack`/`LivingEntityRenderer` 的实际反编译字节码，而非日志推测
-
-加载器 / 版本：**1.21.1 与 1.21.4 × Fabric / NeoForge**。原生 Vulkan 管线仅在检测到 VulkanMod 时自动启用（Beryl 光影运行的会话除外），其余情况走原 OpenGL 路径。
-
----
-
-**MTR-Yanyang 4.1.0-beta-2.yanyang.8**:
-
-**The real remaining "glow" under shaders — the baked model lightmap (this round's root-cause fix)**
-- Symptom: after yanyang.7 the passengers stopped looking like beacons, but **whole trains (and doors, rails, signs, PIDS, lifts) still bloomed warm at night and inside stations**
-- Root cause (verified against Beryl 0.2.0-alpha's `entity.vsh`/`entity.fsh` and the vanilla 1.21.1 `LightTexture.pack` bytecode): every MTR static model (`NewOptimizedModel`) **bakes its UV2 lightmap coordinate into a static GPU vertex buffer once at build time**, and that bake has always been the vanilla-GL full-bright constant `pack(15, 15)`. Beryl's entity shader turns that **frozen block component** straight into a **squared warm emission** — `texColor × (240/256)² × 2 × (1 − lightY) × warm ≈ 1.55×**, brightest exactly where `lightY` collapses: nights and roofed stations. **The whole-train warm bloom came from that one baked line**
-- Fix: while Beryl owns the GL models the bake becomes `pack(0, 15)` — **block 0 kills the emission term**; **sky 15 keeps Beryl's own ambient light, GGX direct lighting, shadow-map occlusion and fog fully working** (zeroing the sky too would close Beryl's direct-light gate and leave unshaded silhouettes). Plain GL, plain VulkanMod and the native pipeline keep the full-bright bake — **the long-standing MTR cartoon look is unchanged on those paths**
-- Also: while Beryl drives the frame, the per-draw static-model brightness (ColorModulator) is pinned at 1 — the old formula hits exactly 0 in fully dark scenes, multiplying away everything Beryl's own lighting just computed (pitch-black silhouettes). The shader pack owns the light; the colour modulator stays neutral. (The GL / VulkanMod paths keep the old formula untouched.)
-- The humanoid block-light cap tightens from 8 to **4**: 8 still left a ~0.5× warm bloom on real scenes; 4 leaves ~0.12× — a faint "standing under a lamp" warmth
-
-**Particles glowing — confirmed Beryl's own behaviour, not fixable from MTR**
-- You observed particles glowing too — correct: this round confirmed Beryl's `particle.vsh` carries the **identical squared-emission formula**, while vanilla fills particle lightmaps with real block light. Particles near any light source of 10+ bloom warm — that is the shader pack's own design, outside MTR's reach
-
-**AI passenger size / phone pose — re-verified against the vanilla bytecode, no defect found**
-- The passenger transform chain was re-derived against the **freshly decompiled vanilla 1.21.1 `LivingEntityRenderer.render` bytecode**: the MTR chain (age scale outermost → flip → 0.9375 → −1.501 → YP180) is **mathematically identical** to vanilla's (`getAgeScale()` scale → YP(180−yaw) → flip → scale → −1.501) — the `0.9375` is exactly vanilla's `Player.getAgeScale()`, every element of the chain commutes, and children keep their feet on the ground exactly like vanilla babies. The phone pivot `(0, 8.2, −7.6)` is within 0.05 blocks of the computed hand-convergence point of the −50° arm pose
-- **Request**: if size / phone-pose issues still reproduce **with shaders off** (the native Vulkan pipeline), that is a different rendering path — send that log and it will be fixed there
-
-**Verification**
-- Both CI pipelines running on commit cb2874c: Build 1.21.x (1.21.1 / 1.21.4 × Fabric / NeoForge) + Native Vulkan OBJ pipeline (SPIR-V, 6-platform native libs, assemble, build-mod with the 8-platform natives bundled)
-- Every conclusion is grounded in the decompiled Beryl 0.2.0-alpha `entity.vsh`/`entity.fsh`/`particle.vsh`, VulkanMod 0.6.7 `VBO.drawWithShader` and vanilla 1.21.1 `LightTexture.pack` / `LivingEntityRenderer` bytecode — not log-line inference
-
-Loader / versions: **1.21.1 & 1.21.4 × Fabric / NeoForge**. The native Vulkan pipeline only enables itself when VulkanMod is detected (except in sessions where Beryl's shaders are driving the frame); everything else stays on the original OpenGL path.
+- 两条 CI 流水线全绿：Build 1.21.x（1.21.1 / 1.21.4 × Fabric / NeoForge 四目标编译 + 测试）与 Native Vulkan OBJ pipeline（SPIR-V、八平台原生库、装配、内置 8 平台 natives 的模组构建与 jar 契约校验）
