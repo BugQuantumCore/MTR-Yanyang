@@ -1,4 +1,3 @@
-import com.github.jengelman.gradle.plugins.shadow.transformers.Log4j2PluginsCacheFileTransformer
 import org.apache.tools.ant.filters.ReplaceTokens
 import org.mtr.core.Generator
 import org.mtr.core.WebserverSetup
@@ -85,13 +84,24 @@ tasks {
 	shadowJar {
 		archiveClassifier.set("")
 		mergeServiceFiles()
-		transform(Log4j2PluginsCacheFileTransformer())
 		minimize {
 			exclude(dependency("com.google.code.gson:gson"))
 			exclude(dependency("com.squareup.okhttp3:okhttp"))
 			exclude(dependency("it.unimi.dsi:fastutil"))
 			exclude(dependency("org.eclipse.jetty:jetty-servlet"))
 			exclude(dependency("org.msgpack:msgpack-core"))
+		}
+		// Do not ship a relocated log4j at all. The Log4j2Plugins cache keeps original
+		// class names, so inside Minecraft the shaded Interpolator resolved lookups
+		// against the game's own (unrelocated) log4j classes and every LoggerContext
+		// init threw ClassCastException - 15 lookups x 4 contexts = 60 stack traces per
+		// boot. The Minecraft host already provides log4j (api + core) and an slf4j
+		// binding, so TSC's own LogManager/Logger calls bind to the host logger when
+		// their references stay unrelocated; standalone gradle runs keep the plain
+		// (unshadowed) runtime classpath and are unaffected.
+		dependencies {
+			exclude(dependency("org.apache.logging.log4j:log4j-api"))
+			exclude(dependency("org.apache.logging.log4j:log4j-core"))
 			exclude(dependency("org.apache.logging.log4j:log4j-slf4j2-impl"))
 		}
 		relocate("com", "org.mtr.libraries.com") { skipStringConstants = true }
@@ -100,7 +110,7 @@ tasks {
 		relocate("kotlin", "org.mtr.libraries.kotlin") { skipStringConstants = true }
 		relocate("okhttp3", "org.mtr.libraries.okhttp3") { skipStringConstants = true }
 		relocate("okio", "org.mtr.libraries.okio") { skipStringConstants = true }
-		relocate("org", "org.mtr.libraries.org") { skipStringConstants = true; exclude("org.mtr.**") }
+		relocate("org", "org.mtr.libraries.org") { skipStringConstants = true; exclude("org.mtr.**"); exclude("org.apache.logging.log4j.**") }
 		relocate("picocli", "org.mtr.libraries.picocli") { skipStringConstants = true }
 	}
 

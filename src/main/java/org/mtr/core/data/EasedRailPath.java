@@ -121,7 +121,17 @@ final class EasedRailPath {
 		final double sin1 = angle1.sin;
 		final double differenceX = position2.getX() - position1.getX();
 		final double differenceZ = position2.getZ() - position1.getZ();
-		final double headingChange = headingChange(angle1, angle2);
+		// TSC stores angle1 facing from node 1 toward node 2, but angle2 facing BACK
+		// from node 2 toward node 1 (the Rail.getAngles normalisation applied when rails
+		// are created). The eased path needs the travel heading at node 2 - the opposite
+		// of the stored angle2. The classic segment solver performs the same correction
+		// internally via getOpposite() before solving; without it here, every stored rail
+		// computed a heading change near 180 degrees, was rejected by the presolve guard
+		// (or, for the geometries that slipped through, solved a hairpin twice as long as
+		// the real track) and silently fell back to the classic solver - the "easement
+		// curves have no effect" report.
+		final Angle angle2Travel = angle2.getOpposite();
+		final double headingChange = headingChange(angle1, angle2Travel);
 
 		// Local frame: +t along the first node's heading, +n to its right (bearing +90°).
 		final double along = differenceX * cos1 + differenceZ * sin1;
@@ -140,7 +150,7 @@ final class EasedRailPath {
 			return null;
 		}
 
-		return integrate(halfWaveSine, headingChange, solution[0], solution[1], originX, originZ, cos1, sin1, angle1.angleRadians, position2, angle2);
+		return integrate(halfWaveSine, headingChange, solution[0], solution[1], originX, originZ, cos1, sin1, angle1.angleRadians, position2, angle2Travel);
 	}
 
 	/**
