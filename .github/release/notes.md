@@ -1,33 +1,39 @@
 中文说明 / English notes
 
-**MTR-Yanyang 4.1.0-beta-2.yanyang.9** 本次更新：
+**MTR-Yanyang 4.1.0-beta-2.yanyang.10** 本次更新：
 
-**"上一次更新后模型渲染错误更严重、列车模型模块组自发光出错"——根因找到并修复（yanyang.8 的烘焙常量字节序写反了）**
-- 症状：yanyang.8 之后，列车在光影下变成**没有明暗层次的橙色发光剪影**，白天黑夜都一样；灯光模块（头灯、尾灯、灯带）的自发光也"错"了——和车身一样发光，分不清哪是灯
-- 根因（本轮实证）：打包光照格式里，**高 16 位是光照图的 U 轴（方块光），低 16 位是 V 轴（天空光）**——`LightTexture.FULL_BRIGHT = 0xF000F0 = pack(15,15)` 就是最直接的证据。yanyang.8 想烘焙 `pack(0, 15)`（方块光清零、天空光保留），却写下了 `0xF00000`——**它实际是 `pack(15, 0)`**，与意图完全相反：每个静态模型带着**满格方块光 + 零天空光**进管线。满格方块光喂给 Beryl 的平方暖色自发光项（全天候 1.76 倍），塌陷的天空光则关掉了环境光与 GGX 直射光闸门——**整列车变成无阴影、无直射光的橙色发光板**
-- 修复：烘焙值修正为**按渲染阶段区分**（`VulkanCompat#staticModelBakedLight`）：
-  - **全亮度层**（`LIGHT`、`ALWAYS_ON_LIGHT`、`INTERIOR`、`INTERIOR_TRANSLUCENT`——在其它渲染器下本来就按"常亮"设计）保留全亮 `pack(15, 15)`：Beryl 的方块光自发光恰恰就是灯光模块发光的来源，**头灯、尾灯、灯带的自发光恢复工作**；夜晚透过车窗看，内饰是亮的——就是列车夜间"开着灯"该有的样子
-  - **`EXTERIOR`（车身）**烘焙 `pack(4, 15)`：方块光 4（与乘客钳制同一档位，约 0.12 倍"灯下微光"，不再发光），天空光 15 终于正确生效——Beryl 的环境光、GGX 直射光、阴影遮蔽与雾效重新作用到车身上，**橙光剪影消失，列车恢复光影层次**
-- 一并修复乘客钳制的位运算（`capBlockLightForBeryl`）：旧代码 `>> 4` 读到的是**天空光**而不是方块光（方块光在 bit 20-23）——它"碰巧"起作用的方式是把高天空光场景的乘客整包换成 `0x40`（暗淡且丢失真实天空光），而低天空光场景（夜晚室内站台）的乘客方块光根本没被钳制、仍然发光。新位运算钳的是真正的方块光、原样保留真实天空光——**乘客亮度昼夜一致**
-- 以上全部只在 Beryl 驱动帧时生效；纯 GL、纯 VulkanMod、原生管线的观感**一个字节都没变**
+**"两个新增的轨道路径算法未对实际路径产生任何影响"——根因找到并修复（缓和曲线的角度语义反了）**
+- 根因（本轮实证）：TSC 存储轨道角度遵循一套"朝向"约定——铺轨时 `Rail.getAngles` 归一化后，**angle1 从节点 1 指向节点 2，而 angle2 是从节点 2 指回节点 1**。经典分段求解器内部会先做 `getOpposite()` 矫正再解算；yanyang.9 的缓和曲线求解器 `EasedRailPath` **漏了这一步**，直接把存储的 angle2 当作"到达方向"
+- 后果：几乎所有真实轨道算出的转角接近 180°，被预解算护栏**静默拒绝**、回退经典求解器——渲染出来的轨道和原来**一个字节都不差**，这就是"毫无效果"的真相；少数漏过护栏的几何（90°、45° 转角）更糟——解出**两倍长度的回头弯**（90° 弯解出 14.9 格的怪曲线，正确值 8.2 格）
+- 修复：缓和曲线求解器现在用 `angle2.getOpposite()` 作为节点 2 的行进方向（并写进采样表的终点朝向）。用真实 TSC 源码（RailMath / EasedRailPath / Angle）编译的独立测试环境按存储语义逐类验证：直线走直线表、S 弯按真实长度求解、**22.5°–135° 转角全部成功求解**（90° 弯 8.23 格、相对经典解的偏差 0.379 格——肉眼可见的缓和外伸）；**同一条轨道无论从哪个方向铺设，几何完全一致**；只有真正的大于 135° 掉头弯仍回退经典解算器（设计如此）
+- 切换 Shape 后保存即生效：渲染、列车行进、碰撞与半径查询共用同一张采样表——**列车严格沿显示轨道行进**
 
-**新增 2 条 MTR 轨道缓和曲线：三次抛物线 / 半波正弦（三次拋物線 / 半波正弦緩和曲線）**
-- 轨道修改器（rail modifier）的 Shape 控件现在对所有有水平弧度的轨道可用，循环切换：**Quadratic → Two Radii → Cubic Parabola（三次抛物线）→ Half-Wave Sine（半波正弦）**；竖曲线半径输入仍只在坡道轨道显示
-- 两条新形状都是**全轨曲率连续**的缓和曲线——曲率在两端为零，与相邻轨道连接处没有曲率突变：
-  - **三次抛物线**：分段线性曲率（直线—缓和—圆曲线—缓和—直线，干线铁路的经典序列）
-  - **半波正弦**：单一正弦半波作曲率图，经典线形中最顺滑的一种——曲率处处无折角
-- **性能**：全部求解发生在轨道构建时（阻尼牛顿迭代 + 一次性积分成共享采样表），渲染、列车定位、碰撞箱、半径查询全部**插值同一张表**——列车按显示出来的轨道行走是"结构性保证"；**零逐帧成本**，渲染路径与原来完全一样（`RailGeometryCache` 缓存机制不变）
-- 超出线形家族表达能力的几何（急回转 hairpin、起点后方折返、求解失败）**自动回退经典分段求解器**——缓和曲线只是增强，绝不破坏任何既有轨道
-- 中文（简/繁）界面翻译已附
+**"轨道在手持刷子时显示的类型颜色异常发光"——修复**
+- 手持刷子/连接器时出现的轨道类型颜色、单行箭头、信号虚线、节点标记、轨道统计文字，此前全部以 `pack(15, 15)` 全亮光照绘制；Beryl 光影下方块光分量全额喂进平方暖色自发光项（约 1.76 倍）——类型颜色看起来在"发光"
+- 全部 7 处绘制点现在接入 `VulkanCompat.capBlockLightForBeryl`（与 yanyang.7 乘客钳制同一方案）：天空光 15 保证昼夜可见性，方块光分量被钳制——Beryl 把它们渲染成"被照亮"而不是"自发光"。非 Beryl 渲染路径零变化
 
-**TSC 集成重构——TSC fork 现在是本仓库的一个分支（按维护者要求）**
-- Transport-Simulation-Core 的修改不再是 CI 时打的补丁文件，而是 **`tsc-1.21.x` 分支**上的真实提交：
-  - 基底：**晏阳技术组优化版 TSC**（`Yanyang-Technology-Group/Transport-Simulation-Core` @ `8d72d57`——历代 yanyang 构建用的同一基底，与 MTR 4.1.x 的兼容性不变）
-  - 分支上的曲线提交：`Rail.Shape` 新增两形状、`EasedRailPath`、`RailMath` 缓和路径分支，以及 `Simulator` 追帧循环 30 秒墙钟上限（不收敛的 tick 循环再也不会永久挂死维度）、`Graph` 清理刷新间残留步行连接、`VehicleExtraData.copy` 跳过重新解析路径、TSC 构建不再重复打包 `log4j-slf4j2-impl`
-- 两条 CI 流水线直接检出该分支，补丁文件已删除；以后 TSC 侧改动**逐提交可审**，不再是黑盒大补丁
+**启动日志五类报错全部处理**
+- **60 条 Log4j ClassCastException（每次启动）**：TSC 打包了一份整体重定位的 log4j（`org.mtr.libraries.org.apache.logging.log4j`），但 Log4j2 插件缓存里仍是**原始类名**——游戏内被遮蔽的 Interpolator 按原始名解析到了 Minecraft 自带的原版 log4j 类，每个 LoggerContext 初始化时跨体系 `asSubclass` 失败（15 个 lookup × 4 个上下文）。TSC 的 shadow jar 现在**完全不再打包 log4j**（api/core/slf4j-impl 全部排除、引用保持原包名）——TSC 自己的日志直接绑定游戏宿主日志器，消息正常进 `latest.log`，堆栈刷屏消失
+- **`mtr:textures/block/transparent.png` Invalid model!**：这是 MTR 自己的模型类型检查在**某个自定义资源包条目**（模型路径既不是 `.bbmodel` 也不是 `.obj`）上触发——不是 mod 本体数据。报错现在会**同时打印出问题的模型资源路径**，一眼定位坏资源包
+- **3 条矿车声音缺失**：`sounds.json` 还声明着 `minecart_loop` / `minecart_motor3` / `minecart_motor4`，但对应的 ogg 文件早已不在 jar 里。死条目已删除（其余矿车事件 `doorcls` / `dooropn` / `point` / `run` 的文件都在）
+- **blocks 图集 mipmap 4→2 降级**：72×36（和 272×216）的 PSD/APG 门贴图通过"仅粒子"的占位模型（`psd_door_1` / `apg_door`——门体本身是动态渲染的）混进了方块图集。它们的粒子现在引用 16×16 的 transparent 贴图；对全部 384 个被 blockstate 引用的模型做完整审计后确认**不再有任何低于 mip-4 要求的贴图**——图集恢复完整 mipmap 质量，**全游戏所有方块的远处渲染都更清晰**，不只是 MTR 的
+- **1 条乘客皮肤请求超时**：Mojang 档案请求现在会在节流窗口内**自动重试一次**再回退到缓存皮肤（瞬时连接抖动不再直接打 WARN）
 
-**CI 稳定性：crowdin 客户端已 vendor，构建不再依赖 jitpack 的间歇 401**
-- 本轮四目标矩阵曾被 jitpack.io 的 `maven-metadata.xml` 间歇性 401 全数击落（仓库代码没有任何变化）。构建时工具链现在从仓库内 `buildSrc/vendor`（MIT 许可的上游 1.36.0 原版构件）离线解析 crowdin 客户端，jitpack 仅作未来升版本的回退
+---
 
-**验证**
-- 两条 CI 流水线全绿：Build 1.21.x（1.21.1 / 1.21.4 × Fabric / NeoForge 四目标编译 + 测试）与 Native Vulkan OBJ pipeline（SPIR-V、八平台原生库、装配、内置 8 平台 natives 的模组构建与 jar 契约校验）
+**English notes**
+
+**"The two new rail path algorithms had no effect on the actual path" — root cause found and fixed (the easement solver read the stored angle2 backwards)**
+- Root cause (proven this round): TSC stores rail angles in a facing convention — after the `Rail.getAngles` normalisation applied at rail creation, `angle1` faces from node 1 toward node 2, but `angle2` faces **back from node 2 toward node 1**. The classic segment solver corrects for this internally with `getOpposite()` passes before solving; the yanyang.9 easement solver `EasedRailPath` did not, and read the stored angle2 as the *arrival* heading.
+- Consequence: nearly every real rail computed a heading change near 180° and was **silently rejected** by the presolve guard, falling back to the classic solver — rendering bit-identical to the existing track, i.e. "no effect". The geometries that slipped past the guard (90°/45° corners) were worse: they solved **hairpins twice the true length** (a 90° corner solved a 14.9-block monster instead of 8.2).
+- Fix: the easement solver now uses `angle2.getOpposite()` as the node-2 travel heading (and writes it into the sample table's end heading). Verified in a standalone harness compiling the real TSC sources against stored-semantics geometry: straights take the straight table, S-bends solve at true length, **all 22.5°–135° bends solve** (90° corner 8.23 blocks, 0.379-block easement bulge vs classic — clearly visible), **both lay orders of the same physical track produce identical geometry**, and only genuine >135° hairpins still fall back (by design). Switching Shape and saving takes effect immediately; rendering, vehicles, bounds and radius queries share one sample table — trains follow the displayed track exactly.
+
+**"Rail type colours glow while holding the brush" — fixed**
+- The rail type tint, one-way arrows, signal dotted lines, node markers and rail statistics text all drew with `pack(15, 15)`; under Beryl the block half feeds the squared warm emission (~1.76×). All 7 draw sites now pass through `VulkanCompat.capBlockLightForBeryl` (the same clamp as the yanyang.7 passenger fix): sky 15 keeps them visible day and night while the block component is capped — lit, not emissive. Non-Beryl renderers untouched.
+
+**All five reported boot-log error classes addressed**
+- **60× Log4j ClassCastException per boot**: the TSC jar shipped a fully relocated log4j whose Log4j2Plugins cache keeps *original* class names; inside Minecraft the shaded Interpolator resolved those against the game's own unrelocated log4j classes and `asSubclass` cross-failed at every LoggerContext init (15 lookups × 4 contexts). The TSC shadow jar no longer ships log4j at all — TSC's own logging now binds to the Minecraft host logger and lands in `latest.log` properly tagged.
+- **`mtr:textures/block/transparent.png` Invalid model!**: MTR's own model-type check firing on a custom resource pack entry whose model path is neither `.bbmodel` nor `.obj` — not mod data. The error now also logs the offending model resource path.
+- **3× missing minecart sounds**: dead `sounds.json` entries for ogg files long removed from the jar are gone (the remaining minecart events all have their files).
+- **Blocks atlas mip 4→2 downgrade**: 72×36 (and 272×216) door sprites reached the atlas through particle-only placeholder models; their particles now reference the 16×16 transparent texture, and a full audit of all 384 blockstate-referenced models confirms **no texture below the mip-4 requirement remains** — full mipmap quality for every block in the distance, not just MTR's.
+- **1× passenger skin HttpTimeoutException**: the Mojang profile fetch retries once inside the request-throttle window before falling back to the cached skin.

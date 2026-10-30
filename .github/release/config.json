@@ -1,6 +1,6 @@
 {
-  "run_id": "40913995523",
-  "tag": "4.1.0-beta-2.yanyang.9",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.9 (1.21.1 & 1.21.4, Fabric & NeoForge) — swapped-halves bake fixed: per-stage emissive & scene light restored under Beryl; cubic parabola & half-wave sine easement curves; TSC fork now the in-repo tsc-1.21.x branch",
+  "run_id": "41094419572",
+  "tag": "4.1.0-beta-2.yanyang.10",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.10 (1.21.1 & 1.21.4, Fabric & NeoForge) — easement-curve angle-semantics fix: cubic parabola & half-wave sine now shape real track; brush rail-colour glow fixed; all five boot-log error classes resolved",
   "notes_file": "notes.md"
 }
