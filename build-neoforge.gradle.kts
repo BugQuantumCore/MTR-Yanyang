@@ -66,6 +66,10 @@ dependencies {
         testImplementation("org.junit.jupiter:junit-jupiter-api:5.+")
         testImplementation("org.junit.platform:junit-platform-launcher:1.+")
         testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.+")
+        // TSC no longer ships a relocated log4j (that copy caused the 60x boot
+        // ClassCastException); the game provides log4j at runtime, but the bare
+        // unit-test classpath does not - TSC's Utilities static logger needs it.
+        testRuntimeOnly("org.apache.logging.log4j:log4j-core:2.+")
 }
 
 neoForge {
