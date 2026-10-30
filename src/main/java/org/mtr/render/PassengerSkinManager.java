@@ -725,7 +725,22 @@ public final class PassengerSkinManager {
 		return safeFileName(key) + "_" + model.id();
 	}
 
+	/**
+	 * GET with a single retry on transient timeouts. The Mojang endpoints
+	 * occasionally drop the first connection; one immediate retry inside the
+	 * profile-request throttle window turns most of those into hits instead of
+	 * a warn + stale-cache fallback.
+	 */
 	private static String httpGetJson(String url) throws Exception {
+		try {
+			return httpGetJsonOnce(url);
+		} catch (java.net.http.HttpTimeoutException firstTimeout) {
+			awaitProfileRequestSlot();
+			return httpGetJsonOnce(url);
+		}
+	}
+
+	private static String httpGetJsonOnce(String url) throws Exception {
 		final HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(HTTP_TIMEOUT_SECONDS)).header("User-Agent", "MTR-YanYang").header("Accept", "application/json").GET().build();
 		final HttpResponse<String> response = httpClient().send(request, HttpResponse.BodyHandlers.ofString());
 		if (response.statusCode() == 204 || response.statusCode() == 404) {

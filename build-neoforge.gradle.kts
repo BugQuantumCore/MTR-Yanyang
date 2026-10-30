@@ -191,10 +191,10 @@ tasks {
 
         shadowJar {
                 configurations = listOf(project.configurations["shadowBundle"])
-                // The Transport-Simulation-Core jar re-shadows a log4j-slf4j2-impl provider that is
-                // only ServiceLoader-discovered (never referenced directly), so minimize() would
-                // strip it and simulation-core logs would silently degrade to the slf4j NOP
-                // backend — exclude the whole dependency from minimization.
+                // The whole Transport-Simulation-Core dependency stays out of minimize(): its
+                // classes are relocate-managed and reflection-loaded in ways minimize cannot
+                // analyse. (It no longer re-shadows a log4j provider — that shipped-away copy
+                // caused the 60x boot ClassCastException and is gone as of yanyang.10.)
                 minimize {
                         exclude(dependency("org.mtr:transport-simulation-core"))
                 }

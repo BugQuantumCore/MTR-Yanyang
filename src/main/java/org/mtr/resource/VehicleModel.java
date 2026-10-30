@@ -191,7 +191,9 @@ public final class VehicleModel extends VehicleModelSchema {
 			// TODO transform object if needed
 			modelLoaderBase = objModelLoader;
 		} else {
-			MTR.LOGGER.error("[{}] Invalid model!", texture.toString());
+			// Log the model path, not just the texture - a bare texture identifier gives no
+			// clue which custom resource entry has the bad model reference.
+			MTR.LOGGER.error("[{}] Invalid model type for model resource \"{}\" (expected .bbmodel or .obj)!", texture.toString(), modelResource);
 			final BlockbenchModelLoader blockbenchModelLoader = new BlockbenchModelLoader(texture);
 			blockbenchModelLoader.loadModel(() -> new BlockbenchModel(new JsonReader(new JsonObject())));
 			modelLoaderBase = blockbenchModelLoader;

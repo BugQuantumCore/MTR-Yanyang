@@ -16380,30 +16380,6 @@
 			}
 		]
 	},
-	"minecart_loop": {
-		"sounds": [
-			{
-				"name": "mtr:minecart/loop",
-				"attenuation_distance": 32
-			}
-		]
-	},
-	"minecart_motor4": {
-		"sounds": [
-			{
-				"name": "mtr:minecart/motor4",
-				"attenuation_distance": 32
-			}
-		]
-	},
-	"minecart_motor3": {
-		"sounds": [
-			{
-				"name": "mtr:minecart/motor3",
-				"attenuation_distance": 32
-			}
-		]
-	},
 	"minecart_point": {
 		"sounds": [
 			{

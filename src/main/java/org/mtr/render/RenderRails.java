@@ -29,6 +29,7 @@ import org.mtr.client.CustomResourceLoader;
 import org.mtr.client.IDrawing;
 import org.mtr.client.MinecraftClientData;
 import org.mtr.client.MinecraftClientData.RailWrapper;
+import org.mtr.client.VulkanCompat;
 import org.mtr.config.Config;
 import org.mtr.core.data.Rail;
 import org.mtr.core.data.TransportMode;
@@ -210,7 +211,7 @@ public final class RenderRails implements IGui {
                         // Render nodes
                         MinecraftClientData.getInstance().positionsToRail.keySet().forEach(position -> {
                                 final BlockPos blockPos = MTR.positionToBlockPos(position);
-                                renderNode(clientWorld.getBlockState(blockPos), blockPos, () -> true, DEFAULT_LIGHT);
+                                renderNode(clientWorld.getBlockState(blockPos), blockPos, () -> true, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
                         });
 
                         // Render nodes with the connected block state but isn't actually connected
@@ -244,8 +245,8 @@ public final class RenderRails implements IGui {
                 // Render one-way rail arrows
                 if (speedLimit1 == 0 || speedLimit2 == 0) {
                         renderWithinRenderDistance(rail, (blockPos, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, tiltAngle) -> MainRenderer.scheduleRender(ONE_WAY_RAIL_ARROW_TEXTURE, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
-                                IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, x1, y1 + yOffset + 0.125, z1, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x3, y3 + yOffset + 0.125, z3, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, DEFAULT_LIGHT);
-                                IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset + 0.125, z3, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x1, y1 + yOffset + 0.125, z1, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, DEFAULT_LIGHT);
+                                IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, x1, y1 + yOffset + 0.125, z1, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x3, y3 + yOffset + 0.125, z3, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
+                                IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset + 0.125, z3, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x1, y1 + yOffset + 0.125, z1, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
                         }), 1, -1, 1);
                 }
         }
@@ -294,7 +295,7 @@ public final class RenderRails implements IGui {
                         final ResourceLocation texture = renderType[1] && !renderType[0] ? IRON_BLOCK_TEXTURE : defaultTexture;
                         renderWithinRenderDistance(rail, (blockPos, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, tiltAngle) -> {
                                 final float textureOffset = (((int) (x1 + z1)) % 4) * 0.25F;
-                                final int light = renderState == RenderState.FLASHING || renderState == RenderState.COLORED ? DEFAULT_LIGHT : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
+                                final int light = renderState == RenderState.FLASHING || renderState == RenderState.COLORED ? VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT) : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
                                 MainRenderer.scheduleRender(texture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + SMALL_OFFSET, z4, x1, y1 + yOffset, z1, x2, y2 + yOffset + SMALL_OFFSET, z2, x3, y3 + yOffset, z3, offset, u1 < 0 ? 0 : u1, v1 < 0 ? 0.1875F + textureOffset : v1, u2 < 0 ? 1 : u2, v2 < 0 ? 0.3125F + textureOffset : v2, Direction.UP, color, light);
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset, z3, x2, y2 + yOffset + SMALL_OFFSET, z2, x1, y1 + yOffset, z1, x4, y4 + yOffset + SMALL_OFFSET, z4, offset, u1 < 0 ? 0 : u1, v1 < 0 ? 0.1875F + textureOffset : v1, u2 < 0 ? 1 : u2, v2 < 0 ? 0.3125F + textureOffset : v2, Direction.UP, color, light);
@@ -326,7 +327,7 @@ public final class RenderRails implements IGui {
                                 final boolean alternate = (rawColor & ARGB_BLACK) != 0 && (index[0] % 2) == 0;
                                 final float v1 = (float) Math.floorMod(index[0], SIGNAL_DOTTED_LINE_SCALE) / SIGNAL_DOTTED_LINE_SCALE;
                                 final float v2 = (float) Math.floorMod(index[0] + 1, SIGNAL_DOTTED_LINE_SCALE) / SIGNAL_DOTTED_LINE_SCALE;
-                                final int light = shouldFlash ? DEFAULT_LIGHT : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
+                                final int light = shouldFlash ? VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT) : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
                                 MainRenderer.scheduleRender(WOOL_TEXTURE, false, shouldFlash ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + 0.125 + SMALL_OFFSET, z4, x1, y1 + 0.125, z1, x2, y2 + 0.125 + SMALL_OFFSET, z2, x3, y3 + 0.125, z3, offset, u1, v1, u2, v2, Direction.UP, alternate ? 0 : color, light);
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x1, y1 + 0.125, z1, x4, y4 + 0.125 + SMALL_OFFSET, z4, x3, y3 + 0.125, z3, x2, y2 + 0.125 + SMALL_OFFSET, z2, offset, u1, v1, u2, v2, Direction.UP, alternate ? 0 : color, light);
@@ -419,11 +420,11 @@ public final class RenderRails implements IGui {
         private static int renderRailStat(PoseStack matrixStack, MultiBufferSource vertexConsumerProvider, String title, String data, int line) {
                 int newLine = line - 9;
                 final Font textRenderer = Minecraft.getInstance().font;
-                textRenderer.drawInBatch(data, -textRenderer.width(data) / 2F, newLine, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, DEFAULT_LIGHT);
+                textRenderer.drawInBatch(data, -textRenderer.width(data) / 2F, newLine, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
                 matrixStack.pushPose();
                 matrixStack.scale(0.5F, 0.5F, 0.5F);
                 newLine -= 5;
-                textRenderer.drawInBatch(title, -textRenderer.width(title) / 2F, newLine * 2, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, DEFAULT_LIGHT);
+                textRenderer.drawInBatch(title, -textRenderer.width(title) / 2F, newLine * 2, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
                 matrixStack.popPose();
                 return newLine - 1;
         }
