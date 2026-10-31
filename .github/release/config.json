@@ -1,6 +1,6 @@
 {
-  "run_id": "41094419572",
-  "tag": "4.1.0-beta-2.yanyang.10",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.10 (1.21.1 & 1.21.4, Fabric & NeoForge) — easement-curve angle-semantics fix: cubic parabola & half-wave sine now shape real track; brush rail-colour glow fixed; all five boot-log error classes resolved",
+  "run_id": "41169784531",
+  "tag": "4.1.0-beta-2.yanyang.11",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.11 (1.21.1 & 1.21.4, Fabric & NeoForge) — train LIGHT-stage vertex-format mismatch root-caused: no more black stretched bands under Beryl; brush rail-colour bloom closed via the sky sun-gate; remaining boot-log lines traced to external packs",
   "notes_file": "notes.md"
 }
