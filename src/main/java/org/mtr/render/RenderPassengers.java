@@ -245,19 +245,73 @@ public class RenderPassengers {
 
 		if (clientWorld == null) {
 			return new PositionAndYaw(0, 0, 0, 0, 0);
-		} else {
-			final Rail rail = platform.rail;
+		}
 
-			if (rail == null) {
-				return new PositionAndYaw(0, 0, 0, 0, 0);
-			} else {
-				// Standing on the platform waiting for a train — no walk cycle (standing
-				// passengers are eligible for the phone pose).
-				// TODO use platform block positions
-				final Vector position = rail.railMath.getPosition(getRandomValue(passengerId, 0, rail.railMath.getLength()), false);
-				return new PositionAndYaw(position.x(), position.y(), position.z(), 0, 0);
+		final Rail rail = platform.rail;
+
+		if (rail == null) {
+			return new PositionAndYaw(0, 0, 0, 0, 0);
+		}
+
+		// Waiting passengers used to be placed exactly on the rail path — standing
+		// between the rails, run through by every arriving train, and buried to
+		// chest depth wherever the platform surface sits above the track plane
+		// (the rail Y is the track block layer, not the platform floor — a whole
+		// crowd "half sunk" reads exactly like uniformly half-sized passengers).
+		// They now stand beside the track, on the actual standable surface: the
+		// rail heading at a deterministic along-track position gives a perpendicular
+		// direction; both sides are probed with the shared ground scan, preferring
+		// the side whose surface is level with or above the rails (the platform
+		// side). The passenger faces the track while waiting.
+		final double railLength = rail.railMath.getLength();
+		final double alongTrack = getRandomValue(passengerId, 0, railLength);
+		final Vector position = rail.railMath.getPosition(alongTrack, false);
+		final Vector positionAhead = rail.railMath.getPosition(Math.min(railLength, alongTrack + 0.1), false);
+		final double differenceX = positionAhead.x() - position.x();
+		final double differenceZ = positionAhead.z() - position.z();
+		final double horizontalLength = Math.sqrt(differenceX * differenceX + differenceZ * differenceZ);
+
+		if (horizontalLength < 1 / 1024D) {
+			// Degenerate heading sample (start of rail) — fall back to the old behaviour.
+			return new PositionAndYaw(position.x(), position.y(), position.z(), 0, 0);
+		}
+
+		final double perpendicularX = -differenceZ / horizontalLength;
+		final double perpendicularZ = differenceX / horizontalLength;
+		final long railY = (long) Math.floor(position.y());
+
+		double bestX = position.x();
+		double bestY = position.y();
+		double bestZ = position.z();
+		double bestGroundY = Double.NEGATIVE_INFINITY;
+
+		// Probe both sides at increasing offsets; keep the highest standable surface
+		// within a sane window around the track (the platform edge is 1-3 blocks up
+		// and 1-3 blocks out; the wrong side of the track is usually level ground or
+		// a wall, which scores lower or fails the window check).
+		for (int side = 0; side < 2; side++) {
+			final double sideSign = side == 0 ? 1 : -1;
+			for (double offset = 1.5; offset <= 2.75; offset += 1.25) {
+				final double x = position.x() + perpendicularX * offset * sideSign + (getRandomValue(passengerId + side, -0.3, 0.3));
+				final double z = position.z() + perpendicularZ * offset * sideSign + (getRandomValue(passengerId + side + 1, -0.3, 0.3));
+				final double groundY = findGroundY(clientWorld, x, z, railY, railY + 3);
+				if (groundY >= railY - 0.5 && groundY <= railY + 2.5 && groundY > bestGroundY) {
+					bestGroundY = groundY;
+					bestX = x;
+					bestY = groundY;
+					bestZ = z;
+				}
 			}
 		}
+
+		if (bestGroundY == Double.NEGATIVE_INFINITY) {
+			// No standable ground next to the track (fully enclosed?) — old behaviour.
+			return new PositionAndYaw(position.x(), position.y(), position.z(), 0, 0);
+		}
+
+		// Face the track while waiting (heading convention: atan2(dz, dx)).
+		final double yaw = Math.atan2(position.z() - bestZ, position.x() - bestX);
+		return new PositionAndYaw(bestX, bestY, bestZ, yaw, 0);
 	}
 
 	/**

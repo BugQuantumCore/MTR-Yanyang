@@ -76,10 +76,14 @@ public final class PassengerModelRenderer {
 	/**
 	 * Child scale range — a uniform (equal-ratio) scale of the whole model, exactly
 	 * like vanilla AgeableMobRenderer babies: smaller person, normal proportions,
-	 * feet on the ground.
+	 * feet on the ground. yanyang.12 raises the floor from 0.55-0.65: at that range
+	 * children rendered at almost exactly half a player's height and a crowd read
+	 * as "every passenger shrunk to half size" (the yanyang.11 report) — the new
+	 * 0.68-0.78 range keeps an unmistakable child silhouette without mimicking a
+	 * broken uniform down-scale.
 	 */
-	private static final float CHILD_SCALE_MIN = 0.55F;
-	private static final float CHILD_SCALE_MAX = 0.65F;
+	private static final float CHILD_SCALE_MIN = 0.68F;
+	private static final float CHILD_SCALE_MAX = 0.78F;
 	/** Adult height jitter range (±3%). */
 	private static final float ADULT_SCALE_MIN = 0.97F;
 	private static final float ADULT_SCALE_MAX = 1.03F;
@@ -226,18 +230,33 @@ public final class PassengerModelRenderer {
 	}
 
 	/**
-	 * Overlays the "looking at a phone" pose on the standard animation: both forearms
-	 * raised symmetrically so the hands converge exactly at the phone cuboid's pivot
-	 * (see {@link #getPhoneModel()}), head tilted forward, with a subtle scrolling
-	 * micro-movement.
+	 * Overlays the "looking at a phone" pose on the standard animation. The yanyang.12
+	 * geometry (verified numerically against the ModelPart transform chain):
+	 *
+	 * <ul>
+	 *   <li>Arms at xRot -60° (raised further than the old -50°) with mirrored ±18°
+	 *   inward yaw, so the hand tips land at (±2.3, 7.0, -8.2) — wrapping the phone's
+	 *   sides with a natural grip (about 0.8 model pixels of clearance outside each
+	 *   edge, fingers slightly in front of the slab).</li>
+	 *   <li>The phone pivots at (0, 6.8, -7.0) — upper-chest height (about one block
+	 *   above the ground for an adult), clearly closer to the face than the old
+	 *   belly-height (0, 8.2, -7.6).</li>
+	 *   <li>The phone slab leans back 28° (was 12°), turning the screen up toward the
+	 *   bowed head — from any side angle the cuboid now reads as "tilted toward the
+	 *   reader" instead of a vertical slab held flat at arm's length.</li>
+	 *   <li>Head bowed 52° (was 40°) with the same slight yaw — the gaze now points at
+	 *       the phone instead of over it (the old pose missed by ~37°, so watchers
+	 *       appeared to stare straight through the phone at the ground beyond — the
+	 *       "phone angle is wrong" report).</li>
+	 * </ul>
 	 */
 	private static void applyPhonePose(PlayerModel model, float blend, float ageInTicks) {
 		final float scrollWobble = (float) Math.sin(ageInTicks * 0.23F) * 2;
 		final float scrollWobbleSlow = (float) Math.sin(ageInTicks * 0.11F) * 1.5F;
 
-		lerpRot(model.rightArm, (float) Math.toRadians(-50 + scrollWobbleSlow), (float) Math.toRadians(-14), (float) Math.toRadians(-4), blend);
-		lerpRot(model.leftArm, (float) Math.toRadians(-50 - scrollWobbleSlow), (float) Math.toRadians(14), (float) Math.toRadians(4), blend);
-		lerpRot(model.head, (float) Math.toRadians(40 + scrollWobble * 0.5F), (float) Math.toRadians(4), 0, blend);
+		lerpRot(model.rightArm, (float) Math.toRadians(-60 + scrollWobbleSlow), (float) Math.toRadians(-18), (float) Math.toRadians(-4), blend);
+		lerpRot(model.leftArm, (float) Math.toRadians(-60 - scrollWobbleSlow), (float) Math.toRadians(18), (float) Math.toRadians(4), blend);
+		lerpRot(model.head, (float) Math.toRadians(52 + scrollWobble * 0.5F), (float) Math.toRadians(4), 0, blend);
 	}
 
 	private static void lerpRot(ModelPart part, float xRot, float yRot, float zRot, float blend) {
@@ -295,10 +314,10 @@ public final class PassengerModelRenderer {
 
 	/**
 	 * Builds (once) the phone cuboid: 3×5×0.5 model pixels held between the raised
-	 * hands. The pivot is the exact point the hands converge at with the
-	 * {@code applyPhonePose} arm angles (arms at -50° with the mirrored inward yaw,
-	 * hand tips ≈ (±3.0, 8.3, -7.5)), and the tilt leans the top slightly back
-	 * toward the reader so the lowered head can see the screen.
+	 * hands. The pivot (0, 6.8, -7.0) is the exact point the hands converge at with
+	 * the {@code applyPhonePose} arm angles (arms at -60° with the mirrored ±18°
+	 * inward yaw, hand tips ≈ (±2.3, 7.0, -8.2)), and the -28° tilt leans the top
+	 * back toward the reader's bowed head so the screen visibly faces the face.
 	 */
 	private static ModelPart getPhoneModel() {
 		if (phoneModel == null) {
@@ -306,7 +325,7 @@ public final class PassengerModelRenderer {
 			final PartDefinition partDefinition = meshDefinition.getRoot();
 			partDefinition.addOrReplaceChild("phone",
 					CubeListBuilder.create().texOffs(0, 0).addBox(-1.5F, -2.5F, -0.25F, 3.0F, 5.0F, 0.5F),
-					PartPose.offsetAndRotation(0, 8.2F, -7.6F, (float) Math.toRadians(-12), 0, 0));
+					PartPose.offsetAndRotation(0, 6.8F, -7.0F, (float) Math.toRadians(-28), 0, 0));
 			phoneModel = LayerDefinition.create(meshDefinition, 16, 16).bakeRoot().getChild("phone");
 		}
 		return phoneModel;

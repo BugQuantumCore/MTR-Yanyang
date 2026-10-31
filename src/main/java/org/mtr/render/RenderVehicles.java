@@ -574,7 +574,25 @@ public final class RenderVehicles {
                         final Vector position8 = previousConnectionPositions.position4;
 
                         final BlockPos blockPosConnection = BlockPos.containing(position1.x(), position1.y() + 1, position1.z());
-                        final int lightConnection = LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPosConnection), clientWorld.getBrightness(LightLayer.SKY, blockPosConnection));
+                        final int lightConnectionRaw = LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPosConnection), clientWorld.getBrightness(LightLayer.SKY, blockPosConnection));
+                        // Gangway light (车厢连接处发光): the connection quads draw through the
+                        // entityCutout family, so under Beryl the packed light feeds the same
+                        // three shader terms as every other entity geometry (see
+                        // VulkanCompat#overlayLightForBeryl). The outer bellows used the raw
+                        // world light — MTR platforms sit at block light 15, so the squared warm
+                        // emission lit the bellows up like a lamp (the "outer glow"). The inner
+                        // walkway used flat DEFAULT_LIGHT = pack(15, 15) when the car has
+                        // interior lighting — full sky opens Beryl's sun gate AND full block
+                        // adds 1.76x warm emission, blowing a white gangway texture past the
+                        // bloom threshold (the "inner glow", an overexposed milky doorway).
+                        // Both sides are now clamped: the outer follows the same block-light
+                        // ceiling as every other EXTERIOR surface (block <= 4, sky truthful),
+                        // the lit inner walkway takes the overlay interior clamp (block 8,
+                        // sky 11 — clearly lit, never sun-gated, never blooming) and the unlit
+                        // inner follows the outer clamp. Plain GL / plain VulkanMod keep the
+                        // vanilla lightmap semantics unchanged.
+                        final int lightConnection = org.mtr.client.VulkanCompat.capBlockLightForBeryl(lightConnectionRaw);
+                        final int lightConnectionInner = canHaveLight && isOnRoute ? org.mtr.client.VulkanCompat.overlayLightForBeryl(IGui.DEFAULT_LIGHT) : lightConnection;
 
                         MainRenderer.scheduleRender(outerSideTexture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                 // Sides
@@ -594,18 +612,18 @@ public final class RenderVehicles {
 
                         MainRenderer.scheduleRender(innerSideTexture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                 // Sides
-                                drawTexture(matrixStack, vertexConsumer, position8, position7, position2, position1, useOffset ? offset : Vec3.ZERO, canHaveLight && isOnRoute ? IGui.DEFAULT_LIGHT : lightConnection);
-                                drawTexture(matrixStack, vertexConsumer, position4, position3, position6, position5, useOffset ? offset : Vec3.ZERO, canHaveLight && isOnRoute ? IGui.DEFAULT_LIGHT : lightConnection);
+                                drawTexture(matrixStack, vertexConsumer, position8, position7, position2, position1, useOffset ? offset : Vec3.ZERO, lightConnectionInner);
+                                drawTexture(matrixStack, vertexConsumer, position4, position3, position6, position5, useOffset ? offset : Vec3.ZERO, lightConnectionInner);
                         });
 
                         MainRenderer.scheduleRender(innerTopTexture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                 // Top
-                                drawTexture(matrixStack, vertexConsumer, position7, position6, position3, position2, useOffset ? offset : Vec3.ZERO, canHaveLight && isOnRoute ? IGui.DEFAULT_LIGHT : lightConnection);
+                                drawTexture(matrixStack, vertexConsumer, position7, position6, position3, position2, useOffset ? offset : Vec3.ZERO, lightConnectionInner);
                         });
 
                         MainRenderer.scheduleRender(innerBottomTexture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                 // Bottom
-                                drawTexture(matrixStack, vertexConsumer, position5, position8, position1, position4, useOffset ? offset : Vec3.ZERO, canHaveLight && isOnRoute ? IGui.DEFAULT_LIGHT : lightConnection);
+                                drawTexture(matrixStack, vertexConsumer, position5, position8, position1, position4, useOffset ? offset : Vec3.ZERO, lightConnectionInner);
                         });
                 }
 

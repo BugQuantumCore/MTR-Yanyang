@@ -2,6 +2,21 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.12 (2026-10-31)
+
+**Gangway glow inside and out — 车厢连接处内外均异常发光**
+- The gangway/connection quads are drawn through the entity-cutout family, so under Beryl their packed light feeds the same three shader terms as every other entity geometry (ambient sky², the sun gate above sky 11.3, the squared warm block emission). The **outer bellows** used the raw world light: MTR platforms keep block light 15, so `(15/16)² × 2 ≈ 1.76×` warm emission lit the bellows like a lamp whenever a train stood at a lit station. The **inner walkway** drew with flat `DEFAULT_LIGHT = pack(15, 15)` whenever the car has interior lighting — full sky opens Beryl's sun gate (full GGX sun on those quads) *and* the full warm emission, blowing a white gangway texture past the r+g+b ≈ 2.0 bloom threshold into the overexposed milky doorway in the screenshots; in daylight both sides additionally took the sun term.
+- Both sides are now clamped while Beryl drives the frame: the outer follows the same humanoid/exterior ceiling (`capBlockLightForBeryl` — block ≤ 4, sky truthful, the same lamp-lit-but-not-emissive look the rest of the train exterior has), and the lit inner walkway takes the overlay interior clamp (`overlayLightForBeryl` on `DEFAULT_LIGHT` — block 8, sky 11: clearly lit, sun gate mathematically closed, comfortably below the bloom threshold); unlit interiors keep the capped world light. Plain GL and plain VulkanMod keep the vanilla lightmap semantics byte for byte.
+
+**Platform waiters half-sunk into the track bed — 乘客大小错误，等比缩小到玩家一半的真身**
+- Waiting passengers were placed **exactly on the rail path** — standing between the rails, run through by every arriving train. The rail Y is the *track block layer*, not the platform floor: wherever the platform surface sits above the track plane (the standard MTR station layout), the whole waiting crowd rendered buried to chest depth — and a crowd of head-and-shoulders sticking out of the floor reads, from any normal viewing distance, exactly like "all passengers uniformly shrunk to half a player".
+- Waiters now stand **beside the track on the actual standable surface**: the rail heading at a deterministic along-track position gives a perpendicular direction, both sides are probed with the shared ground-scan cache (offsets 1.5/2.75 blocks, window rail-Y … rail-Y+2.5), and the highest valid surface wins — i.e. the platform side. The passenger faces the track while waiting (natural "watching for the train" pose). Degenerate geometry falls back to the old on-rail position. On-board riders (rendered through the riding path) were never affected.
+- Related: the AI **child scale range rises 0.55–0.65 → 0.68–0.78**. At the old range children rendered at almost exactly half a player's height, and mixed into the buried-crowd report as "everyone is half size" — the new range keeps an unmistakable child silhouette without mimicking a broken uniform down-scale.
+
+**Phone pose: the gaze missed the phone by 37° — 乘客的手机角度错误**
+- The old pose raised the arms to −50° with the phone slab held nearly vertical (−12° lean) at belly height (pivot `(0, 8.2, −7.6)`), while the head bowed only 40°: the gaze axis passed **over** the phone and hit the ground about a block beyond the feet — from any side angle the watcher appeared to stare straight through the phone (and the near-vertical slab read as a black stripe rather than a device).
+- The pose geometry was recomputed numerically against the `ModelPart` transform chain and rebuilt: arms at **−60°** with mirrored ±18° inward yaw so the hand tips land at `(±2.3, 7.0, −8.2)` — wrapping the phone's sides with a natural grip; the phone pivots at **(0, 6.8, −7.0)** (upper-chest height, clearly closer to the face) and leans back **28°** so the screen visibly turns up toward the face; the head bows **52°**, putting the gaze axis on the phone screen instead of a block past it. The phone cuboid keeps its 3×5×0.5 proportions and hands-convergence placement; only the angles and pivot moved.
+
 ## 4.1.0-beta-2.yanyang.11 (2026-10-31)
 
 **The train model rendering error, finally root-caused — 列车模型渲染错误**
