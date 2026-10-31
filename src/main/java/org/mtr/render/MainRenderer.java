@@ -482,9 +482,27 @@ public class MainRenderer {
                                 return;
                         }
                         final ResourceLocation texture = newOptimizedModel.texture;
+                        // The light stages must NOT go through the beacon-beam render type while
+                        // VulkanMod owns the GL. Every NewOptimizedModel buffer is uploaded in
+                        // DefaultVertexFormat.NEW_ENTITY (36-byte stride), but the vanilla beacon
+                        // beam render type — and therefore the VulkanMod-translated
+                        // rendertype_beacon_beam pipeline — is built on DefaultVertexFormat.BLOCK
+                        // (32-byte stride). OpenGL never notices (the VAO carries its own stride),
+                        // and the native wrvk pipeline never touches GL buffers — but under
+                        // Beryl, which does not redirect the beacon shader to any of its own
+                        // pipelines, the mismatch reaches the GPU: the pipeline advances the
+                        // vertex binding by 32 bytes per vertex through 36-byte vertices, so every
+                        // vertex after the first reads 4 bytes early — positions, colours and UVs
+                        // all smear across neighbours and the lamp / light-module parts render as
+                        // huge stretched black bands sweeping through the train. That is the
+                        // long-standing "train model rendering error" (see the yanyang.11
+                        // changelog). Both replacement layers are NEW_ENTITY — the format the
+                        // buffers are actually in — and Beryl's entity pipeline handles their
+                        // baked full-bright lightmap exactly like the other stages.
+                        final boolean lightStagesNeedNewEntity = org.mtr.client.VulkanCompat.isVulkanModActive();
                         final RenderType renderLayer = switch (renderStage) {
-                                case LIGHT -> MoreRenderLayers.getLight(texture, false);
-                                case ALWAYS_ON_LIGHT -> MoreRenderLayers.getLight(texture, true);
+                                case LIGHT -> lightStagesNeedNewEntity ? MoreRenderLayers.getExterior(texture) : MoreRenderLayers.getLight(texture, false);
+                                case ALWAYS_ON_LIGHT -> lightStagesNeedNewEntity ? MoreRenderLayers.getExteriorTranslucent(texture) : MoreRenderLayers.getLight(texture, true);
                                 case INTERIOR -> MoreRenderLayers.getInterior(texture);
                                 case INTERIOR_TRANSLUCENT -> MoreRenderLayers.getInteriorTranslucent(texture);
                                 case EXTERIOR -> MoreRenderLayers.getExterior(texture);

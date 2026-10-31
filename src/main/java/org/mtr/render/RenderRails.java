@@ -194,7 +194,7 @@ public final class RenderRails implements IGui {
                                                 (float) (x3 - offset1.x),
                                                 (float) (y3 - offset1.y + 0.5),
                                                 (float) (z3 - offset1.z),
-                                                holdingRailRelated ? RailType.getRailColor(rail) : ARGB_BLACK
+                                                holdingRailRelated ? dimForBerylBloom(RailType.getRailColor(rail)) : ARGB_BLACK
                                         ), 0.5, 0, 0));
                                         break;
                                 case AIRPLANE:
@@ -211,7 +211,7 @@ public final class RenderRails implements IGui {
                         // Render nodes
                         MinecraftClientData.getInstance().positionsToRail.keySet().forEach(position -> {
                                 final BlockPos blockPos = MTR.positionToBlockPos(position);
-                                renderNode(clientWorld.getBlockState(blockPos), blockPos, () -> true, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
+                                renderNode(clientWorld.getBlockState(blockPos), blockPos, () -> true, VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT));
                         });
 
                         // Render nodes with the connected block state but isn't actually connected
@@ -220,7 +220,7 @@ public final class RenderRails implements IGui {
                                         for (int z = -INVALID_NODE_CHECK_RADIUS; z <= INVALID_NODE_CHECK_RADIUS; z++) {
                                                 final BlockPos blockPos = clientPlayerEntity.blockPosition().offset(x, y, z);
                                                 final BlockState blockState = clientWorld.getBlockState(blockPos);
-                                                renderNode(blockState, blockPos, () -> blockState.getValue(BlockNode.IS_CONNECTED) && !MinecraftClientData.getInstance().positionsToRail.containsKey(MTR.blockPosToPosition(blockPos)), MainRenderer.getFlashingLight());
+                                                renderNode(blockState, blockPos, () -> blockState.getValue(BlockNode.IS_CONNECTED) && !MinecraftClientData.getInstance().positionsToRail.containsKey(MTR.blockPosToPosition(blockPos)), VulkanCompat.overlayLightForBeryl(MainRenderer.getFlashingLight()));
                                         }
                                 }
                         }
@@ -245,8 +245,8 @@ public final class RenderRails implements IGui {
                 // Render one-way rail arrows
                 if (speedLimit1 == 0 || speedLimit2 == 0) {
                         renderWithinRenderDistance(rail, (blockPos, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, tiltAngle) -> MainRenderer.scheduleRender(ONE_WAY_RAIL_ARROW_TEXTURE, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
-                                IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, x1, y1 + yOffset + 0.125, z1, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x3, y3 + yOffset + 0.125, z3, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
-                                IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset + 0.125, z3, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x1, y1 + yOffset + 0.125, z1, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
+                                IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, x1, y1 + yOffset + 0.125, z1, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x3, y3 + yOffset + 0.125, z3, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT));
+                                IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset + 0.125, z3, x2, y2 + yOffset + 0.125 + SMALL_OFFSET, z2, x1, y1 + yOffset + 0.125, z1, x4, y4 + yOffset + 0.125 + SMALL_OFFSET, z4, offset, 0, speedLimit1 == 0 ? 0.25F : 0.75F, 1, speedLimit1 == 0 ? 0.75F : 0.25F, Direction.UP, ARGB_WHITE, VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT));
                         }), 1, -1, 1);
                 }
         }
@@ -295,7 +295,7 @@ public final class RenderRails implements IGui {
                         final ResourceLocation texture = renderType[1] && !renderType[0] ? IRON_BLOCK_TEXTURE : defaultTexture;
                         renderWithinRenderDistance(rail, (blockPos, x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4, tiltAngle) -> {
                                 final float textureOffset = (((int) (x1 + z1)) % 4) * 0.25F;
-                                final int light = renderState == RenderState.FLASHING || renderState == RenderState.COLORED ? VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT) : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
+                                final int light = renderState == RenderState.FLASHING || renderState == RenderState.COLORED ? VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT) : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
                                 MainRenderer.scheduleRender(texture, false, QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + yOffset + SMALL_OFFSET, z4, x1, y1 + yOffset, z1, x2, y2 + yOffset + SMALL_OFFSET, z2, x3, y3 + yOffset, z3, offset, u1 < 0 ? 0 : u1, v1 < 0 ? 0.1875F + textureOffset : v1, u2 < 0 ? 1 : u2, v2 < 0 ? 0.3125F + textureOffset : v2, Direction.UP, color, light);
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x3, y3 + yOffset, z3, x2, y2 + yOffset + SMALL_OFFSET, z2, x1, y1 + yOffset, z1, x4, y4 + yOffset + SMALL_OFFSET, z4, offset, u1 < 0 ? 0 : u1, v1 < 0 ? 0.1875F + textureOffset : v1, u2 < 0 ? 1 : u2, v2 < 0 ? 0.3125F + textureOffset : v2, Direction.UP, color, light);
@@ -327,8 +327,12 @@ public final class RenderRails implements IGui {
                                 final boolean alternate = (rawColor & ARGB_BLACK) != 0 && (index[0] % 2) == 0;
                                 final float v1 = (float) Math.floorMod(index[0], SIGNAL_DOTTED_LINE_SCALE) / SIGNAL_DOTTED_LINE_SCALE;
                                 final float v2 = (float) Math.floorMod(index[0] + 1, SIGNAL_DOTTED_LINE_SCALE) / SIGNAL_DOTTED_LINE_SCALE;
-                                final int light = shouldFlash ? VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT) : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
-                                MainRenderer.scheduleRender(WOOL_TEXTURE, false, shouldFlash ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+                                final int light = VulkanCompat.overlayLightForBeryl(shouldFlash ? DEFAULT_LIGHT : LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos)));
+                                // Under VulkanMod the non-flashing lines can't stay on the beacon
+                                // layer either: the beacon pipeline ignores the lightmap, so saturated
+                                // signal colours would render full-bright at r+g+b >= 2.0 and bloom.
+                                final QueuedRenderLayer signalLineLayer = shouldFlash || VulkanCompat.isVulkanModActive() ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT;
+                                MainRenderer.scheduleRender(WOOL_TEXTURE, false, signalLineLayer, (matrixStack, vertexConsumer, offset) -> {
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x4, y4 + 0.125 + SMALL_OFFSET, z4, x1, y1 + 0.125, z1, x2, y2 + 0.125 + SMALL_OFFSET, z2, x3, y3 + 0.125, z3, offset, u1, v1, u2, v2, Direction.UP, alternate ? 0 : color, light);
                                         IDrawing.drawTexture(matrixStack, vertexConsumer, x1, y1 + 0.125, z1, x4, y4 + 0.125 + SMALL_OFFSET, z4, x3, y3 + 0.125, z3, x2, y2 + 0.125 + SMALL_OFFSET, z2, offset, u1, v1, u2, v2, Direction.UP, alternate ? 0 : color, light);
                                 });
@@ -365,12 +369,37 @@ public final class RenderRails implements IGui {
                                 matrixStack.scale(4, 0.5F, 0.5F);
                                 matrixStack.translate(-0.5, 0, -0.5);
                         });
-                        MainRenderer.scheduleRender(WHITE_TEXTURE, false, QueuedRenderLayer.LIGHT, (matrixStack, vertexConsumer, offset) -> {
+                        // Under VulkanMod/Beryl the node markers cannot stay on the beacon-beam
+                        // layer: that render type has no lightmap attribute, so the capped light
+                        // below would be ignored and the full-white cubes would render at
+                        // r+g+b = 3.0 — straight past Beryl's bloom threshold (2.0). The entity
+                        // pipeline reads the lightmap, so the markers render lit (and the
+                        // invalid-node markers actually flash through their light for the first
+                        // time). Plain OpenGL keeps the original full-bright beacon look.
+                        final QueuedRenderLayer nodeLayer = VulkanCompat.isVulkanModActive() ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT;
+                        MainRenderer.scheduleRender(WHITE_TEXTURE, false, nodeLayer, (matrixStack, vertexConsumer, offset) -> {
                                 storedMatrixTransformations.transform(matrixStack, offset);
                                 RenderPSDAPGDoor.MODEL_SMALL_CUBE.render(matrixStack, vertexConsumer, light, OverlayTexture.NO_OVERLAY);
                                 matrixStack.popPose();
                         });
                 }
+        }
+
+        /**
+         * Beryl's bloom filter passes any fragment with {@code r+g+b ≥ 2.0}. The lines render
+         * type carries no lightmap, so a saturated line colour (pure yellow, pure cyan) sits at
+         * exactly 2.0 and blooms while holding rail tools under Beryl. Dim to 75% while Beryl
+         * drives the frame; every other renderer keeps the exact colour.
+         */
+        private static int dimForBerylBloom(int color) {
+                if (!VulkanCompat.isBerylActive()) {
+                        return color;
+                }
+                final int a = color >> 24 & 0xFF;
+                final int r = (int) ((color >> 16 & 0xFF) * 0.75);
+                final int g = (int) ((color >> 8 & 0xFF) * 0.75);
+                final int b = (int) ((color & 0xFF) * 0.75);
+                return a << 24 | r << 16 | g << 8 | b;
         }
 
         private static void renderRailStats(PoseStack matrixStack, MultiBufferSource vertexConsumerProvider, Vec3 offset, BlockPos renderPos, @Nullable BlockPos otherPos, double railLength, double closerRadius, double otherRadius) {
@@ -420,11 +449,11 @@ public final class RenderRails implements IGui {
         private static int renderRailStat(PoseStack matrixStack, MultiBufferSource vertexConsumerProvider, String title, String data, int line) {
                 int newLine = line - 9;
                 final Font textRenderer = Minecraft.getInstance().font;
-                textRenderer.drawInBatch(data, -textRenderer.width(data) / 2F, newLine, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
+                textRenderer.drawInBatch(data, -textRenderer.width(data) / 2F, newLine, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT));
                 matrixStack.pushPose();
                 matrixStack.scale(0.5F, 0.5F, 0.5F);
                 newLine -= 5;
-                textRenderer.drawInBatch(title, -textRenderer.width(title) / 2F, newLine * 2, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.capBlockLightForBeryl(DEFAULT_LIGHT));
+                textRenderer.drawInBatch(title, -textRenderer.width(title) / 2F, newLine * 2, ARGB_WHITE, true, matrixStack.last().pose(), vertexConsumerProvider, Font.DisplayMode.NORMAL, 0, VulkanCompat.overlayLightForBeryl(DEFAULT_LIGHT));
                 matrixStack.popPose();
                 return newLine - 1;
         }

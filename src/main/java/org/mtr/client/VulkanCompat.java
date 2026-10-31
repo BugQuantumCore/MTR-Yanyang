@@ -223,6 +223,71 @@ public final class VulkanCompat {
         }
 
         /**
+         * Block-light component for MTR's brush-overlay family (rail type tints, one-way arrows,
+         * signal dotted lines, node markers, rail statistics text) while Beryl drives the frame.
+         *
+         * <p>See {@link #capBlockLightForBeryl} for the packed layout. The block component feeds
+         * Beryl's additive warm emission {@code 2·(block/16)²·(1−ambient)·(1, 0.7, 0.5)}, so the
+         * humanoid cap of 4 leaves only a faint warmth — the yanyang.10 choice. The yanyang.11
+         * cap is 8: at {@code (8/16)² × 2 = 0.5} the emission keeps the overlays clearly legible
+         * in dark scenes (night, tunnels) where the ambient floor contributes almost nothing,
+         * without any bloom risk (see below).</p>
+         */
+        public static final int BERYL_OVERLAY_BLOCK_LIGHT = 8;
+
+        /**
+         * Sky-light ceiling for the brush-overlay family while Beryl drives the frame.
+         *
+         * <p>Beryl's entity vertex shader ({@code entity.vsh}, verified against 0.2.0-alpha)
+         * derives <em>three</em> terms from the packed light, not one:</p>
+         * <ol>
+         *   <li>{@code ambient = (sky/16)²·AmbientLightFactor − NightFactor} (floored at
+         *       {@code MinAmbientLight}), contributing {@code albedo·0.3·ambient};</li>
+         *   <li>{@code sunGate = max(((sky/16)² − 0.5)/0.5, 0)} multiplying the full GGX sun
+         *       term — the gate opens as soon as {@code sky > 11.31};</li>
+         *   <li>the warm emission above, from the block component.</li>
+         * </ol>
+         * <p>yanyang.10 kept {@code sky = 15} and capped only the block nibble. That closed the
+         * emission term but left the gate wide open: the overlay quads face straight up
+         * ({@code normal (0, 1, 0)}), so in daylight they took the <em>full sun GGX term plus the
+         * full sky ambient</em> — saturated type colours (pure yellow, pure cyan) climbed past
+         * r+g+b ≈ 2.0, Beryl's bloom filter threshold ({@code bloom/filter.fsh} discards fragments
+         * below {@code r+g+b < 2.0}), and the overlays bloomed exactly as before. The cap the
+         * user saw was the sun, not the lamp.</p>
+         *
+         * <p>{@code sky = 11} closes the gate exactly: {@code (11/16)² = 0.4727 < 0.5}, zero sun
+         * term, while the ambient floor keeps the overlays readable. MTR's own
+         * {@code IGui.MAX_LIGHT_INTERIOR = 0xF000B0} = {@code pack(15, 11)} — sky 11 — is the
+         * precedent for "fully lit but never sun-gated".</p>
+         */
+        public static final int BERYL_OVERLAY_SKY_LIGHT = 11;
+
+        /**
+         * Clamps both lightmap components of a brush-overlay light value for Beryl: block to
+         * {@link #BERYL_OVERLAY_BLOCK_LIGHT}, sky to {@link #BERYL_OVERLAY_SKY_LIGHT}. A
+         * passthrough everywhere else.
+         *
+         * <p>Result: day — {@code ambient ≈ 0.14·albedo + emission ≈ 0.27·texColor·warm}, total
+         * well under the bloom threshold; night — {@code emission ≈ 0.5·(1−ambient)} keeps the
+         * overlays glowing softly like a lamp, never like a beacon. Flashing overlays pulse
+         * through their colour multiplier, which is unaffected by this clamp.</p>
+         *
+         * @param packedLight {@code LightTexture.pack(blockLight, skyLight)}
+         * @return the same packed value with block clamped to 8 and sky clamped to 11 while
+         *         Beryl is active, unchanged otherwise
+         */
+        public static int overlayLightForBeryl(int packedLight) {
+                if (!isBerylActive()) {
+                        return packedLight;
+                }
+                final int blockLight = Math.min(packedLight >> 20 & 0xF, BERYL_OVERLAY_BLOCK_LIGHT);
+                final int skyLight = Math.min(packedLight >> 4 & 0xF, BERYL_OVERLAY_SKY_LIGHT);
+                // Rewrite exactly the two nibbles; any other bits pass through untouched, the
+                // same discipline as capBlockLightForBeryl.
+                return blockLight << 20 | skyLight << 4 | packedLight & 0xFF0FFF0F;
+        }
+
+        /**
          * Block-light component baked into EXTERIOR static models while Beryl owns the GL
          * models — the static-mesh companion of {@link #BERYL_HUMANOID_BLOCK_LIGHT_CAP}.
          *

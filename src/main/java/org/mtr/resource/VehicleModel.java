@@ -191,9 +191,19 @@ public final class VehicleModel extends VehicleModelSchema {
 			// TODO transform object if needed
 			modelLoaderBase = objModelLoader;
 		} else {
-			// Log the model path, not just the texture - a bare texture identifier gives no
-			// clue which custom resource entry has the bad model reference.
-			MTR.LOGGER.error("[{}] Invalid model type for model resource \"{}\" (expected .bbmodel or .obj)!", texture.toString(), modelResource);
+			// A genuinely empty model resource is not an error: the Resource Pack Creator and
+			// hand-written packs legitimately create placeholder model slots (texture only,
+			// model to be picked later), and the fallback below already renders them as an
+			// empty Blockbench model. Log at debug so a placeholder doesn't look like a broken
+			// pack in the user's log. A NON-empty path with a wrong extension is a real
+			// mistake worth an error — keep that at error level with the offending path.
+			if (modelResource.isEmpty()) {
+				MTR.LOGGER.debug("[{}] Model resource is empty, rendering an empty placeholder model (texture {})", texture.toString(), textureResource);
+			} else {
+				// Log the model path, not just the texture - a bare texture identifier gives no
+				// clue which custom resource entry has the bad model reference.
+				MTR.LOGGER.error("[{}] Invalid model type for model resource \"{}\" (expected .bbmodel or .obj)!", texture.toString(), modelResource);
+			}
 			final BlockbenchModelLoader blockbenchModelLoader = new BlockbenchModelLoader(texture);
 			blockbenchModelLoader.loadModel(() -> new BlockbenchModel(new JsonReader(new JsonObject())));
 			modelLoaderBase = blockbenchModelLoader;
