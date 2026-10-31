@@ -1,0 +1,6 @@
+{
+	"parent": "item/generated",
+	"textures": {
+		"layer0": "yanyang_easement:item/easement_shape_tool"
+	}
+}

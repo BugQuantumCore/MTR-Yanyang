@@ -1,0 +1,11 @@
+{
+	"item.yanyang_easement.easement_shape_tool": "Easement Shape Tool",
+	"tooltip.yanyang_easement.easement_shape_tool": "Use on a rail node to cycle the easement shape of its rails: classic, cubic parabola, half-wave sine. Sneak to cycle backwards.",
+	"easement.yanyang_easement.classic": "Classic (straight-arc)",
+	"easement.yanyang_easement.cubic_parabola": "Cubic parabola easement",
+	"easement.yanyang_easement.half_wave_sine": "Half-wave sine easement",
+	"message.yanyang_easement.shape_set": "Rail shape: %s",
+	"message.yanyang_easement.no_rails": "No rails connected to this node",
+	"message.yanyang_easement.no_permission": "You don't have permission to modify rails",
+	"message.yanyang_easement.regen_hint": "Trains will follow the new shape after regenerating paths at the depot. Single rails can also be edited with the Rail Data Editor (key: rail_shape)."
+}

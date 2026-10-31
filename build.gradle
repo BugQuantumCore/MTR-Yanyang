@@ -1,0 +1,75 @@
+plugins {
+        id 'fabric-loom' version '1.5.3'
+        id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+        archivesName = project.archives_base_name
+}
+
+repositories {
+        // YMTR (MTR 3.x) 以本地开发 jar 的形式提供编译依赖，见 libs/README.md。
+        // 其余依赖均来自 loom 配置的 Fabric / Mojang / Maven Central 仓库。
+        mavenCentral()
+        // Parchment 参数名映射（与 YMTR 的映射方案保持一致，可复用同一份 loom 缓存）
+        maven {
+                name = 'ParchmentMC'
+                url = 'https://maven.parchmentmc.org/'
+        }
+}
+
+dependencies {
+        minecraft "com.mojang:minecraft:${project.minecraft_version}"
+        mappings loom.layered() {
+                officialMojangMappings()
+                parchment("org.parchmentmc.data:parchment-${project.minecraft_version}:${project.parchment_version}@zip")
+        }
+        modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+        modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+        // YMTR 开发环境 jar（已映射到 Mojang 命名，无需再重映射）。
+        compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+
+        testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+processResources {
+        inputs.property 'version', project.version
+
+        filesMatching('fabric.mod.json') {
+                expand 'version': project.version
+        }
+}
+
+java {
+        toolchain {
+                languageVersion = JavaLanguageVersion.of(17)
+        }
+        withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+        it.options.release = 17
+}
+
+test {
+        useJUnitPlatform()
+}
+
+jar {
+        from('LICENSE') {
+                rename { "${it}_${project.base.archivesName.get()}" }
+        }
+}
+
+publishing {
+        publications {
+                mavenJava(MavenPublication) {
+                        from components.java
+                }
+        }
+}

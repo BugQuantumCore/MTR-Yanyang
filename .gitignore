@@ -1,0 +1,27 @@
+# Gradle
+.gradle/
+build/
+out/
+classes/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# 本地编译依赖（YMTR 开发 jar，不入库；获取方式见 libs/README.md）
+libs/*.jar
+
+# 运行产物
+run/
+runs/
+
+# 操作系统
+.DS_Store
+Thumbs.db

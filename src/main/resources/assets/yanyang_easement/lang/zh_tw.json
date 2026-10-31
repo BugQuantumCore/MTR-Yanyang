@@ -1,0 +1,11 @@
+{
+	"item.yanyang_easement.easement_shape_tool": "緩和曲線工具",
+	"tooltip.yanyang_easement.easement_shape_tool": "右鍵軌道節點，循環切換其軌道線型：經典、三次拋物線、半波正弦；潛行反向切換。",
+	"easement.yanyang_easement.classic": "經典（直—圓—直）",
+	"easement.yanyang_easement.cubic_parabola": "三次拋物線緩和曲線",
+	"easement.yanyang_easement.half_wave_sine": "半波正弦緩和曲線",
+	"message.yanyang_easement.shape_set": "軌道線型：%s",
+	"message.yanyang_easement.no_rails": "該節點沒有連接軌道",
+	"message.yanyang_easement.no_permission": "你沒有修改軌道的權限",
+	"message.yanyang_easement.regen_hint": "列車將在車輛段重新生成路徑後沿新線型運行。單條軌道也可用「軌道數據編輯器」編輯（鍵名：rail_shape）。"
+}
