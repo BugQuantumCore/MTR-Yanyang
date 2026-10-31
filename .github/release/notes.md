@@ -1,22 +1,26 @@
-MTR-Yanyang 4.1.0-beta-2.yanyang.11 — drop-in upgrade for 4.1.0-beta-2.yanyang.10 (1.21.1 & 1.21.4, Fabric & NeoForge).
+MTR-Yanyang 4.1.0-beta-2.yanyang.12 — drop-in upgrade for 4.1.0-beta-2.yanyang.11 (1.21.1 & 1.21.4, Fabric & NeoForge).
 
-## The train model rendering error, finally root-caused 列车模型渲染错误
+Three fixes from yanyang.11 field reports: the gangway connections glowing abnormally inside and out, all waiting passengers apparently shrunk to half a player, and the phone-holding pose looking wrong. All three are Beryl/entity-pipeline lighting and placement issues — plain GL and plain VulkanMod render paths are byte-for-byte unchanged.
 
-The huge pure-black stretched bands sweeping through train interiors (anchored at the walls and ceiling where lamps and light modules sit) came from a **vertex-format mismatch on the LIGHT render stages**. Every MTR static mesh (train bodies, interiors, lamps, PSD casings, signs) is uploaded in `NEW_ENTITY` format — 36-byte stride — but the `LIGHT` / `ALWAYS_ON_LIGHT` stages drew through `RenderType.beaconBeam`, whose Vulkan pipeline is built on `BLOCK` format — **32-byte stride**. OpenGL never cares (the VAO carries its own stride) and plain VulkanMod never touches these GL buffers (native wrvk pipeline), but under **Beryl** the draw lands on the VulkanMod-translated beacon pipeline: the GPU walks 36-byte vertices with a 32-byte binding, every vertex after the first reads 4 bytes early, and the light-module parts render as enormous stretched black bands.
+## Gangway connections glowing inside and out 车厢连接处内外异常发光
 
-While VulkanMod owns the renderer the light stages now draw through the NEW_ENTITY layers (`entityCutout` / `itemEntityTranslucentCull`). Beryl's entity pipeline lights them from the baked full-bright lightmap — lamps and light modules glow warm at night and read lit at day, the per-stage emissive behaviour yanyang.9 designed — with **correct geometry**. Plain OpenGL keeps the original beacon look, byte for byte.
+The connection quads draw through the entity pipeline, so under Beryl their packed light feeds the same three shader terms as all entity geometry: squared-sky ambient, the sun gate (full GGX direct sun, opens above sky 11.3), and the squared warm block emission. Two different bugs, one per side:
 
-## Brush-held rail type colours still glowing — the sun, not the lamp 手持刷子时轨道类型颜色异常发光
+- The **outer bellows** used the raw world light — MTR platforms keep block light 15, so `~1.76x` warm emission lit them like a lamp box.
+- The **inner walkway** drew flat `pack(15,15)` on lit cars — full sky opened the sun gate AND the full emission blew light gangway textures past Beryl's `r+g+b >= 2.0` bloom threshold into the overexposed milky doorway; in daylight both sides additionally took the full sun term.
 
-yanyang.10 capped the **block** component of the overlay light, which closed Beryl's warm-emission term — but reading Beryl 0.2.0-alpha's `entity.vsh` shows the packed light feeds **three** terms: sky-ambient, a **sun gate** `max((sky² − 0.5)/0.5, 0)` that multiplies the full GGX sun term (opens above sky 11.3), and the block emission. With sky still 15, the up-facing overlay quads took **full sun plus full ambient** in daylight; pure yellow / pure cyan type colours crossed Beryl's bloom threshold (`r+g+b ≥ 2.0`) and bloomed exactly as before.
+Fix: the outer side now goes through `capBlockLightForBeryl` (block <= 4, sky truthful — the same lamp-lit look as the rest of the exterior); the lit inner takes `overlayLightForBeryl(DEFAULT_LIGHT)` (block 8, sky 11 — clearly lit, sun gate mathematically closed, comfortably below bloom); unlit interiors keep the capped world light.
 
-`VulkanCompat.overlayLightForBeryl` now clamps **both** components — block ≤ 8, sky ≤ 11, so the sun gate is mathematically closed. Day: the type colours render lit and saturated but below the bloom threshold. Night: a soft warm emission keeps them legible like a lamp, never a beacon. The white node-marker cubes left the no-lightmap beacon layer for the entity layer under VulkanMod (full-white 3.0 was blooming day and night), the invalid-node markers now actually flash through their light for the first time, and cable-car guide lines dim 75% under Beryl for the same threshold reason.
+## "Half-size" passengers were half-buried in the track bed 乘客等比缩小一半的真相
 
-## The two remaining boot-log lines
+Waiting passengers were placed exactly on the rail path, in the middle of the track. The rail Y is the *track block layer*, not the platform floor — wherever the platform surface sits above the track plane (the standard MTR station layout) the entire waiting crowd rendered buried to chest depth, and a crowd of head-and-shoulders sticking out of the floor reads, at any normal viewing distance, exactly like "everyone shrunk to half size".
 
-- `psd_door_bottom_right_1 72×36 limits mip level from 4 to 2`: a full reachability audit (blockstates → models → textures) confirms **the mod references nothing mip-limiting any more**. The sprite is reintroduced by an external resource pack overriding `assets/mtr/models/block/psd_door_1.json` with a pre-beta-2 model — remove or update that pack (e.g. the loaded `file/MTR4.1.0-beta-2 Chinese translation`) and the atlas keeps full mip-4 quality.
-- `[mtr:textures/block/transparent.png] Invalid model type for model resource ""`: the improved yanyang.10 logging identified the entry — a custom-resource model slot with an **empty model path** and a placeholder texture from pack / creator data, not a broken mod file. Legitimate empty slots now log at debug (a non-empty path with a wrong extension still logs at error).
+Waiters now stand beside the track on the actual standable surface: a deterministic along-track sample gives the rail heading, both sides are probed (shared ground-scan cache, offsets 1.5/2.75, window railY..railY+2.5, highest valid surface wins = the platform side), and the passenger faces the track while waiting. Degenerate geometry falls back to the old position. On-board riders were never affected. The AI child scale range also rises 0.55–0.65 to **0.68–0.78** — children at almost exactly half player height had mixed into the "everyone is half size" report.
+
+## Phone pose: the gaze now lands on the screen 手机姿势修复
+
+The old pose's gaze missed the phone by ~37 degrees (arms -50, phone near-vertical -12 lean at belly height, head bowed 40 — watchers appeared to stare straight through the phone at the ground beyond). Geometry recomputed numerically against the ModelPart transform chain: arms **-60** with mirrored ±18 inward yaw so the hands (±2.3, 7.0, -8.2) wrap the phone's sides, phone pivot (0, 6.8, -7.0) at upper-chest height with a -28 lean turning the screen up to the face, head bowed 52, putting the gaze axis on the screen. The cuboid keeps its 3x5x0.5 proportions and hands-convergence placement.
 
 ## Install
 
-Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.11+<version>-<loader>.jar`. Beryl and plain-VulkanMod sessions pick up the new render paths automatically; no config changes.
+Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.12+<version>-<loader>.jar`. Beryl and plain-VulkanMod sessions pick up the new render paths automatically; no config changes.
