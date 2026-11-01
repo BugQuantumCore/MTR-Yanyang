@@ -1,18 +1,17 @@
 {
-	"required": true,
-	"package": "com.bugquantumcore.yanyang.easement.mixin",
-	"compatibilityLevel": "JAVA_17",
-	"minVersion": "0.8",
-	"plugin": "com.bugquantumcore.yanyang.easement.mixin.YanyangMixinPlugin",
-	"refmap": "yanyang_easement.refmap.json",
-	"mixins": [
-		"RailMixin",
-		"RailDataCarrierMixin",
-		"RailPersistenceMixin",
-		"RailwayDataAccessor",
-		"PacketTrainDataGuiServerMixin"
-	],
-	"injectors": {
-		"defaultRequire": 1
-	}
+        "required": true,
+        "package": "com.bugquantumcore.yanyang.easement.mixin",
+        "compatibilityLevel": "JAVA_17",
+        "minVersion": "0.8",
+        "plugin": "com.bugquantumcore.yanyang.easement.mixin.YanyangMixinPlugin",
+        "mixins": [
+                "RailMixin",
+                "RailDataCarrierMixin",
+                "RailPersistenceMixin",
+                "RailwayDataAccessor",
+                "PacketTrainDataGuiServerMixin"
+        ],
+        "injectors": {
+                "defaultRequire": 1
+        }
 }
