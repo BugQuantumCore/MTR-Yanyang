@@ -2,9 +2,11 @@ MTR-Yanyang 4.1.0-beta-2.yanyang.13 — drop-in upgrade for 4.1.0-beta-2.yanyang
 
 The AI-passenger upgrade: solid collision boxes, ground-following walk animation, and exact `minecraft:player` size for every passenger.
 
+> **Re-release note**: the first yanyang.13 jars crashed every game launch (`@Mixin target type mismatch: net.minecraft.class_1924 is an interface`) — the collision-box mixin was a class mixin targeting an interface. This build re-releases the same tag with the mixin correctly declared as an interface. If your `4.1.0-beta-2.yanyang.13` crashes on startup, re-download; the changelog has the details.
+
 ## Collision boxes — you can no longer walk through the crowd 为AI乘客添加碰撞箱
 
-AI passengers are purely rendered (analytical positions, no entities behind them), so until now the whole crowd was walk-through ghosts. Every on-foot passenger now carries a solid, player-sized collision box (`0.6 x 1.8`) that tracks their rendered position every frame: `Level#getEntityCollisions` — the same vanilla funnel that makes boats and shulkers impassable — is extended with the boxes a client-side registry publishes.
+AI passengers are purely rendered (analytical positions, no entities behind them), so until now the whole crowd was walk-through ghosts. Every on-foot passenger now carries a solid, player-sized collision box (`0.6 x 1.8`) that tracks their rendered position every frame: `EntityGetter#getEntityCollisions` — the same vanilla funnel that makes boats and shulkers impassable — is extended with the boxes a client-side registry publishes.
 
 - Solid, shulker-style: you physically cannot walk through a waiting or walking passenger.
 - The registry filters to the local player's own movement in the matching dimension — mob pathfinding, dedicated servers and cross-dimension queries never see the boxes (empty-set fast path), so there is no server cost and no mob weirdness.
