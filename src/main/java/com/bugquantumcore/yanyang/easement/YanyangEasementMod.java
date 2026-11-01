@@ -2,7 +2,7 @@ package com.bugquantumcore.yanyang.easement;
 
 import com.bugquantumcore.yanyang.easement.item.ItemEasementShapeTool;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.entity.event.v1.ServerEntityEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.core.Registry;
@@ -11,10 +11,8 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.level.Level;
 import mtr.CreativeModeTabs;
 
 /**
@@ -43,16 +41,6 @@ public class YanyangEasementMod implements ModInitializer {
 
                 // legacy YMTR 的客户端线型同步：玩家加入与切换维度后全量推送当前维度的印记。
                 ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> ShapeStore.syncPlayerShapes(handler.getPlayer()));
-                ServerEntityEvents.ENTITY_LOAD.register(YanyangEasementMod::onEntityLoad);
-        }
-
-        /**
-         * 玩家进入某个维度（含加入世界）时同步该维度的线型印记。ENTITY_LOAD 对所有
-         * 实体加载都会触发，这里只关心玩家。
-         */
-        private static void onEntityLoad(Entity entity, Level level) {
-                if (entity instanceof ServerPlayer player) {
-                        ShapeStore.syncPlayerShapes(player);
-                }
+                ServerEntityWorldChangeEvents.AFTER_PLAYER_CHANGE_WORLD.register((player, originWorld, destinationWorld) -> ShapeStore.syncPlayerShapes(player));
         }
 }
