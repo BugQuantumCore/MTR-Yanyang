@@ -14,6 +14,7 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMa
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.mtr.tool.CullingHelper;
 import org.mtr.tool.Drawing;
+import org.mtr.tool.PassengerCollisions;
 
 /**
  * Renders AI passengers that are not currently on a vehicle.
@@ -34,6 +35,12 @@ import org.mtr.tool.Drawing;
  * <p>Each rendered position also carries the current walking speed in blocks per second, which
  * drives the leg swing animation in {@link PassengerModelRenderer}; standing passengers (speed
  * 0) can take the phone pose.</p>
+ *
+ * <p>yanyang.13 additions: walking legs follow the actual standable ground instead of a straight
+ * 3D lerp (which walked through terrain), the rendered position is smoothed per passenger
+ * (anti-teleport blends, eased Y steps), and every on-foot passenger feeds a solid player-sized
+ * collision box into {@link PassengerCollisions} so the local player can no longer walk through
+ * the crowd.</p>
  */
 public class RenderPassengers {
 
@@ -64,9 +71,39 @@ public class RenderPassengers {
 	private static final int GROUND_SCAN_CACHE_LIMIT = 4096;
 	private static final Long2ObjectLinkedOpenHashMap<CachedGroundY> GROUND_SCAN_CACHE = new Long2ObjectLinkedOpenHashMap<>();
 
+	/**
+	 * Rendered-position smoothing (anti-teleport). The analytical positions are already
+	 * continuous across leg transitions (waiting, walking and arrival points on the same
+	 * platform all come from the same deterministic function of the platform and passenger id),
+	 * but re-planned legs, degenerate-geometry fallbacks and first sightings can still jump a
+	 * visible distance. Small discontinuities blend over {@link #BLEND_MILLIS}; genuinely large
+	 * jumps (a re-plan across the map) snap instead of superman-sliding.
+	 */
+	private static final int POSITION_CACHE_LIMIT = 4096;
+	private static final double BLEND_TRIGGER_DISTANCE = 0.75;
+	private static final double SNAP_DISTANCE = 3;
+	private static final long BLEND_MILLIS = 250;
+	private static final float Y_SMOOTHING_PER_SECOND = 10F;
+	private static final Long2ObjectLinkedOpenHashMap<SmoothedPosition> SMOOTHED_POSITIONS = new Long2ObjectLinkedOpenHashMap<>();
+
+	/** Only passengers within this distance of the camera feed the collision registry. */
+	private static final double COLLISION_RANGE = 64;
+
+	@org.jspecify.annotations.Nullable
+	private static ClientLevel cachedCollisionLevel;
+
 	public static void render() {
 		final MinecraftClientData minecraftClientData = MinecraftClientData.getInstance();
 		final ObjectArrayList<Passenger> passengers = minecraftClientData.vehicleIdToPassengers.get(0);
+		final ClientLevel clientWorld = Minecraft.getInstance().level;
+
+		// Dropping the collision boxes of a previous world/session: boxes are dimension-keyed
+		// but a same-dimension rejoin would otherwise resurrect the old crowd's walls.
+		if (clientWorld != cachedCollisionLevel) {
+			cachedCollisionLevel = clientWorld;
+			PassengerCollisions.clear();
+			SMOOTHED_POSITIONS.clear();
+		}
 
 		if (passengers != null) {
 			passengers.forEach(passenger -> {
@@ -128,8 +165,24 @@ public class RenderPassengers {
 						final double walkingTime = distance / walkingSpeed;
 						final double walkingTimeChange = walkingTime <= 0 ? 1 : Math.min(1, progress / walkingTime);
 						final double x = positionAndYaw1.x + walkingTimeChange * differenceX;
-						final double y = positionAndYaw1.y + walkingTimeChange * differenceY;
 						final double z = positionAndYaw1.z + walkingTimeChange * differenceZ;
+						final double linearY = positionAndYaw1.y + walkingTimeChange * differenceY;
+						// Ground-following Y: a straight 3D lerp between the two platform points walks
+						// passengers through hills, fences and station walls. Instead, sample the actual
+						// standable surface at the current (x, z) through the shared ground-scan cache
+						// (scanning a window around the two platform heights) and keep the result within
+						// 2 blocks of the lerp so a deep dip or bridge doesn't drop or float the passenger
+						// out of the walkable band. Residual half-block steps are eased by the per-
+						// passenger Y smoothing.
+						final double y;
+						if (clientWorld != null && walkingTimeChange < 1) {
+							final double sampledY = findGroundY(clientWorld, x, z,
+									(long) Math.floor(Math.min(positionAndYaw1.y, positionAndYaw2.y)) - 1,
+									(long) Math.floor(Math.max(positionAndYaw1.y, positionAndYaw2.y)) + 1);
+							y = Math.max(linearY - 2, Math.min(linearY + 2, sampledY));
+						} else {
+							y = linearY;
+						}
 						final double yaw = Math.atan2(differenceZ, differenceX);
 
 						// Animation speed: the leg swing cycle runs while the walk is still in
@@ -146,6 +199,9 @@ public class RenderPassengers {
 				}
 			});
 		}
+
+		// Publish the collision boxes gathered this frame (also prunes stale ones).
+		PassengerCollisions.endFrame();
 	}
 
 	private static PositionAndYaw getIdlePosition(SimpleAreaBase area, long passengerId) {
@@ -338,6 +394,18 @@ public class RenderPassengers {
 		final Minecraft minecraftClient = Minecraft.getInstance();
 		final ClientLevel clientWorld = minecraftClient.level;
 
+		if (clientWorld != null) {
+			// Anti-teleport smoothing of the rendered position (leg re-plans, degenerate
+			// fallbacks, ground-step easing); also the single choke point every on-foot
+			// passenger passes through each frame, so the collision boxes track exactly
+			// what the player sees.
+			positionAndYaw = smoothPosition(passenger.getId(), positionAndYaw);
+
+			if (CullingHelper.getDistanceFromCamera(positionAndYaw.x, positionAndYaw.y, positionAndYaw.z) <= COLLISION_RANGE) {
+				PassengerCollisions.update(passenger.getId(), clientWorld.dimension(), positionAndYaw.x, positionAndYaw.y, positionAndYaw.z);
+			}
+		}
+
 		if (clientWorld != null && CullingHelper.getDistanceFromCamera(positionAndYaw.x, positionAndYaw.y, positionAndYaw.z) <= minecraftClient.levelRenderer.getLastViewDistance() * 8) {
 			MainRenderer.scheduleRender(QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
 				matrixStack.pushPose();
@@ -351,6 +419,91 @@ public class RenderPassengers {
 				PassengerModelRenderer.renderPassenger(clientWorld, passenger, positionAndYaw.speed, matrixStack, minecraftClient.renderBuffers().bufferSource(), light);
 				matrixStack.popPose();
 			});
+		}
+	}
+
+	/**
+	 * Per-passenger rendered-position state. XZ follows the analytical target directly (so the
+	 * walk cycle and the visual speed always agree — no foot sliding); a per-frame target jump
+	 * between {@link #BLEND_TRIGGER_DISTANCE} and {@link #SNAP_DISTANCE} blocks starts a short
+	 * linear blend (a visible discontinuity, e.g. a re-planned wander restart, glides instead
+	 * of blinking), a jump beyond {@link #SNAP_DISTANCE} snaps (a genuine teleport — blending
+	 * it would read as a superman slide). Y eases exponentially at all times: ground samples
+	 * arrive in half-block steps and read as slopes rather than stair pops.
+	 */
+	private static PositionAndYaw smoothPosition(long passengerId, PositionAndYaw target) {
+		final long now = System.currentTimeMillis();
+		SmoothedPosition state = SMOOTHED_POSITIONS.getAndMoveToFirst(passengerId);
+
+		if (state == null) {
+			state = new SmoothedPosition(target.x, target.y, target.z, now);
+			SMOOTHED_POSITIONS.putAndMoveToFirst(passengerId, state);
+			while (SMOOTHED_POSITIONS.size() > POSITION_CACHE_LIMIT) {
+				SMOOTHED_POSITIONS.removeLast();
+			}
+			return target;
+		}
+
+		final float deltaTime = state.lastUpdateTime == 0 ? 0 : Math.max(0, Math.min(0.25F, (now - state.lastUpdateTime) / 1000F));
+		state.lastUpdateTime = now;
+
+		final double jumpX = target.x - state.targetX;
+		final double jumpZ = target.z - state.targetZ;
+		final double jumpHorizontal = Math.sqrt(jumpX * jumpX + jumpZ * jumpZ);
+
+		if (jumpHorizontal > SNAP_DISTANCE) {
+			state.blending = false;
+			state.renderX = target.x;
+			state.renderZ = target.z;
+		} else if (jumpHorizontal > BLEND_TRIGGER_DISTANCE) {
+			state.blending = true;
+			state.blendStart = now;
+			state.fromX = state.renderX;
+			state.fromZ = state.renderZ;
+		}
+
+		if (Math.abs(target.y - state.targetY) > SNAP_DISTANCE) {
+			state.renderY = target.y;
+		}
+
+		state.targetX = target.x;
+		state.targetY = target.y;
+		state.targetZ = target.z;
+
+		state.renderY += (target.y - state.renderY) * Math.min(1, deltaTime * Y_SMOOTHING_PER_SECOND);
+
+		if (state.blending) {
+			final float blend = (now - state.blendStart) / (float) BLEND_MILLIS;
+			if (blend >= 1) {
+				state.blending = false;
+				state.renderX = target.x;
+				state.renderZ = target.z;
+			} else {
+				state.renderX = state.fromX + (target.x - state.fromX) * blend;
+				state.renderZ = state.fromZ + (target.z - state.fromZ) * blend;
+			}
+		} else {
+			state.renderX = target.x;
+			state.renderZ = target.z;
+		}
+
+		return new PositionAndYaw(state.renderX, state.renderY, state.renderZ, target.yaw, target.speed);
+	}
+
+	private static final class SmoothedPosition {
+		private double targetX, targetY, targetZ;
+		private double renderX, renderY, renderZ;
+		private double fromX, fromZ;
+		private boolean blending;
+		private long blendStart;
+		private long lastUpdateTime;
+
+		private SmoothedPosition(double x, double y, double z, long now) {
+			targetX = renderX = fromX = x;
+			targetY = renderY = y;
+			targetZ = renderZ = fromZ = z;
+			lastUpdateTime = now;
+			blending = false;
 		}
 	}
 

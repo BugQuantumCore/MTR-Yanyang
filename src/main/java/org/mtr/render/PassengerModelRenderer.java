@@ -40,9 +40,10 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMa
  *       the hands converging exactly at the phone cuboid's pivot, head tilted forward, with
  *       subtle scrolling micro-movement. The dark phone cuboid is held between the hands
  *       (not floating at arm's length) and materialises as the pose blends in.</li>
- *   <li><b>Age variation</b> — a deterministic ~85% of passengers are adults with slight
- *       per-passenger height jitter, the remaining ~15% render as uniformly scaled-down
- *       children (feet still on the ground), mirroring the vanilla baby-entity look.</li>
+ *   <li><b>Exact player size</b> — every passenger renders at exactly the vanilla player
+ *       scale. The former age variation (15% of the crowd scaled to 0.55-0.78 plus an adult
+ *       height jitter) read to players as a broken uniform down-scale ("everyone is half a
+ *       player"), so it is gone: identical model height to {@code minecraft:player}.</li>
  *   <li><b>Skins</b> — textures come from {@link PassengerSkinManager} (vanilla default pool
  *       plus optional online skins); slim skins select the slim arm model.</li>
  * </ul>
@@ -67,26 +68,6 @@ public final class PassengerModelRenderer {
 	private static final float AMOUNT_SMOOTHING_PER_SECOND = 10.2F;
 	private static final float PHONE_POSE_CHANCE = 0.35F;
 	private static final float PHONE_BLEND_PER_SECOND = 4F;
-
-	/**
-	 * Fraction of AI passengers that render as children; the rest are adults with a
-	 * small height jitter, matching a real transit crowd (adults dominant).
-	 */
-	private static final float CHILD_CHANCE = 0.15F;
-	/**
-	 * Child scale range — a uniform (equal-ratio) scale of the whole model, exactly
-	 * like vanilla AgeableMobRenderer babies: smaller person, normal proportions,
-	 * feet on the ground. yanyang.12 raises the floor from 0.55-0.65: at that range
-	 * children rendered at almost exactly half a player's height and a crowd read
-	 * as "every passenger shrunk to half size" (the yanyang.11 report) — the new
-	 * 0.68-0.78 range keeps an unmistakable child silhouette without mimicking a
-	 * broken uniform down-scale.
-	 */
-	private static final float CHILD_SCALE_MIN = 0.68F;
-	private static final float CHILD_SCALE_MAX = 0.78F;
-	/** Adult height jitter range (±3%). */
-	private static final float ADULT_SCALE_MIN = 0.97F;
-	private static final float ADULT_SCALE_MAX = 1.03F;
 
 	/** The phone model texture — plain black, so the cuboid reads as a dark phone. */
 	private static final ResourceLocation PHONE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/black.png");
@@ -135,20 +116,7 @@ public final class PassengerModelRenderer {
 		// instead of beacon-like; harmless (a passthrough) on GL and plain VulkanMod.
 		light = org.mtr.client.VulkanCompat.capBlockLightForBeryl(light);
 
-		// Deterministic age: mostly adults (with ±3% height jitter), some children
-		// (uniformly scaled down — equal-ratio, vanilla baby-mob proportions).
-		final boolean isChild = hashLong(passengerId, 7) < CHILD_CHANCE;
-		final float passengerScale = isChild
-			? lerp(CHILD_SCALE_MIN, CHILD_SCALE_MAX, hashLong(passengerId, 9))
-			: lerp(ADULT_SCALE_MIN, ADULT_SCALE_MAX, hashLong(passengerId, 8));
-
 		matrixStack.pushPose();
-		// The per-passenger age scale sits exactly where vanilla's AgeableMobRenderer
-		// applies its baby scale — OUTERMOST, before the whole core transform chain —
-		// so it also scales the -1.501 foot offset: children keep their feet on the
-		// ground plane while the whole body shrinks (applying it innermost left the
-		// offset unscaled and made children float ~0.6-0.9 blocks above the ground).
-		matrixStack.scale(passengerScale, passengerScale, passengerScale);
 		// Vanilla LivingEntityRenderer core transform for players. The ordering is exactly
 		// equivalent to the vanilla sequence (setupRotations YP180, then flip, then 0.9375
 		// scale, then the -1.501 offset): all factors are diagonal so they commute, and the
@@ -170,8 +138,8 @@ public final class PassengerModelRenderer {
 		// The overlay layers (sleeves, pants, jacket, hat) are separate parts; re-copy the
 		// modified angles into them (vanilla does this inside setupAnim before any pose
 		// overrides, so this must run after the overrides). copyFrom also copies the part
-		// scales, which are always the vanilla default 1 now that age scaling lives in the
-		// matrix chain — no per-part scale writes or resets are needed any more.
+		// scales, which are always the vanilla default 1 (no age scaling exists) — no
+		// per-part scale writes or resets are needed.
 		copyPart(model.hat, model.head);
 		copyPart(model.leftSleeve, model.leftArm);
 		copyPart(model.rightSleeve, model.rightArm);
@@ -209,20 +177,30 @@ public final class PassengerModelRenderer {
 	 * rightArm.xRot = cos(limbSwing * 0.6662 + pi) * amount        (2 * 0.5)
 	 * leftArm.xRot  = cos(limbSwing * 0.6662) * amount
 	 * </pre>
+	 *
+	 * <p>On top of the vanilla formulas: a tiny shoulder counter-sway ({@code body.yRot},
+	 * ~2.6 degrees) and arm z-sway (~1.7 degrees) driven by the same phase, both scaled by
+	 * the walk amount so they vanish completely when standing — the standing pose stays
+	 * byte-identical to vanilla.</p>
 	 */
 	private static void applyWalkPose(PlayerModel model, AnimationState state) {
 		final float limbSwing = state.limbSwing;
 		final float amount = state.limbSwingAmount;
 
-		model.rightLeg.xRot = Mth.cos(limbSwing * 0.6662F) * 1.4F * amount;
-		model.leftLeg.xRot = Mth.cos(limbSwing * 0.6662F + (float) Math.PI) * 1.4F * amount;
-		model.rightArm.xRot = Mth.cos(limbSwing * 0.6662F + (float) Math.PI) * amount;
-		model.leftArm.xRot = Mth.cos(limbSwing * 0.6662F) * amount;
-		model.rightArm.zRot = 0;
-		model.leftArm.zRot = 0;
+		final float swayPhase = limbSwing * 0.6662F;
+		model.rightLeg.xRot = Mth.cos(swayPhase) * 1.4F * amount;
+		model.leftLeg.xRot = Mth.cos(swayPhase + (float) Math.PI) * 1.4F * amount;
+		model.rightArm.xRot = Mth.cos(swayPhase + (float) Math.PI) * amount;
+		model.leftArm.xRot = Mth.cos(swayPhase) * amount;
+		// Subtle gait life beyond the plain vanilla formulas, kept tiny so the silhouette
+		// still reads as a vanilla player: a counter-rotating shoulder sway and a soft arm
+		// z-sway, both driven by the same limb-swing phase and fully faded out at amount 0
+		// (standing is byte-identical to the vanilla neutral pose).
+		model.body.yRot = Mth.cos(swayPhase) * 0.045F * amount;
+		model.rightArm.zRot = Mth.cos(swayPhase) * 0.03F * amount;
+		model.leftArm.zRot = Mth.cos(swayPhase + (float) Math.PI) * 0.03F * amount;
 		model.rightArm.yRot = 0;
 		model.leftArm.yRot = 0;
-		model.body.yRot = 0;
 
 		// Head angles are stored in degrees; converted like vanilla setupAnim.
 		model.head.yRot = state.headYaw * DEG_TO_RAD;
@@ -329,13 +307,6 @@ public final class PassengerModelRenderer {
 			phoneModel = LayerDefinition.create(meshDefinition, 16, 16).bakeRoot().getChild("phone");
 		}
 		return phoneModel;
-	}
-
-	/**
-	 * @return a deterministic pseudo-random value in 0..1 for the given passenger id and salt
-	 */
-	private static float hashLong(long seed, int salt) {
-		return Math.floorMod((seed + salt * 0x9E3779B9L) * GOLDEN_RATIO_FRACTION, RESOLUTION) / (float) RESOLUTION;
 	}
 
 	/**
