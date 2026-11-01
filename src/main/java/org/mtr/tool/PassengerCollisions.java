@@ -107,6 +107,31 @@ public final class PassengerCollisions {
         }
 
         /**
+         * Collects the raw world-space passenger boxes intersecting a query box — the
+         * depenetration fallback's view of the registry (see {@link FakeEntityCollisions}).
+         * Same dimension filter as {@link #collect}; no entity filter, the caller does that once.
+         *
+         * @param level    the level whose dimension the boxes must belong to
+         * @param queryBox the box to test intersection against
+         * @return the intersecting passenger boxes; empty when the registry holds nothing nearby
+         */
+        public static List<AABB> collectBoxes(Level level, AABB queryBox) {
+                final List<Shape> snapshot = SNAPSHOT;
+                if (snapshot.isEmpty()) {
+                        return new ArrayList<>();
+                }
+
+                final ResourceKey<Level> dimension = level.dimension();
+                final List<AABB> result = new ArrayList<>();
+                for (final Shape shape : snapshot) {
+                        if (shape.dimension == dimension && shape.box.intersects(queryBox)) {
+                                result.add(shape.box);
+                        }
+                }
+                return result;
+        }
+
+        /**
          * Collects the passenger collision shapes intersecting a movement-collision query.
          *
          * @param levelObject the level the query runs in (the {@code EntityGetter} instance —

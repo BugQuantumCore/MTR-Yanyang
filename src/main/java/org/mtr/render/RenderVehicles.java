@@ -106,9 +106,6 @@ public final class RenderVehicles {
                         if (ridingVehicleCarNumberAndOffset != null) {
                                 ridingAnyVehicle[0] = true;
                         }
-                        if (ridingVehicleCarNumberAndOffset != null) {
-                                ridingAnyVehicle[0] = true;
-                        }
                         final int ridingCarNumber;
                         final PositionAndRotation ridingCarPositionAndRotation;
                         final Vec3 offsetVector;

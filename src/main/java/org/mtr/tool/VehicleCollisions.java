@@ -209,6 +209,31 @@ public final class VehicleCollisions {
         }
 
         /**
+         * Collects the raw world-space car boxes intersecting a query box — the depenetration
+         * fallback's view of the registry (see {@link FakeEntityCollisions}). Same dimension
+         * filter as {@link #collect}; no entity filter, the caller does that once.
+         *
+         * @param level    the level whose dimension the boxes must belong to
+         * @param queryBox the box to test intersection against
+         * @return the intersecting car boxes; empty when the registry holds nothing nearby
+         */
+        public static List<AABB> collectBoxes(Level level, AABB queryBox) {
+                final List<Shape> snapshot = SNAPSHOT;
+                if (snapshot.isEmpty()) {
+                        return new ArrayList<>();
+                }
+
+                final ResourceKey<Level> dimension = level.dimension();
+                final List<AABB> result = new ArrayList<>();
+                for (final Shape shape : snapshot) {
+                        if (shape.dimension == dimension && shape.box.intersects(queryBox)) {
+                                result.add(shape.box);
+                        }
+                }
+                return result;
+        }
+
+        /**
          * Applies the "knocked flying by a passing train" impulse to the local player. Runs once
          * per rendered frame (render thread) — never while the player is riding a vehicle (the
          * riding system owns the player then) and never for spectators.
