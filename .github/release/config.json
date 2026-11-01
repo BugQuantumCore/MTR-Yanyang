@@ -1,6 +1,6 @@
 {
-  "run_id": "41286794752",
-  "tag": "4.1.0-beta-2.yanyang.13",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.13 (1.21.1 & 1.21.4, Fabric & NeoForge) — AI passengers get solid player-sized collision boxes; walking legs follow the ground instead of gliding through terrain; every passenger renders at exactly minecraft:player size",
+  "run_id": "41301898027",
+  "tag": "4.1.0-beta-2.yanyang.14",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.14 (1.21.1 & 1.21.4, Fabric & NeoForge) — the real half-size passenger fix (vanilla baby-scale model flag, bytecode-root-caused); full train collision boxes that knock track-level players flying",
   "notes_file": "notes.md"
 }
