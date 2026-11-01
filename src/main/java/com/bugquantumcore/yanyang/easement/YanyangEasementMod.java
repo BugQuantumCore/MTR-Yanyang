@@ -2,7 +2,7 @@ package com.bugquantumcore.yanyang.easement;
 
 import com.bugquantumcore.yanyang.easement.item.ItemEasementShapeTool;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.entity.event.ServerEntityEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.core.Registry;
