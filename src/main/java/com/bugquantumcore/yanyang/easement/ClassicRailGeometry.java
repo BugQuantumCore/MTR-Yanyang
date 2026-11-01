@@ -14,10 +14,12 @@ import java.util.Map;
  * <ol>
  * <li>按经典公式取弧长 0 与总长处的中心线位置，向下取整得到两节点方块坐标（经典
  * 求解器的端点严格落在方块中心上，浮点误差为 1E-12 量级）；</li>
- * <li>按 {@code Rail.getRailAngle} 的原逻辑，在两端各采样一个微小弧长得到方向角，
- * 并量化到 22.5° 网格（与 {@code RailAngle.fromAngle} 等价），起点为行进方向、
- * 终点为指向起点的反向朝向 —— 与 MTR-Yanyang {@code tsc-1.21.x} 中
- * {@code EasedRailPath.build} 的入参约定一致；</li>
+ * <li>按 {@code Rail.getRailAngle} 的原逻辑，在两端各采样一个微小弧长得到方向角
+ * ——但<b>不量化到 22.5° 网格</b>：起点为行进方向、终点为指向起点的反向朝向，
+ * 交由 {@link EasedRailPath#build} 的入参约定使用。方速（FangSu）万向节点会以
+ * 任意角度构造轨道（幻影 {@code RailAngle}），量化会把直线轨道变成错误的弯曲
+ * 缓和路径；而 MTR 自己的 {@code getRailAngle} 在读 {@code facingStart/facingEnd}
+ * 时独立经由 {@code RailAngle.fromAngle} 量化，因此不量化不影响方向角引用一致性；</li>
  * <li>交由 {@link EasedRailPath#build} 求解缓和路径。</li>
  * </ol>
  */
@@ -42,11 +44,6 @@ public final class ClassicRailGeometry {
          * 与 {@code Rail.getRailAngle} 相同的采样步长（{@code ACCEPT_THRESHOLD}）。
          */
         private static final double ANGLE_EPSILON = 1E-4;
-
-        /**
-         * 方向角量化步长（度），与 {@code RailAngle} 的 16 方向网格一致。
-         */
-        private static final double ANGLE_GRID_DEGREES = 22.5;
 
         public ClassicRailGeometry(double h1, double k1, double r1, double tStart1, double tEnd1, double h2, double k2, double r2, double tStart2, double tEnd2, boolean reverseT1, boolean reverseT2, boolean isStraight1, boolean isStraight2) {
                 this.h1 = h1;
@@ -112,12 +109,12 @@ public final class ClassicRailGeometry {
                 final long x2 = (long) Math.floor(end[0]);
                 final long z2 = (long) Math.floor(end[1]);
 
-                // 方向角：按 getRailAngle 的采样逻辑推导并量化到 22.5° 网格。
+                // 方向角：按 getRailAngle 的采样逻辑推导，保留真实角度不量化。
                 // 终点处得到的是指向起点的反向朝向（存储角），行进方向为其相反角。
                 final double[] startPlus = positionXZ(ANGLE_EPSILON);
                 final double[] endMinus = positionXZ(classicLength - ANGLE_EPSILON);
-                final double heading1 = quantizedHeading(startPlus[0] - start[0], startPlus[1] - start[1]);
-                final double heading2Stored = quantizedHeading(endMinus[0] - end[0], endMinus[1] - end[1]);
+                final double heading1 = heading(startPlus[0] - start[0], startPlus[1] - start[1]);
+                final double heading2Stored = heading(endMinus[0] - end[0], endMinus[1] - end[1]);
 
                 return EasedRailPath.build(x1, z1, heading1, x2, z2, opposite(heading2Stored), shape == EasementShape.HALF_WAVE_SINE);
         }
@@ -132,33 +129,20 @@ public final class ClassicRailGeometry {
         }
 
         /**
-         * @return 方向向量对应的罗盘角（弧度，自东顺时针），量化到 22.5° 网格。
-         * 与 {@code RailAngle.fromAngle(Math.toDegrees(atan2(dz, dx)))} 等价。
+         * @return 方向向量对应的罗盘角（弧度，自东顺时针），保留真实角度不量化。
+         * 与 {@code atan2(dz, dx)} 一致；量化发生在 MTR 自己的
+         * {@code RailAngle.fromAngle}（读 {@code facingStart/facingEnd} 时），与本处无关。
          */
-        private static double quantizedHeading(double dx, double dz) {
-                final double degrees = Math.toDegrees(Math.atan2(dz, dx));
-                final double grid = ANGLE_GRID_DEGREES;
-                final double quantized = Math.round((normalizeDegrees(degrees) + 360) / grid) % (360 / grid) * grid;
-                return Math.toRadians(normalizeDegrees(quantized));
+        private static double heading(double dx, double dz) {
+                return Math.atan2(dz, dx);
         }
 
         /**
-         * @return 相反的行进方向角（差 180°，仍在 22.5° 网格上）。
-         * 与 {@code RailAngle.getOpposite().angleRadians} 等价。
+         * @return 相反的行进方向角（差 180°）。
+         * 与 {@code RailAngle.getOpposite().angleRadians} 在真实角度上的语义一致。
          */
         private static double opposite(double headingRadians) {
                 return normalizeRadians(headingRadians + Math.PI);
-        }
-
-        private static double normalizeDegrees(double degrees) {
-                double result = degrees;
-                while (result < -180) {
-                        result += 360;
-                }
-                while (result >= 180) {
-                        result -= 360;
-                }
-                return result;
         }
 
         private static double normalizeRadians(double radians) {

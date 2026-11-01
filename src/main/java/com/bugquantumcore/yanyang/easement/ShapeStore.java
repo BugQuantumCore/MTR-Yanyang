@@ -67,6 +67,13 @@ public final class ShapeStore {
         private static volatile long epoch;
 
         /**
+         * 客户端镜像发生了实际变化的标志：下一客户端 tick 需要让 ANTE 重建烘焙轨道。
+         * 由 {@link #clientPut} 置位、{@link #consumeClientDirty} 消费（去抖：同一 tick 内
+         * 的任意多次镜像更新只触发一次重建）。
+         */
+        private static volatile boolean clientDirty;
+
+        /**
          * 当前客户端维度供给（由客户端入口点注入，避免公共代码引用客户端类）。
          */
         private static volatile Supplier<ResourceLocation> clientDimension;
@@ -114,20 +121,38 @@ public final class ShapeStore {
          * @param dimension 维度
          * @param pair      连接键
          * @param shapeKey  线型键；{@code null} 表示清除（回到经典线型）
+         * @return 本次写入是否实际改变了镜像（需要重建烘焙轨道等派生缓存）
          */
-        public static void clientPut(ResourceLocation dimension, RailPair pair, String shapeKey) {
+        public static boolean clientPut(ResourceLocation dimension, RailPair pair, String shapeKey) {
+                boolean changed;
                 if (shapeKey == null) {
                         final Map<RailPair, String> shapes = CLIENT_SHAPES.get(dimension);
-                        if (shapes != null) {
-                                shapes.remove(pair);
-                                if (shapes.isEmpty()) {
-                                        CLIENT_SHAPES.remove(dimension, shapes);
-                                }
+                        changed = shapes != null && shapes.remove(pair) != null;
+                        if (changed && shapes.isEmpty()) {
+                                CLIENT_SHAPES.remove(dimension, shapes);
                         }
                 } else {
-                        CLIENT_SHAPES.computeIfAbsent(dimension, key -> new ConcurrentHashMap<>()).put(pair, shapeKey);
+                        final Map<RailPair, String> shapes = CLIENT_SHAPES.computeIfAbsent(dimension, key -> new ConcurrentHashMap<>());
+                        changed = !shapeKey.equals(shapes.put(pair, shapeKey));
                 }
-                bumpEpoch();
+                if (changed) {
+                        bumpEpoch();
+                        clientDirty = true;
+                }
+                return changed;
+        }
+
+        /**
+         * 消费「客户端镜像已变化」标志（每客户端 tick 至多触发一次派生缓存重建）。
+         *
+         * @return 自上次消费以来镜像是否发生过实际变化
+         */
+        public static boolean consumeClientDirty() {
+                if (!clientDirty) {
+                        return false;
+                }
+                clientDirty = false;
+                return true;
         }
 
         /**

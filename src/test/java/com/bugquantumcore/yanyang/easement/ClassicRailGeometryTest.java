@@ -20,7 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 class ClassicRailGeometryTest {
 
         private static final double NODE_EPSILON = 1E-6;
-        private static final double HEADING_EPSILON = 1E-6;
+        /**
+         * 方向角容差：从弧长 1E-4 的弦采样推导切向存在约 eps/(2r) 的固有偏差
+         * （最小半径 2 时至多 2.5E-5），1E-4 足以覆盖且远小于 22.5° 网格步长。
+         */
+        private static final double HEADING_EPSILON = 1E-4;
 
         /**
          * 直线轨道：从 (0, 0) 朝东到 (10, 0)。
@@ -161,5 +165,111 @@ class ClassicRailGeometryTest {
                 // 方向角量化到 45°（东南）
                 assertEquals(Math.PI / 4, path.heading[0], HEADING_EPSILON);
                 assertEquals(Math.PI / 4, path.heading[path.heading.length - 1], HEADING_EPSILON);
+        }
+
+        /**
+         * <b>方速（FangSu）万向节点兼容</b>：任意角度（非 22.5° 网格）直线轨道。
+         *
+         * <p>方速的万向节点以幻影 {@code RailAngle} 构造任意角度的直线（如 18.4°），
+         * {@code Rail} 几何仍是标准直线分段。缓和求解必须保留真实方向角：
+         * 量化到 22.5° 网格会把直线变成错误的弯曲「缓和」路径。</p>
+         *
+         * <p>构造：从 (0, 0) 沿 atan2(1, 3) ≈ 18.43° 到 (3, 1)，字段与 {@code Rail}
+         * 的「1. b. 非对角直线」分支同构（|k| < 0.5：h = cosθ, k = sinθ,
+         * div = cos2θ，t = (h·x - k·z)/div）。</p>
+         */
+        @Test
+        void testArbitraryAngleStraightRail() {
+                final double theta = Math.atan2(1, 3); // ≈ 18.43°，非网格且 |k| < 0.5
+                final double h = Math.cos(theta);
+                final double k = Math.sin(theta);
+                final double div = Math.cos(2 * theta);
+                final double r = 0; // 起点 (0, 0)：(h·z - k·x) = 0
+                final double tStart = 0;
+                final double tEnd = (h * 3 - k * 1) / div;
+                final ClassicRailGeometry geometry = new ClassicRailGeometry(
+                                h, k, r, tStart, tEnd,
+                                0, 0, 0, 0, 0,
+                                false, false, true, true
+                );
+
+                final double length = Math.hypot(3, 1);
+                assertEquals(length, geometry.length(), 1E-9);
+                // 端点严格落在方块中心
+                final double[] start = geometry.positionXZ(0);
+                assertEquals(0.5, start[0], NODE_EPSILON);
+                assertEquals(0.5, start[1], NODE_EPSILON);
+                final double[] end = geometry.positionXZ(length);
+                assertEquals(3.5, end[0], NODE_EPSILON);
+                assertEquals(1.5, end[1], NODE_EPSILON);
+
+                final EasedRailPath path = geometry.resolveEased(EasementShape.CUBIC_PARABOLA);
+                assertNotNull(path);
+                // 零转角 + 零横向偏移 → 直线采样表，长度等于弦长
+                assertEquals(length, path.length, 1E-6);
+                assertEquals(0.5, path.x[0], NODE_EPSILON);
+                assertEquals(0.5, path.z[0], NODE_EPSILON);
+                assertEquals(3.5, path.x[path.x.length - 1], NODE_EPSILON);
+                assertEquals(1.5, path.z[path.z.length - 1], NODE_EPSILON);
+                // 真实方向角（≈18.43°），不得量化到 0° / 22.5°
+                assertEquals(theta, path.heading[0], HEADING_EPSILON);
+                assertEquals(theta, path.heading[path.heading.length - 1], HEADING_EPSILON);
+                // 中点严格在连线上：(z - 0.5) / (x - 0.5) = 1 / 3
+                final int mid = path.x.length / 2;
+                assertEquals(1D / 3, (path.z[mid] - 0.5) / (path.x[mid] - 0.5), 1E-6);
+        }
+
+        /**
+         * <b>方速（FangSu）万向节点兼容</b>：一端绑定任意角度切向的圆弧轨道。
+         *
+         * <p>构造与 {@code NodeConnector.maxRadiusTangentAngle} 同构的「最大半径圆弧」：
+         * 过 (0, 0)（切向 20°，非网格）与 (10, 6) 的唯一切圆。经典字段按圆心与
+         * 参数区间端点复原，验证缓和求解的端点锚定与<b>真实</b>端点方向角
+         * （20° ≈ 0.349 弧度，量化到 22.5° 的旧实现无法通过）。</p>
+         */
+        @Test
+        void testArbitraryAngleArcRail() {
+                final double thetaDegrees = 20;
+                final double theta = Math.toRadians(thetaDegrees);
+                final double s = Math.sin(theta);
+                final double c = Math.cos(theta);
+                // 圆心在行进方向左侧法线上（几何按 MTR 的 (h,k) 原点系构造，positionXZ
+                // 另加 +0.5 方块中心偏移）：C = P1 + R·(-sinθ, cosθ)，由 |C - P2| = R 定解
+                // 展开得 R·(20·sinθ - 12·cosθ) + (10² + 6²) = 0（P2 - P1 = (10, 6)，
+                // P1 = (0, 0)、P2 = (10, 6) 为节点原始方块坐标）
+                final double radius = -136 / (20 * s - 12 * c);
+                final double cx = -radius * s;
+                final double cz = radius * c;
+                // 参数角（自东顺时针为正的罗盘系下即为 atan2(dz, dx)）
+                final double phiStart = Math.atan2(-cz, -cx);
+                final double phiEnd = Math.atan2(6 - cz, 10 - cx);
+                final ClassicRailGeometry geometry = new ClassicRailGeometry(
+                                cx, cz, radius, phiStart * radius, phiEnd * radius,
+                                0, 0, 0, 0, 0,
+                                false, false, false, true
+                );
+
+                // 端点落在节点方块中心
+                final double length = geometry.length();
+                final double[] start = geometry.positionXZ(0);
+                assertEquals(0.5, start[0], NODE_EPSILON);
+                assertEquals(0.5, start[1], NODE_EPSILON);
+                final double[] end = geometry.positionXZ(length);
+                assertEquals(10.5, end[0], NODE_EPSILON);
+                assertEquals(6.5, end[1], NODE_EPSILON);
+
+                final EasedRailPath path = geometry.resolveEased(EasementShape.CUBIC_PARABOLA);
+                assertNotNull(path);
+                assertEquals(0.5, path.x[0], NODE_EPSILON);
+                assertEquals(0.5, path.z[0], NODE_EPSILON);
+                assertEquals(10.5, path.x[path.x.length - 1], NODE_EPSILON);
+                assertEquals(6.5, path.z[path.z.length - 1], NODE_EPSILON);
+                // 起点真实切向 = 20°（圆弧上参数角处的切向 = 参数角 + 90°）；
+                // 弦采样固有的 eps/(2r) 偏差由 HEADING_EPSILON 覆盖
+                assertEquals(Math.toRadians(thetaDegrees), path.heading[0], HEADING_EPSILON);
+                // 终点行进方向 = 终点参数角 + 90°（自东顺时针）
+                final double expectedEndHeading = phiEnd + Math.PI / 2;
+                final double wrapped = Math.atan2(Math.sin(expectedEndHeading), Math.cos(expectedEndHeading));
+                assertEquals(wrapped, path.heading[path.heading.length - 1], HEADING_EPSILON);
         }
 }

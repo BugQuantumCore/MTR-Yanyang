@@ -54,9 +54,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p><b>惰性求值的线程与构造顺序说明</b>：反序列化构造函数在计算 {@code facingStart}
  * / {@code facingEnd} 时就会经由 {@code getRailAngle} 触发首次几何查询，此时
  * {@code facingStart} 字段尚未赋值，因此缓和路径的方向角<b>不读取该字段</b>，而是按
- * {@code getRailAngle} 的原逻辑从经典几何重新推导（并量化到 22.5° 网格，见
- * {@link ClassicRailGeometry}）。缓和路径的端点方向角由构造精确等于请求值，因此两种
- * 触发顺序得到完全一致的结果，{@code isValid()} 的方向角校验也始终成立。</p>
+ * {@code getRailAngle} 的原逻辑从经典几何重新推导（保留真实角度、不量化，见
+ * {@link ClassicRailGeometry}；{@code getRailAngle} 自身经 {@code RailAngle.fromAngle}
+ * 的量化不受影响，因此 {@code isValid()} 的方向角校验始终成立，方速万向节点的
+ * 任意角度轨道也能被正确求解）。缓和路径的端点方向角由构造精确等于请求值，因此两种
+ * 触发顺序得到完全一致的结果。</p>
  */
 @Mixin(Rail.class)
 public abstract class RailMixin implements RailDuck {

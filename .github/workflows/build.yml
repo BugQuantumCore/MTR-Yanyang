@@ -20,16 +20,11 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Setup Gradle
+      - name: Setup Gradle (wrapper)
         uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: "8.5"
 
-      - name: Build with Gradle
-        run: gradle build --no-daemon --stacktrace
-
-      - name: Run unit tests
-        run: gradle test --no-daemon
+      - name: Build with Gradle (includes unit tests)
+        run: ./gradlew build --no-daemon --stacktrace
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

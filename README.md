@@ -92,7 +92,7 @@ Rail (mtr.data.Rail)
  ├── 线型解析（按 YMTR 能力自动选择）
  │     ├─ 3.6.2.2+：railData 含 rail_shape=cubic_parabola|half_wave_sine ?
  │     └─ 3.4.4+ ：轨道实例印记（存档搭载）→ 客户端镜像（维度 × 连接键）
- ├── 有线型：从经典几何字段复原两节点坐标与 22.5° 网格方向角
+ ├── 有线型：从经典几何字段复原两节点坐标与真实方向角（不量化，方速万向节点任意角度可用）
  │           → EasedRailPath.build(...) 求解并缓存采样表
  │           → getPosition / getLength / render / goodRadius 全部改查采样表
  │           → 求解失败（不可表示几何）→ 自动回退经典分段
@@ -107,8 +107,17 @@ Rail (mtr.data.Rail)
   全部自动沿缓和曲线工作 —— 与 TSC 分支中「所有下游消费同一张采样表」的设计相同。
 - **线程与构造顺序**：反序列化构造函数在给 `facingStart`/`facingEnd` 赋值时就会触发
   首次几何查询，此时字段尚未赋值 —— 因此缓和路径的方向角不读字段，而是按
-  `getRailAngle` 的原逻辑从经典几何重新推导并量化到 22.5° 网格；缓和路径端点方向角
-  由构造精确等于请求值，两种触发顺序结果一致，`isValid()` 校验始终成立。
+  `getRailAngle` 的原逻辑从经典几何重新推导，并**保留真实角度不量化**（MTR 自己的
+  `RailAngle.fromAngle` 在读字段时独立量化，`isValid()` 校验不受影响）；缓和路径端点方向角
+  由构造精确等于请求值，两种触发顺序结果一致。
+- **ANTE（MTRSteamLoco）兼容**：ANTE 把轨道渲染为按 `Rail` 实例缓存的烘焙网格，
+  线型变化不替换轨道实例，缓存不会自动重建 —— 本补丁在客户端镜像变化后的下一
+  客户端 tick 调用 ANTE 的 `RailRenderDispatcher.clearRail()`（反射，去抖合并），
+  使其下一帧按新几何重建；YMTR 原生渲染（未装 ANTE）每帧重画，无需处理。
+- **方速（FangSu）万向节点兼容**：缓和求解使用几何的**真实方向角**（幻影
+  `RailAngle` 的任意角度），直线轨道求解后仍为直线（无可缓和的曲率），任意角度
+  曲线轨道照常缓和；节点竖向姿态由方速注入的 `getPositionY` 提供，缓和路径的
+  Y 剖面经由它叠加，纵坡/超高保持一致。
 - **失效纪元**：所有线型数据变化（印记写入、镜像更新、`setRailData`）递增全局纪元，
   各轨道缓存的缓和路径按纪元惰性重建 —— 一次 volatile 读的开销。
 - **注入目标全部按方法名匹配**（`remap = false`、不写描述符）：目标方法均为模组方法
@@ -127,7 +136,7 @@ Rail (mtr.data.Rail)
 |---|---|---|
 | 线型载体 | `Rail.Shape` 枚举新增两个值 | `railData` 键值对（3.6.2.2+）/ 实例印记 + 存档搭载（legacy） |
 | 生效时机 | 构造 `RailMath` 时求解 | `Rail` 几何查询时惰性求解（Mixin） |
-| 端点/方向角来源 | 构造入参 `Position`/`Angle` | 由经典求解器几何复原（含 22.5° 量化） |
+| 端点/方向角来源 | 构造入参 `Position`/`Angle` | 由经典求解器几何复原（真实角度，不量化） |
 | 竖曲线 | `RailMath.getPositionY`（形状感知） | YMTR 原版 `getPositionY`（阴影调用） |
 | 渲染回调 | 13 参数（含 Y 与倾斜角） | 10 参数（YMTR `RenderRail` 签名） |
 | 修改范围 | 修改 TSC 源码 | 零源码修改，纯运行时注入 |
@@ -167,10 +176,10 @@ src/main/java/com/bugquantumcore/yanyang/easement/
 ├── RailDuck.java             # 轨道印记访问接口（鸭子类型，RailMixin 实现）
 ├── RailDataDuck.java         # 轨道附加数据访问接口（鸭子类型，RailDataCarrierMixin 实现）
 ├── RailPair.java             # 连接键（节点对规范排序，与 BlockPos.asLong 打包一致）
-├── AnteMirror.java           # ANTE customConfigs 镜像（自有反射，兼容全部版本）
+├── AnteMirror.java           # ANTE 兼容：customConfigs 镜像 + 烘焙轨道重建（反射）
 ├── YanyangEasementMod.java   # Fabric 入口：注册物品 + 玩家加入/切维度同步
 ├── item/ItemEasementShapeTool.java   # 缓和曲线工具（右键节点循环切换线型）
-├── client/YanyangEasementModClient.java  # 客户端入口：S2C 接收器 + 维度供给
+├── client/YanyangEasementModClient.java  # 客户端入口：S2C 接收器 + 维度供给 + ANTE 重建
 └── mixin/
     ├── RailMixin.java              # 核心注入：getPosition/getLength/render/goodRadius（全版本）
     ├── RailDataCarrierMixin.java   # railData 载体（仅 3.6.2.2+）

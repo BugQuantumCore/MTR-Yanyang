@@ -1,10 +1,12 @@
 package com.bugquantumcore.yanyang.easement.client;
 
+import com.bugquantumcore.yanyang.easement.AnteMirror;
 import com.bugquantumcore.yanyang.easement.RailPair;
 import com.bugquantumcore.yanyang.easement.ShapeStore;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
@@ -15,6 +17,13 @@ import net.minecraft.resources.ResourceLocation;
  * <p>注册 {@code yanyang_easement:shape_sync} 的 S2C 接收器，把服务端发来的线型真值
  * 写入客户端镜像（{@link ShapeStore}），并注入「当前客户端维度」供给 —— 两者共同让
  * 客户端轨道（由 YMTR 网络包重建、不携带印记）能按「维度 × 连接键」解析线型。</p>
+ *
+ * <p><b>渲染缓存失效</b>：YMTR 原生渲染每帧调用 {@code Rail.render}，镜像更新后线型
+ * 立即生效；但 ANTE（MTRSteamLoco）把轨道烘焙为按 {@code Rail} 实例缓存的网格，
+ * 缓存只在轨道实例增减时重建 —— 线型变化不替换实例，烘焙网格会停留在经典线型。
+ * 因此每客户端 tick 检查镜像脏标志（{@link ShapeStore#consumeClientDirty}，同 tick
+ * 内多次更新合并为一次），变化时让 ANTE 重建烘焙轨道（{@link AnteMirror#clearBakedRails}，
+ * ANTE 未安装时为无操作）。</p>
  */
 @Environment(EnvType.CLIENT)
 public class YanyangEasementModClient implements ClientModInitializer {
@@ -32,7 +41,14 @@ public class YanyangEasementModClient implements ClientModInitializer {
                         final long a = buf.readLong();
                         final long b = buf.readLong();
                         final String shapeKey = buf.readUtf();
-                        client.execute(() -> ShapeStore.clientPut(dimension, new RailPair(a, b), shapeKey.isEmpty() ? null : shapeKey));
+                        client.execute(() -> ShapeStore.clientPut(dimension, RailPair.of(a, b), shapeKey.isEmpty() ? null : shapeKey));
+                });
+
+                // 客户端 tick（渲染线程）：镜像有实际变化时让 ANTE 重建烘焙轨道。
+                ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                        if (ShapeStore.consumeClientDirty()) {
+                                AnteMirror.clearBakedRails();
+                        }
                 });
         }
 }

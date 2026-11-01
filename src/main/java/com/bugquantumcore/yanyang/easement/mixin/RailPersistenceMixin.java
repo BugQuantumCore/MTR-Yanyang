@@ -3,6 +3,8 @@ package com.bugquantumcore.yanyang.easement.mixin;
 import com.bugquantumcore.yanyang.easement.RailDuck;
 import com.bugquantumcore.yanyang.easement.ShapeStore;
 import org.msgpack.core.MessagePacker;
+import org.msgpack.value.StringValue;
+import org.msgpack.value.Value;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -46,10 +48,14 @@ public abstract class RailPersistenceMixin {
         }
 
         /**
-         * 映射条目数：有印记时比经典多一个（{@code writeMessagePackDataset} 以此为
-         * {@code packMapHeader} 计数）。
+         * 映射条目数：有印记时比经典多一个（{@code writeMessagePackDataset} 与
+         * {@code RailEntry.toMessagePack} 均以此 + 1（自带 {@code node_pos} 键）为
+         * {@code packMapHeader} 计数，因此计数与实际写入条目严格一致）。
+         * <p><b>必须 {@code cancellable = true}</b>：{@code setReturnValue} 依赖可取消的
+         * 回调；缺省时抛出 {@code CancellationException}，使带印记的轨道整条从存档
+         * 写入中丢失（而非仅仅丢掉印记）。</p>
          */
-        @Inject(method = "messagePackLength", at = @At("RETURN"), remap = false)
+        @Inject(method = "messagePackLength", at = @At("RETURN"), cancellable = true, remap = false)
         private void yanyang$packShapeStampLength(CallbackInfoReturnable<Integer> cir) {
                 if (((RailDuck) this).yanyang$getShapeStamp() != null) {
                         cir.setReturnValue(cir.getReturnValueI() + 1);
@@ -59,11 +65,16 @@ public abstract class RailPersistenceMixin {
         /**
          * 存档读回（世界加载 / 反序列化）：把印记写到轨道实例上。
          * 印记在构造完成前写入，因此构造后的首次几何查询即可命中。
+         * <p>反序列化侧的映射值是 msgpack 的 {@link Value}（{@code ImmutableValue}），
+         * <b>不是</b> Java 字符串 —— 字符串印记必须经 {@link StringValue#asString()} 解包，
+         * 直接 {@code instanceof String} 判定永远为假（印记静默丢失的根因）。</p>
          */
         @Inject(method = "<init>(Ljava/util/Map;)V", at = @At("TAIL"), remap = false)
         private void yanyang$readShapeStamp(Map<?, ?> map, CallbackInfo ci) {
                 final Object value = map == null ? null : map.get(ShapeStore.LEGACY_KEY);
-                if (value instanceof String key) {
+                if (value instanceof StringValue stringValue) {
+                        ((RailDuck) this).yanyang$setShapeStamp(stringValue.asString());
+                } else if (value instanceof String key) { // 防御：其他来源的纯字符串映射
                         ((RailDuck) this).yanyang$setShapeStamp(key);
                 }
         }
