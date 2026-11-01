@@ -1,7 +1,5 @@
 package com.bugquantumcore.yanyang.easement;
 
-import mtr.block.BlockNode;
-import mtr.client.AnteRailCompat;
 import mtr.data.Rail;
 import mtr.data.RailwayData;
 import mtr.mappings.Text;
@@ -18,14 +16,19 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 服务端逻辑：把所选缓和曲线线型写入轨道的附加数据（{@code railData}），并按 YMTR
- * 「轨道数据编辑器」保存时的同一套流程同步给所有客户端 ——
- * {@code setRailData} → 镜像到 ANTE customConfigs →
- * {@code PacketTrainDataGuiServer.createRailS2C} 广播 → 标记存档保存。
+ * 服务端逻辑：把所选缓和曲线线型写入一条轨道连接，并同步给客户端。
  *
- * <p>线型标记随轨道的 MessagePack / 网络包 / NBT 序列化自动持久化，因此本补丁
- * 无需触碰 MTR 的任何存档格式；服务端与客户端在反序列化 {@code Rail} 时都会经由
- * {@code RailMixin} 惰性重建缓和路径。</p>
+ * <p>按当前 YMTR 能力选择存储路径（见 {@link YanyangCompat}）：</p>
+ * <ul>
+ * <li><b>YMTR 3.6.2.2+</b>：写入轨道附加数据（{@code railData} 键值对），随存档持久化、
+ * 由 YMTR 原生同步（{@code setRailData} → ANTE 镜像 → {@code createRailS2C} 广播 →
+ * 标记存档保存），且可在游戏内「轨道数据编辑器」中查看；</li>
+ * <li><b>legacy YMTR 3.4.4 ~ 3.6.1.2</b>：写入轨道实例印记（{@link RailDuck}，随存档
+ * MessagePack 搭载持久化），经本补丁自定义 {@code yanyang_easement:shape_sync} 包广播；
+ * YMTR 自身状态未被改动，无需调用其广播。</li>
+ * </ul>
+ * <p>两种路径写入的数据键值完全一致（{@code rail_shape} = {@code cubic_parabola} /
+ * {@code half_wave_sine}），ANTE（MTRSteamLoco）的 {@code customConfigs} 镜像内容也一致。</p>
  */
 public final class EasementShapeApplier {
 
@@ -52,14 +55,14 @@ public final class EasementShapeApplier {
                         return;
                 }
 
-                final Map<BlockPos, Map<BlockPos, Rail>> rails = railwayData.getRailsMap();
+                final Map<BlockPos, Map<BlockPos, Rail>> rails = ((ShapeStore.RailwayDataAccessorDuck) railwayData).yanyang$getRails();
                 final List<Connection> connections = collectConnections(rails, node);
                 if (connections.isEmpty()) {
                         player.displayClientMessage(Text.translatable("message.yanyang_easement.no_rails"), true);
                         return;
                 }
 
-                final EasementShape current = EasementShape.fromRailData(connections.get(0).forward.getRailData());
+                final EasementShape current = readShape(connections.get(0).forward);
                 final EasementShape next = EasementShape.next(current, backwards);
 
                 for (final Connection connection : connections) {
@@ -75,27 +78,73 @@ public final class EasementShapeApplier {
         }
 
         /**
-         * 将线型写入一条连接的正反两条轨道并广播。数据与 YMTR 原生
-         * {@code PacketUpdateRailData} 的写法保持一致（正反向共享同一份键值对）。
+         * 读取一条轨道当前的线型（按能力选择载体）。
+         */
+        private static EasementShape readShape(Rail rail) {
+                if (YanyangCompat.RAILDATA_CAPABLE) {
+                        return EasementShape.fromRailData(rail.getRailData());
+                }
+                return EasementShape.fromKey(((RailDuck) rail).yanyang$getShapeStamp());
+        }
+
+        /**
+         * 将线型写入一条连接的正反两条轨道并同步。
          */
         private static void applyShape(Level level, Connection connection, EasementShape shape) {
-                final Map<String, String> railData = new HashMap<>(connection.forward.getRailData());
-                if (shape == null) {
-                        railData.remove(EasementShape.RAIL_DATA_KEY);
-                        railData.remove(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY);
+                if (YanyangCompat.RAILDATA_CAPABLE) {
+                        applyShapeViaRailData(level, connection, shape);
                 } else {
-                        railData.put(EasementShape.RAIL_DATA_KEY, shape.key());
-                        railData.put(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY, "string");
+                        applyShapeViaStamp(level, connection, shape);
                 }
+        }
+
+        /**
+         * capable 路径：写入 {@code railData}（正反向共享同一份键值对，与 YMTR 原生
+         * {@code PacketUpdateRailData} 的写法一致），按 YMTR 流程镜像与广播。
+         */
+        private static void applyShapeViaRailData(Level level, Connection connection, EasementShape shape) {
+                final Map<String, String> existing = connection.forward.getRailData();
+                final Map<String, String> railData = new HashMap<>(existing == null ? new HashMap<>() : existing);
+                putShapeEntries(railData, shape);
 
                 final Map<String, String> railDataBackward = new HashMap<>(railData);
                 connection.forward.setRailData(railData);
                 connection.backward.setRailData(railDataBackward);
 
-                AnteRailCompat.setRailCustomConfigsMirror(connection.forward, railData);
-                AnteRailCompat.setRailCustomConfigsMirror(connection.backward, railDataBackward);
+                AnteMirror.setRailCustomConfigsMirror(connection.forward, railData);
+                AnteMirror.setRailCustomConfigsMirror(connection.backward, railDataBackward);
 
                 PacketTrainDataGuiServer.createRailS2C(level, connection.forward.transportMode, connection.start, connection.end, connection.forward, connection.backward, 0);
+        }
+
+        /**
+         * legacy 路径：写入轨道实例印记，镜像到 ANTE 后用本补丁的自定义包广播
+         * （YMTR 自身状态未变，无需调用其广播）。
+         */
+        private static void applyShapeViaStamp(Level level, Connection connection, EasementShape shape) {
+                final String key = shape == null ? null : shape.key();
+                ((RailDuck) connection.forward).yanyang$setShapeStamp(key);
+                ((RailDuck) connection.backward).yanyang$setShapeStamp(key);
+
+                final Map<String, String> mirror = new HashMap<>();
+                putShapeEntries(mirror, shape);
+                AnteMirror.setRailCustomConfigsMirror(connection.forward, mirror);
+                AnteMirror.setRailCustomConfigsMirror(connection.backward, mirror);
+
+                ShapeStore.broadcastShape(level, connection.start, connection.end, key);
+        }
+
+        /**
+         * 把线型键值（含 YMTR 编辑器的类型标记）写入映射；{@code shape == null} 时清除。
+         */
+        private static void putShapeEntries(Map<String, String> map, EasementShape shape) {
+                if (shape == null) {
+                        map.remove(EasementShape.RAIL_DATA_KEY);
+                        map.remove(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY);
+                } else {
+                        map.put(EasementShape.RAIL_DATA_KEY, shape.key());
+                        map.put(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY, "string");
+                }
         }
 
         /**

@@ -1,75 +1,88 @@
 plugins {
-        id 'fabric-loom' version '1.5.3'
-        id 'maven-publish'
+	id 'fabric-loom' version '1.5.3'
+	id 'maven-publish'
 }
 
 version = project.mod_version
 group = project.maven_group
 
 base {
-        archivesName = project.archives_base_name
+	archivesName = project.archives_base_name
 }
 
 repositories {
-        // YMTR (MTR 3.x) 以本地开发 jar 的形式提供编译依赖，见 libs/README.md。
-        // 其余依赖均来自 loom 配置的 Fabric / Mojang / Maven Central 仓库。
-        mavenCentral()
-        // Parchment 参数名映射（与 YMTR 的映射方案保持一致，可复用同一份 loom 缓存）
-        maven {
-                name = 'ParchmentMC'
-                url = 'https://maven.parchmentmc.org/'
-        }
+	mavenCentral()
+	// Parchment 参数名映射（与 YMTR 的映射方案保持一致，可复用同一份 loom 缓存）
+	maven {
+		name = 'ParchmentMC'
+		url = 'https://maven.parchmentmc.org/'
+	}
+	// YMTR（MTR 3.x）从 Modrinth Maven 获取生产 jar（中间映射），
+	// loom 会在配置期把它重映射到本项目的 Mojang + Parchment 命名空间。
+	exclusiveContent {
+		forRepository {
+			maven {
+				name = 'Modrinth'
+				url = 'https://api.modrinth.com/maven'
+			}
+		}
+		filter {
+			includeGroup 'maven.modrinth'
+		}
+	}
 }
 
 dependencies {
-        minecraft "com.mojang:minecraft:${project.minecraft_version}"
-        mappings loom.layered() {
-                officialMojangMappings()
-                parchment("org.parchmentmc.data:parchment-${project.minecraft_version}:${project.parchment_version}@zip")
-        }
-        modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-        modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.layered() {
+		officialMojangMappings()
+		parchment("org.parchmentmc.data:parchment-${project.minecraft_version}:${project.parchment_version}@zip")
+	}
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-        // YMTR 开发环境 jar（已映射到 Mojang 命名，无需再重映射）。
-        compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+	// YMTR 3.6.3（fabric+1.20.1，Modrinth 版本 ID tW2FT3tx）。
+	// 本补丁同时支持 3.4.4 ~ latest：编译锚定最新版（3.6.3），
+	// 旧版差异（railData 等）由运行时能力探测与条件 Mixin 处理。
+	modImplementation "maven.modrinth:U75MCH6y:${project.ymtr_version_id}"
 
-        testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
-        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 processResources {
-        inputs.property 'version', project.version
+	inputs.property 'version', project.version
 
-        filesMatching('fabric.mod.json') {
-                expand 'version': project.version
-        }
+	filesMatching('fabric.mod.json') {
+		expand 'version': project.version
+	}
 }
 
 java {
-        toolchain {
-                languageVersion = JavaLanguageVersion.of(17)
-        }
-        withSourcesJar()
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+	withSourcesJar()
 }
 
 tasks.withType(JavaCompile).configureEach {
-        it.options.release = 17
+	it.options.release = 17
 }
 
 test {
-        useJUnitPlatform()
+	useJUnitPlatform()
 }
 
 jar {
-        from('LICENSE') {
-                rename { "${it}_${project.base.archivesName.get()}" }
-        }
+	from('LICENSE') {
+		rename { "${it}_${project.base.archivesName.get()}" }
+	}
 }
 
 publishing {
-        publications {
-                mavenJava(MavenPublication) {
-                        from components.java
-                }
-        }
+	publications {
+		mavenJava(MavenPublication) {
+			from components.java
+		}
+	}
 }

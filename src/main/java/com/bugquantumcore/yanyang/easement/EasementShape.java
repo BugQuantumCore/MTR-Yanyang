@@ -73,7 +73,26 @@ public enum EasementShape {
         }
 
         /**
-         * 从轨道附加数据解析线型。
+         * 从线型键字符串解析（legacy 印记与客户端镜像的载体）。
+         *
+         * @param key 线型键，如 {@code cubic_parabola}；可为 {@code null}
+         * @return 对应线型；无法识别时 {@code null}（经典线型）
+         */
+        public static EasementShape fromKey(String key) {
+                if (key == null || key.isEmpty()) {
+                        return null;
+                }
+                final String normalized = key.trim().toLowerCase(Locale.ROOT);
+                for (final EasementShape shape : values()) {
+                        if (shape.key.equals(normalized)) {
+                                return shape;
+                        }
+                }
+                return null;
+        }
+
+        /**
+         * 从轨道附加数据解析线型（YMTR 3.6.2.2+ 的 {@code railData} 载体）。
          *
          * @return 选中的线型；未设置或无法识别时返回 {@code null}（经典线型）
          */
@@ -81,16 +100,6 @@ public enum EasementShape {
                 if (railData == null || railData.isEmpty()) {
                         return null;
                 }
-                final String value = railData.get(RAIL_DATA_KEY);
-                if (value == null) {
-                        return null;
-                }
-                final String normalized = value.trim().toLowerCase(Locale.ROOT);
-                for (final EasementShape shape : values()) {
-                        if (shape.key.equals(normalized)) {
-                                return shape;
-                        }
-                }
-                return null;
+                return fromKey(railData.get(RAIL_DATA_KEY));
         }
 }

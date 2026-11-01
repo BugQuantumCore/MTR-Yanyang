@@ -15,20 +15,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  *
  * <p>用合成的经典分段参数（与 MTR 3.x {@code Rail} 构造函数产出的字段同构）构造
  * 直线与四分之一圆弧两种几何，验证：节点方块坐标复原、22.5° 网格方向角复原、
- * 缓和路径端点锚定与端点方向角。</p>
+ * 缓和路径端点锚定与端点方向角；并验证线型键解析（印记 / 轨道附加数据两种载体）。</p>
  */
 class ClassicRailGeometryTest {
 
         private static final double NODE_EPSILON = 1E-6;
         private static final double HEADING_EPSILON = 1E-6;
-
-        private static Map<String, String> railData(String shape) {
-                final Map<String, String> map = new HashMap<>();
-                if (shape != null) {
-                        map.put(EasementShape.RAIL_DATA_KEY, shape);
-                }
-                return map;
-        }
 
         /**
          * 直线轨道：从 (0, 0) 朝东到 (10, 0)。
@@ -50,7 +42,7 @@ class ClassicRailGeometryTest {
                 assertEquals(10.5, end[0], NODE_EPSILON);
                 assertEquals(0.5, end[1], NODE_EPSILON);
 
-                final EasedRailPath path = geometry.resolveEased(railData("cubic_parabola"));
+                final EasedRailPath path = geometry.resolveEased(EasementShape.CUBIC_PARABOLA);
                 assertNotNull(path);
                 // 对齐直线 + 零转角 → 直线采样表
                 assertEquals(10, path.length, NODE_EPSILON);
@@ -79,7 +71,7 @@ class ClassicRailGeometryTest {
                 final double quarterArc = Math.PI / 2 * radius;
                 assertEquals(quarterArc, geometry.length(), 1E-9);
 
-                final EasedRailPath cubic = geometry.resolveEased(railData("cubic_parabola"));
+                final EasedRailPath cubic = geometry.resolveEased(EasementShape.CUBIC_PARABOLA);
                 assertNotNull(cubic);
                 // 复原出的节点与端点方向角
                 assertEquals(0.5, cubic.x[0], NODE_EPSILON);
@@ -91,10 +83,29 @@ class ClassicRailGeometryTest {
                 assertEquals(Math.PI / 2, cubic.heading[cubic.heading.length - 1], HEADING_EPSILON);
 
                 // 同一几何在半波正弦下同样可解，且端点一致
-                final EasedRailPath sine = geometry.resolveEased(railData("half_wave_sine"));
+                final EasedRailPath sine = geometry.resolveEased(EasementShape.HALF_WAVE_SINE);
                 assertNotNull(sine);
                 assertEquals(0.5, sine.x[0], NODE_EPSILON);
                 assertEquals(10.5, sine.x[sine.x.length - 1], NODE_EPSILON);
+        }
+
+        /**
+         * 线型解析：未设置 / 值无法识别 → 经典线型（零侵入）；
+         * 印记键（legacy 载体）与轨道附加数据（capable 载体）解析结果一致。
+         */
+        @Test
+        void testShapeKeyParsing() {
+                final Map<String, String> railData = new HashMap<>();
+                assertNull(EasementShape.fromKey(null));
+                assertNull(EasementShape.fromKey(""));
+                assertNull(EasementShape.fromKey("classic"));
+                assertNull(EasementShape.fromKey("比例抛物线"));
+                assertNull(EasementShape.fromRailData(null));
+                assertNull(EasementShape.fromRailData(railData));
+                railData.put(EasementShape.RAIL_DATA_KEY, "cubic_parabola");
+                assertEquals(EasementShape.CUBIC_PARABOLA, EasementShape.fromRailData(railData));
+                assertEquals(EasementShape.HALF_WAVE_SINE, EasementShape.fromKey(" half_wave_sine "));
+                assertEquals(EasementShape.HALF_WAVE_SINE, EasementShape.fromKey("Half_Wave_Sine"));
         }
 
         /**
@@ -106,9 +117,8 @@ class ClassicRailGeometryTest {
                                 1, 0, 0, 0, 10, 0, 0, 0, 0, 0, false, false, true, true
                 );
                 assertNull(geometry.resolveEased(null));
-                assertNull(geometry.resolveEased(new HashMap<>()));
-                assertNull(geometry.resolveEased(railData("classic")));
-                assertNull(geometry.resolveEased(railData("比例抛物线")));
+                assertNull(geometry.resolveEased(EasementShape.fromKey("classic")));
+                assertNull(geometry.resolveEased(EasementShape.fromKey("比例抛物线")));
         }
 
         /**
@@ -119,7 +129,7 @@ class ClassicRailGeometryTest {
                 final ClassicRailGeometry geometry = new ClassicRailGeometry(
                                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, true, true
                 );
-                assertNull(geometry.resolveEased(railData("cubic_parabola")));
+                assertNull(geometry.resolveEased(EasementShape.CUBIC_PARABOLA));
         }
 
         /**
@@ -142,7 +152,7 @@ class ClassicRailGeometryTest {
                 );
 
                 assertEquals(9 * Math.sqrt(2), geometry.length(), 1E-9);
-                final EasedRailPath path = geometry.resolveEased(railData("half_wave_sine"));
+                final EasedRailPath path = geometry.resolveEased(EasementShape.HALF_WAVE_SINE);
                 assertNotNull(path);
                 assertEquals(xStart + 0.5, path.x[0], NODE_EPSILON);
                 assertEquals(zStart + 0.5, path.z[0], NODE_EPSILON);

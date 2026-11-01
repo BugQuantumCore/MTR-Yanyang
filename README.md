@@ -8,13 +8,21 @@ MTR 3.x 架构（参考实现：[Yomis-Minecraft-Transit-Railway](https://github
 | | |
 |---|---|
 | 模组 ID | `yanyang_easement` |
-| 目标游戏 | Minecraft 1.20.1（Fabric） |
-| 目标模组 | YMTR（MTR 3.x，`mtr`）3.6.x；其他 3.x 小版本预计兼容¹ |
+| 目标游戏 | Minecraft 1.20 / 1.20.1（Fabric） |
+| 目标模组 | YMTR（MTR 3.x，`mtr`）**3.4.4 ~ latest（3.6.3）**（Modrinth 全版本¹） |
 | 注入方式 | SpongePowered Mixin（不改 YMTR 任何代码 / 存档格式） |
+| 持续构建 | GitHub Actions（推送即构建，产物见 workflow artifacts） |
 | 许可 | MIT（算法移植自 MIT 许可的 TSC 代码） |
 
-¹ `Rail` 的经典几何字段与查询方法自 MTR 3.0 起保持稳定；1.19.2 版 YMTR 使用同一份
-common 源码，理论上同样可用但未测试。
+¹ 版本能力矩阵（按 YMTR 1.20.1 线）：
+
+| YMTR 版本 | 线型存储 | 客户端同步 | 轨道数据编辑器可见 |
+|---|---|---|---|
+| 3.4.4 ~ 3.6.1.2 | 轨道实例印记（存档 messagepack 搭载） | 本补丁自定义 S2C 包 | 否（YMTR 尚无该功能） |
+| 3.6.2.2+ | YMTR 原生 `railData` 键值对 | YMTR 原生同步 | 是（键 `rail_shape`） |
+
+两种路径写入的数据键值完全一致，能力切换由运行时版本探测自动完成（见
+[`YanyangCompat`](src/main/java/com/bugquantumcore/yanyang/easement/YanyangCompat.java)）。
 
 ---
 
@@ -41,7 +49,7 @@ MTR 3.x 原版把一条轨道的水平几何解成「直线 + 圆弧」至多两
 
 ## 在游戏中使用
 
-### 1. 缓和曲线工具（推荐）
+### 缓和曲线工具（全部支持版本）
 
 1. `/give @s yanyang_easement:easement_shape_tool`（或在创造模式物品栏 MTR 核心页中找到「缓和曲线工具」）。
 2. **右键轨道节点**：循环切换该节点上所有连接的线型 —— 经典 → 三次抛物线 → 半波正弦 → 经典……
@@ -49,7 +57,7 @@ MTR 3.x 原版把一条轨道的水平几何解成「直线 + 圆弧」至多两
 3. **潜行右键**：反向循环。
 4. 在**车辆段重新生成路径**后，列车即沿新线型运行。
 
-### 2. 轨道数据编辑器（YMTR 自带）
+### 轨道数据编辑器（仅 YMTR 3.6.2.2+）
 
 手持 YMTR 的「轨道数据编辑器」右键轨道节点，为某条轨道添加：
 
@@ -59,12 +67,19 @@ MTR 3.x 原版把一条轨道的水平几何解成「直线 + 圆弧」至多两
 
 保存即可。删除该键（或填其他值）即回到经典线型。同一节点连接多条轨道时可用 ◀ ▶
 按钮逐条编辑 —— 两种方式写入的数据格式完全一致，工具是「批量切换」，编辑器是「单条精调」。
+（YMTR 3.4.4 ~ 3.6.1.2 尚无轨道附加数据机制，请使用工具。）
 
 ### 数据格式与同步
 
-线型标记存放在 YMTR 原生的**轨道附加数据**（`railData`）中，随存档持久化、随网络同步、
-与 ANTE（MTRSteamLoco）的 `customConfigs` 自动镜像（可被 ANTE JS 读取）。因此本补丁
-**不改动 MTR 的任何序列化格式**，卸载补丁后轨道仅回退为经典线型，数据无损。
+- **YMTR 3.6.2.2+**：线型标记存放在 YMTR 原生的**轨道附加数据**（`railData`）中，随存档持久化、
+  随网络同步、与 ANTE（MTRSteamLoco）的 `customConfigs` 自动镜像（可被 ANTE JS 读取）。
+- **YMTR 3.4.4 ~ 3.6.1.2**：线型标记以轨道实例「印记」形式搭载进 YMTR 的存档
+  messagepack（键 `yanyang_shape`，与 YMTR 自身搭载 `railData` 的通道一致），客户端经
+  本补丁的 `yanyang_easement:shape_sync` 包同步（加入 / 切换维度全量推送，轨道广播时
+  携带真值），同样镜像到 ANTE `customConfigs`。
+
+两种路径都**不改动 MTR 的序列化格式**（legacy 印记是普通键值对，卸载补丁后 YMTR 按
+未知键忽略），卸载补丁后轨道仅回退为经典线型，数据无损。
 
 ## 实现原理
 
@@ -74,13 +89,14 @@ MTR 4.1.x（TSC）在构造 `RailMath` 时按 `Rail.Shape` 枚举求解缓和路
 
 ```text
 Rail (mtr.data.Rail)
- ├── railData 含 rail_shape=cubic_parabola|half_wave_sine ?
- │     └── 是：从经典几何字段复原两节点坐标与 22.5° 网格方向角
- │            → EasedRailPath.build(...) 求解并缓存采样表
- │            → getPosition / getLength / render / goodRadius 全部改查采样表
- │            → 求解失败（不可表示几何）→ 自动回退经典分段
- │     └── 否：完全走原版逻辑（零开销：一次 Map 查询）
- └── setRailData（编辑器保存 / 工具切换）→ 缓存失效，下次查询重建
+ ├── 线型解析（按 YMTR 能力自动选择）
+ │     ├─ 3.6.2.2+：railData 含 rail_shape=cubic_parabola|half_wave_sine ?
+ │     └─ 3.4.4+ ：轨道实例印记（存档搭载）→ 客户端镜像（维度 × 连接键）
+ ├── 有线型：从经典几何字段复原两节点坐标与 22.5° 网格方向角
+ │           → EasedRailPath.build(...) 求解并缓存采样表
+ │           → getPosition / getLength / render / goodRadius 全部改查采样表
+ │           → 求解失败（不可表示几何）→ 自动回退经典分段
+ └── 无线型：完全走原版逻辑（零开销：一次缓存查询）
 ```
 
 - **竖曲线（Y 剖面）** 沿用 YMTR 原版 `getPositionY`（含缆车垂度），只是定义域换成
@@ -93,15 +109,23 @@ Rail (mtr.data.Rail)
   首次几何查询，此时字段尚未赋值 —— 因此缓和路径的方向角不读字段，而是按
   `getRailAngle` 的原逻辑从经典几何重新推导并量化到 22.5° 网格；缓和路径端点方向角
   由构造精确等于请求值，两种触发顺序结果一致，`isValid()` 校验始终成立。
+- **失效纪元**：所有线型数据变化（印记写入、镜像更新、`setRailData`）递增全局纪元，
+  各轨道缓存的缓和路径按纪元惰性重建 —— 一次 volatile 读的开销。
 - **注入目标全部按方法名匹配**（`remap = false`、不写描述符）：目标方法均为模组方法
   （生产环境不参与混淆重映射），而描述符中的 Minecraft 类型在开发/生产环境分别使用
   命名/中间映射名 —— 按名匹配可同时适配两种环境。
+- **版本相关的 Mixin 由 `YanyangMixinPlugin` 按能力加载**：`RailDataCarrierMixin`
+  仅在 3.6.2.2+ 应用（`railData` 字段 / `setRailData`），`RailPersistenceMixin` 与
+  `PacketTrainDataGuiServerMixin` 仅在 3.4.4 ~ 3.6.1.2 应用（存档搭载 / 真值广播）；
+  核心注入（`RailMixin` / `RailwayDataAccessor`）的注入目标在全部支持版本上稳定，
+  无条件应用。能力判定解析 `mtr` 模组版本号（`1.20.1-3.6.3` → `3.6.3`），不反射加载
+  `Rail` 类（避免 Mixin 应用前触发类定义）。
 
 与上游 tsc-1.21.x 的差异汇总：
 
 | | tsc-1.21.x（TSC / MTR 4.1.x） | 本补丁（MTR 3.x） |
 |---|---|---|
-| 线型载体 | `Rail.Shape` 枚举新增两个值 | `railData` 键值对（`rail_shape`） |
+| 线型载体 | `Rail.Shape` 枚举新增两个值 | `railData` 键值对（3.6.2.2+）/ 实例印记 + 存档搭载（legacy） |
 | 生效时机 | 构造 `RailMath` 时求解 | `Rail` 几何查询时惰性求解（Mixin） |
 | 端点/方向角来源 | 构造入参 `Position`/`Angle` | 由经典求解器几何复原（含 22.5° 量化） |
 | 竖曲线 | `RailMath.getPositionY`（形状感知） | YMTR 原版 `getPositionY`（阴影调用） |
@@ -110,17 +134,25 @@ Rail (mtr.data.Rail)
 
 ## 构建
 
-依赖：JDK 17；另需将 YMTR 的**开发环境 jar**（Mojang 命名）放入 `libs/`
-（获取方式见 [`libs/README.md`](libs/README.md)）。
+依赖：JDK 17。YMTR 编译依赖直接从 **Modrinth Maven** 解析（无需手动准备 `libs/`）：
 
 ```bash
-./gradlew build        # 产物位于 build/libs/
-./gradlew test         # 运行 EasedRailPath 纯数学单元测试
+gradle build        # 产物位于 build/libs/
+gradle test         # 运行 EasedRailPath 纯数学单元测试
 ```
+
+YMTR 版本锚定在 `gradle.properties` 的 `ymtr_version_id`（当前 `tW2FT3tx` =
+fabric+1.20.1-3.6.3，见 [Modrinth 版本页](https://modrinth.com/mod/ymtr/version/tW2FT3tx)）；
+更新 YMTR 版本只需换版本 ID。
 
 > 网络受限环境可在 `settings.gradle` 的 `pluginManagement` 中加入
 > `https://bmclapi2.bangbang93.com/maven`（Fabric Maven 镜像），并视需要将
 > `gradle/wrapper/gradle-wrapper.properties` 中的分发地址换为镜像。
+
+## 持续集成
+
+`.github/workflows/build.yml`：推送到 `3.x` 分支（或 PR / 手动触发）即自动构建 +
+跑单元测试，产物上传为 workflow artifacts。**不创建 release，不上传 Modrinth。**
 
 ## 目录结构
 
@@ -128,15 +160,28 @@ Rail (mtr.data.Rail)
 src/main/java/com/bugquantumcore/yanyang/easement/
 ├── EasedRailPath.java        # 算法移植（tsc-1.21.x org.mtr.core.data.EasedRailPath，纯数学）
 ├── ClassicRailGeometry.java  # 经典几何快照 → 复原节点/方向角 → 求解缓和路径（纯数学）
-├── EasementShape.java        # 线型枚举与 railData 键值解析
-├── EasementShapeApplier.java # 服务端：写入 railData 并按 YMTR 流程广播同步
-├── YanyangEasementMod.java   # Fabric 入口：注册物品
+├── EasementShape.java        # 线型枚举与键值解析（railData / 印记共用）
+├── EasementShapeApplier.java # 服务端：按能力选择载体写入线型并同步
+├── YanyangCompat.java        # YMTR 版本能力探测（railData 有无 → legacy/capable 路径）
+├── ShapeStore.java           # legacy 客户端镜像 + 自定义 S2C 同步 + 失效纪元
+├── RailDuck.java             # 轨道印记访问接口（鸭子类型，RailMixin 实现）
+├── RailDataDuck.java         # 轨道附加数据访问接口（鸭子类型，RailDataCarrierMixin 实现）
+├── RailPair.java             # 连接键（节点对规范排序，与 BlockPos.asLong 打包一致）
+├── AnteMirror.java           # ANTE customConfigs 镜像（自有反射，兼容全部版本）
+├── YanyangEasementMod.java   # Fabric 入口：注册物品 + 玩家加入/切维度同步
 ├── item/ItemEasementShapeTool.java   # 缓和曲线工具（右键节点循环切换线型）
-└── mixin/RailMixin.java      # 核心注入：getPosition/getLength/render/goodRadius/setRailData
+├── client/YanyangEasementModClient.java  # 客户端入口：S2C 接收器 + 维度供给
+└── mixin/
+    ├── RailMixin.java              # 核心注入：getPosition/getLength/render/goodRadius（全版本）
+    ├── RailDataCarrierMixin.java   # railData 载体（仅 3.6.2.2+）
+    ├── RailPersistenceMixin.java   # 印记存档搭载（仅 3.4.4 ~ 3.6.1.2）
+    ├── PacketTrainDataGuiServerMixin.java  # 轨道广播真值同步（仅 3.4.4 ~ 3.6.1.2）
+    ├── RailwayDataAccessor.java    # rails 私有映射访问器（全版本同名同构）
+    └── YanyangMixinPlugin.java     # 按 YMTR 能力选择应用哪些 Mixin
 
 src/test/java/com/bugquantumcore/yanyang/easement/
 ├── EasedRailPathTest.java        # 算法单元测试（端点锚定、零端点曲率、S 弯、回退……）
-└── ClassicRailGeometryTest.java  # 复原链路端到端测试（直线/斜线/四分之一圆弧）
+└── ClassicRailGeometryTest.java  # 复原链路端到端测试（直线/斜线/四分之一圆弧/键解析）
 ```
 
 ## 注意事项
@@ -147,6 +192,7 @@ src/test/java/com/bugquantumcore/yanyang/easement/
 - 极小半径的急弯在两族缓和曲线下可能不可表示，此时自动回退经典线型（动作栏不会
   报错，轨道表现为经典形状）。
 - 缓和曲线不改变轨道的连接关系、信号闭塞与限速 —— 它只是另一种「铺轨的几何形状」。
+- 专用服务端同样可用（客户端镜像路径自动空转）。
 
 ## 致谢
 

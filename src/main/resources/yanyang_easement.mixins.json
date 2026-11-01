@@ -3,9 +3,14 @@
 	"package": "com.bugquantumcore.yanyang.easement.mixin",
 	"compatibilityLevel": "JAVA_17",
 	"minVersion": "0.8",
+	"plugin": "com.bugquantumcore.yanyang.easement.mixin.YanyangMixinPlugin",
 	"refmap": "yanyang_easement.refmap.json",
 	"mixins": [
-		"RailMixin"
+		"RailMixin",
+		"RailDataCarrierMixin",
+		"RailPersistenceMixin",
+		"RailwayDataAccessor",
+		"PacketTrainDataGuiServerMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

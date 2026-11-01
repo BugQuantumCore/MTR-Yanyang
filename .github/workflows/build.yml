@@ -1,0 +1,39 @@
+name: Build (3.x)
+
+on:
+  push:
+    branches: ["3.x"]
+  pull_request:
+    branches: ["3.x"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.5"
+
+      - name: Build with Gradle
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Run unit tests
+        run: gradle test --no-daemon
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yanyang-easement-mtr3x
+          path: build/libs/*.jar
+          if-no-files-found: error

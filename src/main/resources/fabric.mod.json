@@ -1,31 +1,34 @@
 {
-        "schemaVersion": 1,
-        "id": "yanyang_easement",
-        "version": "${version}",
-        "name": "Yanyang Easement Rails (MTR 3.x)",
-        "description": "Adds the cubic parabola and half-wave sine easement (transition) curve rail path algorithms, ported from MTR-Yanyang's tsc-1.21.x branch (Transport Simulation Core), to Minecraft Transit Railway 3.x as a runtime patch. 为 MTR 3.x 添加三次抛物线与半波正弦两种缓和曲线轨道路径算法。",
-        "authors": [
-                "Yanyang Technical Group (BugQuantumCore)"
-        ],
-        "contact": {
-                "sources": "https://github.com/BugQuantumCore/MTR-Yanyang/tree/3.x"
-        },
-        "license": "MIT",
-        "icon": "assets/yanyang_easement/icon.png",
-        "environment": "*",
-        "entrypoints": {
-                "main": [
-                        "com.bugquantumcore.yanyang.easement.YanyangEasementMod"
-                ]
-        },
-        "mixins": [
-                "yanyang_easement.mixins.json"
-        ],
-        "depends": {
-                "fabricloader": ">=0.14.21",
-                "fabric-api": "*",
-                "minecraft": "1.20.1",
-                "java": ">=17",
-                "mtr": "*"
-        }
+	"schemaVersion": 1,
+	"id": "yanyang_easement",
+	"version": "${version}",
+	"name": "Yanyang Easement Rails (MTR 3.x)",
+	"description": "Adds the cubic parabola and half-wave sine easement (transition) curve rail path algorithms, ported from MTR-Yanyang's tsc-1.21.x branch (Transport Simulation Core), to Minecraft Transit Railway 3.x as a runtime patch. Supports YMTR 1.20.1-3.4.4 and later. 为 MTR 3.x 添加三次抛物线与半波正弦两种缓和曲线轨道路径算法，支持 YMTR 3.4.4 及以上版本。",
+	"authors": [
+		"Yanyang Technical Group (BugQuantumCore)"
+	],
+	"contact": {
+		"sources": "https://github.com/BugQuantumCore/MTR-Yanyang/tree/3.x"
+	},
+	"license": "MIT",
+	"icon": "assets/yanyang_easement/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.bugquantumcore.yanyang.easement.YanyangEasementMod"
+		],
+		"client": [
+			"com.bugquantumcore.yanyang.easement.client.YanyangEasementModClient"
+		]
+	},
+	"mixins": [
+		"yanyang_easement.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.14.21",
+		"fabric-api": "*",
+		"minecraft": ">=1.20 <=1.20.1",
+		"java": ">=17",
+		"mtr": ">=1.20.1-3.4.4"
+	}
 }
