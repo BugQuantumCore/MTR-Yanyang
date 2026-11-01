@@ -1,6 +1,6 @@
 {
-  "run_id": "41301898027",
-  "tag": "4.1.0-beta-2.yanyang.14",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.14 (1.21.1 & 1.21.4, Fabric & NeoForge) — the real half-size passenger fix (vanilla baby-scale model flag, bytecode-root-caused); full train collision boxes that knock track-level players flying",
+  "run_id": "41315541243",
+  "tag": "4.1.0-beta-2.yanyang.15",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.15 (1.21.1 & 1.21.4, Fabric & NeoForge) — collision boxes revived on Lithium packs (Entity#move depenetration, bytecode root-caused); phone pose rebuilt (vertical from every angle)",
   "notes_file": "notes.md"
 }
