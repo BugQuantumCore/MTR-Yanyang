@@ -311,7 +311,10 @@ public final class PassengerModelRenderer {
 	 * drives the {@link PlayerModel} directly, so the constructor default survived every
 	 * previous size "fix" (age-variation removal included &mdash; the removed per-passenger
 	 * scale multiplied <em>on top of</em> the hidden 0.5 baby scale). Setting the flag once
-	 * at bake time is permanent: nothing in this renderer writes it afterwards.</p>
+	 * at bake time is permanent: nothing in this renderer writes it afterwards. (1.21.4+
+	 * removed {@code AgeableListModel} and the {@code young} flag entirely — baby scale moved
+	 * into the render state — so the assignment is version-gated and the model is full size
+	 * by default there.)</p>
 	 *
 	 * @param layerLocation the model layer to bake ({@link ModelLayers#PLAYER} or
 	 *                      {@link ModelLayers#PLAYER_SLIM})
@@ -321,7 +324,12 @@ public final class PassengerModelRenderer {
 	 */
 	private static PlayerModel bakeAdultPlayerModel(ModelLayerLocation layerLocation, boolean slim) {
 		final PlayerModel model = new PlayerModel(Minecraft.getInstance().getEntityModels().bakeLayer(layerLocation), slim);
+//? if < 1.21.4 {
+		// 1.21.1-1.21.3 only: the model-side baby flag (see the javadoc above). 1.21.4 removed
+		// AgeableListModel and the young flag with it — baby scale lives in the render state
+		// there, so a directly-driven model is full size by default.
 		model.young = false;
+//?}
 		return model;
 	}
 

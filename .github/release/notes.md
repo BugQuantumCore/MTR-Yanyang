@@ -1,27 +1,24 @@
-MTR-Yanyang 4.1.0-beta-2.yanyang.13 — drop-in upgrade for 4.1.0-beta-2.yanyang.12 (1.21.1 & 1.21.4, Fabric & NeoForge).
+MTR-Yanyang 4.1.0-beta-2.yanyang.14 — drop-in upgrade for 4.1.0-beta-2.yanyang.13 (1.21.1 & 1.21.4, Fabric & NeoForge).
 
-The AI-passenger upgrade: solid collision boxes, ground-following walk animation, and exact `minecraft:player` size for every passenger.
+The half-size passenger mystery, finally solved for real — and trains that can hit you.
 
-> **Re-release note**: the first yanyang.13 jars crashed every game launch (`@Mixin target type mismatch: net.minecraft.class_1924 is an interface`) — the collision-box mixin was a class mixin targeting an interface. This build re-releases the same tag with the mixin correctly declared as an interface. If your `4.1.0-beta-2.yanyang.13` crashes on startup, re-download; the changelog has the details.
+## AI passengers: the real half-size root cause 乘客大小的真正原因
 
-## Collision boxes — you can no longer walk through the crowd 为AI乘客添加碰撞箱
+Three releases tried to fix "所有AI乘客等比缩小到玩家的一半" — child-scale ranges raised, then removed entirely, then waiters repositioned — and the report kept coming back, because none of those were the cause. This release root-caused it by disassembling the actual 1.21.1 client bytecode:
 
-AI passengers are purely rendered (analytical positions, no entities behind them), so until now the whole crowd was walk-through ghosts. Every on-foot passenger now carries a solid, player-sized collision box (`0.6 x 1.8`) that tracks their rendered position every frame: `EntityGetter#getEntityCollisions` — the same vanilla funnel that makes boats and shulkers impassable — is extended with the boxes a client-side registry publishes.
+**Every freshly baked `PlayerModel` starts with `EntityModel.young = true`.** While that flag is set, `AgeableListModel` (the player model's own superclass) renders in **vanilla baby proportions** — the body at `1 / babyBodyScale = 0.5×`, the head at `0.75×` — a figure whose head top lands at about **1.06 blocks instead of the adult 1.875**: exactly "uniformly shrunk to half a player". Real players never show this because `LivingEntityRenderer.render` resets the flag (`model.young = entity.isBaby()`, always false for players) on every single render — but the yanyang passenger renderer drives the model *directly*, so the constructor default survived every previous fix (the removed age variation was multiplying on top of the hidden 0.5 baby scale, which is why removing it changed nothing).
 
-- Solid, shulker-style: you physically cannot walk through a waiting or walking passenger.
-- The registry filters to the local player's own movement in the matching dimension — mob pathfinding, dedicated servers and cross-dimension queries never see the boxes (empty-set fast path), so there is no server cost and no mob weirdness.
-- On-board riders deliberately register nothing: their boxes would sweep through platforms at train speed.
+The baked wide/slim models now set `young = false` once at bake time. Every AI passenger — platform waiters, walkers, on-board standees — now renders at **exactly the vanilla player scale**, identical to `minecraft:player`.
 
-## Walk animation polish 行走动画优化
+## Full train collision boxes — trains can now knock you flying 为列车添加完整的碰撞箱，使其可以撞飞前方的玩家
 
-- **Ground-following walking legs**: walking legs used to lerp Y in a straight 3D line between the two platform points — walking straight through hills, fences and station walls. They now sample the actual standable surface at the current position every frame (through the shared ground-scan cache, in a window around the two platform heights, clamped to a 2-block band so a dip or bridge doesn't drop or float the walker).
-- **Smoothed steps**: residual half-block ground steps ease per passenger (slopes, not stair pops), and position discontinuities (re-planned legs, geometry fallbacks) blend over 250 ms instead of blinking; genuine teleports still snap instead of superman-sliding.
-- **Gait life**: a tiny shoulder counter-sway (~2.6 degrees) and arm z-sway (~1.7 degrees) on top of the vanilla walk formulas, driven by the limb-swing phase and fully faded out when standing — the standing pose stays byte-identical to vanilla.
+Trains used to be completely intangible: you could stand on the track and an express would pass straight through you. Now every car publishes real, world-space collision boxes into the same vanilla collision funnel that makes boats and shulkers solid — the train body is a physical object you cannot stand inside.
 
-## Exact player size 确保大小正常
-
-The age variation is gone: after two rounds of "passengers are half a player" reports (yanyang.11, and again after yanyang.12's ground fix), the variation itself — 15% of every crowd scaled to 0.55-0.78 plus a ±3% adult height jitter — read as a size bug. Every AI passenger, platform waiter and on-board standee alike, now renders at **exactly the vanilla player scale**: same model, same 1.8-block height, same proportions as `minecraft:player`. If any passenger still looks the wrong size next to you, that would now be a genuine new bug worth a screenshot.
+- **The hit**: a car sweeping into you at ≥ 1.5 blocks/second applies a knockback impulse **along the train's travel direction** plus an upward component — the train visibly clips you and sends you flying. The impulse scales with speed (capped), with an 800 ms cooldown per train, so it reads as one solid hit rather than a machine-gun shove.
+- **Platform safety**: the knockback only fires for players standing **below the car's floor level** — i.e. actually on the track. Standing normally on the platform (level with the train floor) never triggers it.
+- **Boarding still works**: the vehicle you are riding registers no boxes at all (you walk freely inside your own train, exactly as before), and cars stopped at a platform with open doors carve the open doorway corridors out of their boxes, so stepping through an open door to board is never blocked. The knockback check is skipped entirely while you ride.
+- **No server impact**: the boxes live in the same client-side registry family as the passenger boxes — dedicated servers, mob pathfinding and cross-dimension queries see an empty set.
 
 ## Install
 
-Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.13+<version>-<loader>.jar`. No config changes; collision boxes are always on for on-foot AI passengers.
+Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.14+<version>-<loader>.jar`. No config changes; both features are always on.

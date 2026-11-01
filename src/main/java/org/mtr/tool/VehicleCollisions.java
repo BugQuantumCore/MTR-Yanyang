@@ -75,7 +75,7 @@ public final class VehicleCollisions {
         private static final double KNOCKBACK_UP = 0.65;
 
         private static final Long2ObjectLinkedOpenHashMap<Entry> ENTRIES = new Long2ObjectLinkedOpenHashMap<>();
-        private static final Long2LongLinkedOpenHashMap KNOCKBACK_COOLDOWNS = new Long2LongLinkedOpenHashMap<>();
+        private static final Long2LongLinkedOpenHashMap KNOCKBACK_COOLDOWNS = new Long2LongLinkedOpenHashMap();
         private static volatile List<Shape> SNAPSHOT = List.of();
 
         private VehicleCollisions() {
@@ -247,7 +247,7 @@ public final class VehicleCollisions {
                         }
                         KNOCKBACK_COOLDOWNS.putAndMoveToFirst(shape.vehicleId, now);
                         while (KNOCKBACK_COOLDOWNS.size() > LIMIT) {
-                                KNOCKBACK_COOLDOWNS.removeLast();
+                                KNOCKBACK_COOLDOWNS.removeLastLong();
                         }
 
                         // The impulse pushes the player along the train's travel direction (the front
