@@ -1,6 +1,6 @@
 {
-  "run_id": "41224245515",
-  "tag": "4.1.0-beta-2.yanyang.12",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.12 (1.21.1 & 1.21.4, Fabric & NeoForge) — gangway glow fixed inside and out; half-size passengers were half-buried waiters, now standing on the platform; phone gaze lands on the screen",
+  "run_id": "41273646825",
+  "tag": "4.1.0-beta-2.yanyang.13",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.13 (1.21.1 & 1.21.4, Fabric & NeoForge) — AI passengers get solid player-sized collision boxes; walking legs follow the ground instead of gliding through terrain; every passenger renders at exactly minecraft:player size",
   "notes_file": "notes.md"
 }

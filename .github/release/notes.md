@@ -1,26 +1,25 @@
-MTR-Yanyang 4.1.0-beta-2.yanyang.12 — drop-in upgrade for 4.1.0-beta-2.yanyang.11 (1.21.1 & 1.21.4, Fabric & NeoForge).
+MTR-Yanyang 4.1.0-beta-2.yanyang.13 — drop-in upgrade for 4.1.0-beta-2.yanyang.12 (1.21.1 & 1.21.4, Fabric & NeoForge).
 
-Three fixes from yanyang.11 field reports: the gangway connections glowing abnormally inside and out, all waiting passengers apparently shrunk to half a player, and the phone-holding pose looking wrong. All three are Beryl/entity-pipeline lighting and placement issues — plain GL and plain VulkanMod render paths are byte-for-byte unchanged.
+The AI-passenger upgrade: solid collision boxes, ground-following walk animation, and exact `minecraft:player` size for every passenger.
 
-## Gangway connections glowing inside and out 车厢连接处内外异常发光
+## Collision boxes — you can no longer walk through the crowd 为AI乘客添加碰撞箱
 
-The connection quads draw through the entity pipeline, so under Beryl their packed light feeds the same three shader terms as all entity geometry: squared-sky ambient, the sun gate (full GGX direct sun, opens above sky 11.3), and the squared warm block emission. Two different bugs, one per side:
+AI passengers are purely rendered (analytical positions, no entities behind them), so until now the whole crowd was walk-through ghosts. Every on-foot passenger now carries a solid, player-sized collision box (`0.6 x 1.8`) that tracks their rendered position every frame: `Level#getEntityCollisions` — the same vanilla funnel that makes boats and shulkers impassable — is extended with the boxes a client-side registry publishes.
 
-- The **outer bellows** used the raw world light — MTR platforms keep block light 15, so `~1.76x` warm emission lit them like a lamp box.
-- The **inner walkway** drew flat `pack(15,15)` on lit cars — full sky opened the sun gate AND the full emission blew light gangway textures past Beryl's `r+g+b >= 2.0` bloom threshold into the overexposed milky doorway; in daylight both sides additionally took the full sun term.
+- Solid, shulker-style: you physically cannot walk through a waiting or walking passenger.
+- The registry filters to the local player's own movement in the matching dimension — mob pathfinding, dedicated servers and cross-dimension queries never see the boxes (empty-set fast path), so there is no server cost and no mob weirdness.
+- On-board riders deliberately register nothing: their boxes would sweep through platforms at train speed.
 
-Fix: the outer side now goes through `capBlockLightForBeryl` (block <= 4, sky truthful — the same lamp-lit look as the rest of the exterior); the lit inner takes `overlayLightForBeryl(DEFAULT_LIGHT)` (block 8, sky 11 — clearly lit, sun gate mathematically closed, comfortably below bloom); unlit interiors keep the capped world light.
+## Walk animation polish 行走动画优化
 
-## "Half-size" passengers were half-buried in the track bed 乘客等比缩小一半的真相
+- **Ground-following walking legs**: walking legs used to lerp Y in a straight 3D line between the two platform points — walking straight through hills, fences and station walls. They now sample the actual standable surface at the current position every frame (through the shared ground-scan cache, in a window around the two platform heights, clamped to a 2-block band so a dip or bridge doesn't drop or float the walker).
+- **Smoothed steps**: residual half-block ground steps ease per passenger (slopes, not stair pops), and position discontinuities (re-planned legs, geometry fallbacks) blend over 250 ms instead of blinking; genuine teleports still snap instead of superman-sliding.
+- **Gait life**: a tiny shoulder counter-sway (~2.6 degrees) and arm z-sway (~1.7 degrees) on top of the vanilla walk formulas, driven by the limb-swing phase and fully faded out when standing — the standing pose stays byte-identical to vanilla.
 
-Waiting passengers were placed exactly on the rail path, in the middle of the track. The rail Y is the *track block layer*, not the platform floor — wherever the platform surface sits above the track plane (the standard MTR station layout) the entire waiting crowd rendered buried to chest depth, and a crowd of head-and-shoulders sticking out of the floor reads, at any normal viewing distance, exactly like "everyone shrunk to half size".
+## Exact player size 确保大小正常
 
-Waiters now stand beside the track on the actual standable surface: a deterministic along-track sample gives the rail heading, both sides are probed (shared ground-scan cache, offsets 1.5/2.75, window railY..railY+2.5, highest valid surface wins = the platform side), and the passenger faces the track while waiting. Degenerate geometry falls back to the old position. On-board riders were never affected. The AI child scale range also rises 0.55–0.65 to **0.68–0.78** — children at almost exactly half player height had mixed into the "everyone is half size" report.
-
-## Phone pose: the gaze now lands on the screen 手机姿势修复
-
-The old pose's gaze missed the phone by ~37 degrees (arms -50, phone near-vertical -12 lean at belly height, head bowed 40 — watchers appeared to stare straight through the phone at the ground beyond). Geometry recomputed numerically against the ModelPart transform chain: arms **-60** with mirrored ±18 inward yaw so the hands (±2.3, 7.0, -8.2) wrap the phone's sides, phone pivot (0, 6.8, -7.0) at upper-chest height with a -28 lean turning the screen up to the face, head bowed 52, putting the gaze axis on the screen. The cuboid keeps its 3x5x0.5 proportions and hands-convergence placement.
+The age variation is gone: after two rounds of "passengers are half a player" reports (yanyang.11, and again after yanyang.12's ground fix), the variation itself — 15% of every crowd scaled to 0.55-0.78 plus a ±3% adult height jitter — read as a size bug. Every AI passenger, platform waiter and on-board standee alike, now renders at **exactly the vanilla player scale**: same model, same 1.8-block height, same proportions as `minecraft:player`. If any passenger still looks the wrong size next to you, that would now be a genuine new bug worth a screenshot.
 
 ## Install
 
-Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.12+<version>-<loader>.jar`. Beryl and plain-VulkanMod sessions pick up the new render paths automatically; no config changes.
+Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.13+<version>-<loader>.jar`. No config changes; collision boxes are always on for on-foot AI passengers.
