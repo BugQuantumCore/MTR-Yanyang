@@ -21,7 +21,8 @@ import mtr.CreativeModeTabs;
  * <p>将 MTR-Yanyang {@code tsc-1.21.x} 分支为 MTR 4.1.x 开发的两种轨道路径算法
  * —— 三次抛物线缓和曲线与半波正弦缓和曲线 —— 以运行时补丁（Mixin）的形式移植到
  * MTR 3.x（YMTR 3.4.4 ~ latest）。核心算法见 {@link EasedRailPath}，注入点见
- * {@code mixin.RailMixin}，版本兼容层见 {@link YanyangCompat}。</p>
+ * {@code mixin.RailMixin}，版本兼容层见 {@link YanyangCompat}，存档自愈见
+ * {@link SaveFileSweeper}。</p>
  */
 public class YanyangEasementMod implements ModInitializer {
 
@@ -38,6 +39,10 @@ public class YanyangEasementMod implements ModInitializer {
                 final ResourceLocation coreTabId = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(coreTab);
                 final ResourceKey<CreativeModeTab> coreTabKey = ResourceKey.create(Registries.CREATIVE_MODE_TAB, coreTabId);
                 ItemGroupEvents.modifyEntriesEvent(coreTabKey).register(entries -> entries.accept(EASEMENT_SHAPE_TOOL));
+
+                // 存档自愈：在 RailwayData 首次加载前校验 / 修复 / 隔离损坏的 msgpack 数据文件
+                // （防止单个截断文件把整份 mtr_train_data 替换成空白状态）。
+                SaveFileSweeper.register();
 
                 // legacy YMTR 的客户端线型同步：玩家加入与切换维度后全量推送当前维度的印记。
                 ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> ShapeStore.syncPlayerShapes(handler.getPlayer()));

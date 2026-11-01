@@ -81,6 +81,28 @@ MTR 3.x 原版把一条轨道的水平几何解成「直线 + 圆弧」至多两
 两种路径都**不改动 MTR 的序列化格式**（legacy 印记是普通键值对，卸载补丁后 YMTR 按
 未知键忽略），卸载补丁后轨道仅回退为经典线型，数据无损。
 
+### 存档自愈（v1.0.1+）
+
+YMTR 的存档模块有两个叠加的脆弱点（对 3.5.6 反编译核实）：
+`writeMessagePackToFile` 把打包器直接包在文件输出流上（中途异常 → 磁盘上留下截断的
+半截文件），而加载器逐文件的 try-catch 从 `unpackMapHeader()` **之后**才开始 —— 顶映射头
+读不出来时异常直接逃逸，原版 `PersistentStateManager` 捕获后**整份 `mtr_train_data`
+被替换成空白状态**（游戏内表现为 MTR 元素全部消失）。v1.0.0 的
+`messagePackLength` 注入缺陷（缺 `cancellable = true`，已修复）恰好同时踩中这两点，
+截断了部分 `rails/` 存档文件。
+
+本补丁 v1.0.1 起，在每次服务器启动、`RailwayData` 首次加载**之前**自动扫描
+`<world>/mtr/<维度>/` 下的全部 msgpack 数据文件：
+
+- **损坏的 `rails/` 文件**：按「最后一条完整连接」截断重建有效文件（截断几乎总发生在
+  连接数组内部，每条连接是独立映射，前面的都能救回），原始字节先备份到
+  `corrupt-backup/`，再经临时文件原子替换；
+- **其他损坏文件**：整体移入 `corrupt-backup/`（YMTR 永不扫描该目录）；
+- 被救不回的连接需要在游戏里重新连接对应节点；其余全部数据正常加载。
+
+自愈动作全部记录在日志（`YanyangEasement` 前缀）。若日志出现
+「Could not handle corrupt file」，请按提示手动删除 / 从备份恢复该文件。
+
 ## 实现原理
 
 MTR 4.1.x（TSC）在构造 `RailMath` 时按 `Rail.Shape` 枚举求解缓和路径；MTR 3.x 的
@@ -173,6 +195,7 @@ src/main/java/com/bugquantumcore/yanyang/easement/
 ├── EasementShapeApplier.java # 服务端：按能力选择载体写入线型并同步
 ├── YanyangCompat.java        # YMTR 版本能力探测（railData 有无 → legacy/capable 路径）
 ├── ShapeStore.java           # legacy 客户端镜像 + 自定义 S2C 同步 + 失效纪元
+├── SaveFileSweeper.java      # 存档自愈：加载前校验 / 修复 / 隔离损坏的 msgpack 文件
 ├── RailDuck.java             # 轨道印记访问接口（鸭子类型，RailMixin 实现）
 ├── RailDataDuck.java         # 轨道附加数据访问接口（鸭子类型，RailDataCarrierMixin 实现）
 ├── RailPair.java             # 连接键（节点对规范排序，与 BlockPos.asLong 打包一致）
