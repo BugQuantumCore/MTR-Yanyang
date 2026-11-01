@@ -325,11 +325,11 @@ public final class PassengerModelRenderer {
 	private static PlayerModel bakeAdultPlayerModel(ModelLayerLocation layerLocation, boolean slim) {
 		final PlayerModel model = new PlayerModel(Minecraft.getInstance().getEntityModels().bakeLayer(layerLocation), slim);
 //? if < 1.21.4 {
-		// 1.21.1-1.21.3 only: the model-side baby flag (see the javadoc above). 1.21.4 removed
-		// AgeableListModel and the young flag with it — baby scale lives in the render state
-		// there, so a directly-driven model is full size by default.
+		/*// 1.21.1-1.21.3 only: reset the model-side baby flag (see the javadoc above). 1.21.4
+		// removed AgeableListModel and the young flag with it — baby scale lives in the render
+		// state there, so a directly-driven model is full size by default.
 		model.young = false;
-//?}
+*///? }
 		return model;
 	}
 
