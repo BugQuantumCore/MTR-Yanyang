@@ -394,29 +394,34 @@ public class RenderPassengers {
 		final Minecraft minecraftClient = Minecraft.getInstance();
 		final ClientLevel clientWorld = minecraftClient.level;
 
+		// The scheduled lambda below captures the position, so it must be effectively final —
+		// the smoothed position lives in its own local.
+		final PositionAndYaw smoothedPositionAndYaw;
 		if (clientWorld != null) {
 			// Anti-teleport smoothing of the rendered position (leg re-plans, degenerate
 			// fallbacks, ground-step easing); also the single choke point every on-foot
 			// passenger passes through each frame, so the collision boxes track exactly
 			// what the player sees.
-			positionAndYaw = smoothPosition(passenger.getId(), positionAndYaw);
+			smoothedPositionAndYaw = smoothPosition(passenger.getId(), positionAndYaw);
 
-			if (CullingHelper.getDistanceFromCamera(positionAndYaw.x, positionAndYaw.y, positionAndYaw.z) <= COLLISION_RANGE) {
-				PassengerCollisions.update(passenger.getId(), clientWorld.dimension(), positionAndYaw.x, positionAndYaw.y, positionAndYaw.z);
+			if (CullingHelper.getDistanceFromCamera(smoothedPositionAndYaw.x, smoothedPositionAndYaw.y, smoothedPositionAndYaw.z) <= COLLISION_RANGE) {
+				PassengerCollisions.update(passenger.getId(), clientWorld.dimension(), smoothedPositionAndYaw.x, smoothedPositionAndYaw.y, smoothedPositionAndYaw.z);
 			}
+		} else {
+			smoothedPositionAndYaw = positionAndYaw;
 		}
 
-		if (clientWorld != null && CullingHelper.getDistanceFromCamera(positionAndYaw.x, positionAndYaw.y, positionAndYaw.z) <= minecraftClient.levelRenderer.getLastViewDistance() * 8) {
+		if (clientWorld != null && CullingHelper.getDistanceFromCamera(smoothedPositionAndYaw.x, smoothedPositionAndYaw.y, smoothedPositionAndYaw.z) <= minecraftClient.levelRenderer.getLastViewDistance() * 8) {
 			MainRenderer.scheduleRender(QueuedRenderLayer.EXTERIOR, (matrixStack, vertexConsumer, offset) -> {
 				matrixStack.pushPose();
-				matrixStack.translate(positionAndYaw.x - offset.x, positionAndYaw.y - offset.y, positionAndYaw.z - offset.z);
-				Drawing.rotateYRadians(matrixStack, (float) (Math.PI / 2 - positionAndYaw.yaw));
-				final BlockPos blockPos = BlockPos.containing(positionAndYaw.x, positionAndYaw.y, positionAndYaw.z);
+				matrixStack.translate(smoothedPositionAndYaw.x - offset.x, smoothedPositionAndYaw.y - offset.y, smoothedPositionAndYaw.z - offset.z);
+				Drawing.rotateYRadians(matrixStack, (float) (Math.PI / 2 - smoothedPositionAndYaw.yaw));
+				final BlockPos blockPos = BlockPos.containing(smoothedPositionAndYaw.x, smoothedPositionAndYaw.y, smoothedPositionAndYaw.z);
 				final int light = LightTexture.pack(clientWorld.getBrightness(LightLayer.BLOCK, blockPos), clientWorld.getBrightness(LightLayer.SKY, blockPos));
 				// Rendered directly through the model renderer (walk cycle, idle head movement,
 				// phone pose, skin) instead of the entity render dispatcher. The expected matrix
 				// state on entry is identical to what the dispatcher call expected.
-				PassengerModelRenderer.renderPassenger(clientWorld, passenger, positionAndYaw.speed, matrixStack, minecraftClient.renderBuffers().bufferSource(), light);
+				PassengerModelRenderer.renderPassenger(clientWorld, passenger, smoothedPositionAndYaw.speed, matrixStack, minecraftClient.renderBuffers().bufferSource(), light);
 				matrixStack.popPose();
 			});
 		}
