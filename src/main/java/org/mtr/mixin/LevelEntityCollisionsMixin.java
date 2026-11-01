@@ -9,12 +9,13 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.mtr.tool.PassengerCollisions;
+import org.mtr.tool.VehicleCollisions;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Appends the AI-passenger collision boxes to entity movement collision queries.
+ * Appends the AI-passenger and train-car collision boxes to entity movement collision queries.
  *
  * <p>The real entity-collision funnel is the {@code EntityGetter#getEntityCollisions} default
  * method (verified against the 1.21.1 and 1.21.4 bytecode): {@code Level} itself does not
@@ -34,11 +35,13 @@ import java.util.List;
  * hence {@code default} instead of the {@code private} a class mixin would use.</p>
  *
  * <p>The injected tail adds the player-sized boxes that {@link PassengerCollisions} publishes
- * for on-foot AI passengers, so the local player can no longer walk through the platform
- * crowds. {@link PassengerCollisions#collect} filters to client-side player movers in the
- * matching dimension and returns an empty list everywhere else (dedicated servers, mob
- * pathfinding on the integrated server, non-level implementers) — the injected body then
- * falls straight through, leaving the original return value untouched.</p>
+ * for on-foot AI passengers and the car-sized boxes that {@link VehicleCollisions} publishes
+ * for train bodies, so the local player can no longer walk through the platform crowds or
+ * stand inside a passing train. Both {@code collect} implementations filter to client-side
+ * player movers in the matching dimension and return an empty list everywhere else
+ * (dedicated servers, mob pathfinding on the integrated server, non-level implementers) —
+ * the injected body then falls straight through, leaving the original return value
+ * untouched.</p>
  */
 @Mixin(EntityGetter.class)
 public interface LevelEntityCollisionsMixin {
@@ -46,11 +49,13 @@ public interface LevelEntityCollisionsMixin {
 	@Inject(method = "getEntityCollisions", at = @At("RETURN"), cancellable = true)
 	default void mtr$addPassengerCollisions(Entity entity, AABB collisionBox, CallbackInfoReturnable<List<VoxelShape>> cir) {
 		final List<VoxelShape> passengerShapes = PassengerCollisions.collect(this, entity, collisionBox);
-		if (passengerShapes.isEmpty()) {
+		final List<VoxelShape> vehicleShapes = VehicleCollisions.collect(this, entity, collisionBox);
+		if (passengerShapes.isEmpty() && vehicleShapes.isEmpty()) {
 			return;
 		}
 		final List<VoxelShape> combined = new ArrayList<>(cir.getReturnValue());
 		combined.addAll(passengerShapes);
+		combined.addAll(vehicleShapes);
 		cir.setReturnValue(combined);
 	}
 }

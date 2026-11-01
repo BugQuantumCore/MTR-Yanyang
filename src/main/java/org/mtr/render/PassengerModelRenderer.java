@@ -4,6 +4,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.PlayerModel;
+import net.minecraft.client.model.geom.ModelLayerLocation;
 import net.minecraft.client.model.geom.ModelLayers;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.geom.PartPose;
@@ -43,7 +44,10 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMa
  *   <li><b>Exact player size</b> — every passenger renders at exactly the vanilla player
  *       scale. The former age variation (15% of the crowd scaled to 0.55-0.78 plus an adult
  *       height jitter) read to players as a broken uniform down-scale ("everyone is half a
- *       player"), so it is gone: identical model height to {@code minecraft:player}.</li>
+ *       player"), so it is gone. The real culprit behind those reports turned out to be the
+ *       baked model's {@code young} flag: {@code EntityModel} initialises it to {@code true},
+ *       {@code AgeableListModel} then renders at baby scale (body 0.5&times;) — see
+ *       {@link #bakeAdultPlayerModel}.</li>
  *   <li><b>Skins</b> — textures come from {@link PassengerSkinManager} (vanilla default pool
  *       plus optional online skins); slim skins select the slim arm model.</li>
  * </ul>
@@ -278,16 +282,47 @@ public final class PassengerModelRenderer {
 
 	private static PlayerModel getWideModel() {
 		if (wideModel == null) {
-			wideModel = new PlayerModel(Minecraft.getInstance().getEntityModels().bakeLayer(ModelLayers.PLAYER), false);
+			wideModel = bakeAdultPlayerModel(ModelLayers.PLAYER, false);
 		}
 		return wideModel;
 	}
 
 	private static PlayerModel getSlimModel() {
 		if (slimModel == null) {
-			slimModel = new PlayerModel(Minecraft.getInstance().getEntityModels().bakeLayer(ModelLayers.PLAYER_SLIM), true);
+			slimModel = bakeAdultPlayerModel(ModelLayers.PLAYER_SLIM, true);
 		}
 		return slimModel;
+	}
+
+	/**
+	 * Bakes a player model that renders at the full adult size.
+	 *
+	 * <p><b>The {@code young} flag is the root cause of the long-running "all passengers are
+	 * half a player" reports</b> (yanyang.9&ndash;13). {@code EntityModel}'s constructor
+	 * initialises {@code young = true} (verified against the 1.21.1 bytecode:
+	 * {@code iconst_1; putfield EntityModel.young}), and {@code AgeableListModel}
+	 * &mdash; {@code HumanoidModel}'s superclass &mdash; renders in baby proportions while it
+	 * is set: the body parts are drawn at {@code 1 / babyBodyScale = 1 / 2.0 = 0.5} scale
+	 * with the head at {@code 1.5 / babyHeadScale = 0.75} and re-offset to keep the feet down
+	 * &mdash; a figure whose head top lands at about 1.06 blocks instead of the adult 1.875,
+	 * i.e. exactly "uniformly shrunk to half a player". Vanilla never shows this for players
+	 * because {@code LivingEntityRenderer.render} resets the flag on every render
+	 * ({@code this.model.young = entity.isBaby()}, always false for players); this renderer
+	 * drives the {@link PlayerModel} directly, so the constructor default survived every
+	 * previous size "fix" (age-variation removal included &mdash; the removed per-passenger
+	 * scale multiplied <em>on top of</em> the hidden 0.5 baby scale). Setting the flag once
+	 * at bake time is permanent: nothing in this renderer writes it afterwards.</p>
+	 *
+	 * @param layerLocation the model layer to bake ({@link ModelLayers#PLAYER} or
+	 *                      {@link ModelLayers#PLAYER_SLIM})
+	 * @param slim          whether the baked model is the slim-armed variant
+	 * @return the baked model with {@code young = false}, rendering at full vanilla player
+	 *         scale (1.875 blocks tall, 0.6 wide, identical to {@code minecraft:player})
+	 */
+	private static PlayerModel bakeAdultPlayerModel(ModelLayerLocation layerLocation, boolean slim) {
+		final PlayerModel model = new PlayerModel(Minecraft.getInstance().getEntityModels().bakeLayer(layerLocation), slim);
+		model.young = false;
+		return model;
 	}
 
 	/**

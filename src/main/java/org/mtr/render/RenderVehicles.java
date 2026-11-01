@@ -35,6 +35,7 @@ import org.mtr.tool.CullingHelper;
 import org.mtr.tool.Drawing;
 import org.mtr.tool.GuiHelper;
 import org.mtr.tool.Interpolation;
+import org.mtr.tool.VehicleCollisions;
 
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -42,6 +43,14 @@ import java.util.stream.Collectors;
 public final class RenderVehicles {
 
         public static final ObjectArrayList<RidingPlayerInterpolation> RIDING_PLAYER_INTERPOLATIONS = new ObjectArrayList<>();
+
+        /**
+         * Collision boxes are dimension-keyed, but a same-dimension rejoin would otherwise
+         * resurrect the previous world's train walls — cleared whenever the level instance
+         * changes, exactly like the passenger collision registry.
+         */
+        @org.jspecify.annotations.Nullable
+        private static ClientLevel cachedCollisionLevel;
 
         public static void render(long millisElapsed, Vec3 cameraShakeOffset) {
                 final Minecraft minecraftClient = Minecraft.getInstance();
@@ -57,6 +66,16 @@ public final class RenderVehicles {
                 // Offsets are used to render the vehicle with respect to the player position rather than the absolute world position, eliminating shaking.
 
                 final boolean canRide = !clientPlayerEntity.isSpectator();
+
+                // Set when the local player is riding any of the iterated vehicles — while riding,
+                // the riding system owns the player's movement, so train collision boxes and the
+                // knockback check are both skipped.
+                final boolean[] ridingAnyVehicle = {false};
+
+                if (clientWorld != cachedCollisionLevel) {
+                        cachedCollisionLevel = clientWorld;
+                        VehicleCollisions.clear();
+                }
 
                 // Iterate all vehicles that the client knows about
                 MinecraftClientData.getInstance().vehicles.forEach(vehicle -> {
@@ -84,6 +103,12 @@ public final class RenderVehicles {
 
                         // Riding offset
                         final IntObjectImmutablePair<ObjectObjectImmutablePair<@Nullable Vec3, @Nullable Double>> ridingVehicleCarNumberAndOffset = VehicleRidingMovement.getRidingVehicleCarNumberAndOffset(vehicle.getId());
+                        if (ridingVehicleCarNumberAndOffset != null) {
+                                ridingAnyVehicle[0] = true;
+                        }
+                        if (ridingVehicleCarNumberAndOffset != null) {
+                                ridingAnyVehicle[0] = true;
+                        }
                         final int ridingCarNumber;
                         final PositionAndRotation ridingCarPositionAndRotation;
                         final Vec3 offsetVector;
@@ -150,6 +175,13 @@ public final class RenderVehicles {
                                                 openDoorways = vehicleResourceCache.doorways.stream().filter(doorway -> RenderVehicleHelper.checkAndOpenNearbyDoors(doorway, absoluteVehicleCarPositionAndRotation, vehicle.persistentVehicleData.getDoorValue())).collect(Collectors.toCollection(ObjectArrayList::new));
                                         }
                                         final double oscillationAmount = vehicle.persistentVehicleData.getOscillation(carNumber).getAmount() * Config.getClient().getVehicleOscillationMultiplier();
+
+                                        // Register this car's collision box (为列车添加完整碰撞箱). Skipped for the
+                                        // vehicle the player is riding (the rider walks freely inside the car) and for cars
+                                        // far from the camera (their boxes would never be queried).
+                                        if (!ridingAnyVehicle[0] && distanceFromCamera <= 128) {
+                                                registerCarCollisionBoxes(vehicle.getId(), carNumber, clientWorld, absoluteVehicleCarPositionAndRotation, vehicleResourceCache, openDoorways);
+                                        }
 
                                         if (canRide) {
                                                 final ObjectArrayList<AABB> openFloorsAndDoorways = new ObjectArrayList<>();
@@ -351,6 +383,155 @@ public final class RenderVehicles {
                                 });
                         });
                 });
+
+                // Publish the car boxes gathered this frame (also prunes stale ones), then run the
+                // "knocked flying by a passing train" impulse check (zhuang fei) — once per frame,
+                // never while riding (the riding system owns the player's movement then).
+                VehicleCollisions.endFrame();
+                if (canRide && !ridingAnyVehicle[0]) {
+                        VehicleCollisions.applyKnockback(clientWorld, clientPlayerEntity);
+                }
+        }
+
+        /**
+         * Registers the world-space collision boxes of one car with {@link VehicleCollisions}.
+         *
+         * <p>The car-local hull is the union of the resource's floor and doorway boxes, padded
+         * to the physical car body (walls, ends, underframe, roof). When the car is standing at
+         * a platform with open doors, the open doorway z-corridors are carved out of the hull —
+         * splitting it into up-to-several boxes along the car length — so stepping through an
+         * open door to board is never blocked. The resulting local boxes are rotated into world
+         * space with the car's full yaw/pitch/roll (the bounding box of the eight rotated
+         * corners, exact for flat track and a tight bound on gradients) and published per
+         * car; {@link VehicleCollisions} derives the per-car velocity from consecutive frames
+         * for the knockback impulse.</p>
+         *
+         * @param vehicleId     the vehicle (train) the car belongs to
+         * @param carNumber     the car index within the vehicle
+         * @param clientWorld   the client level (provides the dimension key)
+         * @param carPositionAndRotation the car's absolute world position and rotation
+         * @param vehicleResourceCache  the car's cached resource (floors and doorways); no-op when {@code null}
+         * @param openDoorways  the currently-open doorway boxes (car-local), carved out of the hull
+         */
+        private static void registerCarCollisionBoxes(long vehicleId, int carNumber, ClientLevel clientWorld, PositionAndRotation carPositionAndRotation, @org.jspecify.annotations.Nullable VehicleResourceCache vehicleResourceCache, ObjectArrayList<AABB> openDoorways) {
+                if (vehicleResourceCache == null) {
+                        return;
+                }
+
+                double minX = Double.POSITIVE_INFINITY;
+                double minY = Double.POSITIVE_INFINITY;
+                double minZ = Double.POSITIVE_INFINITY;
+                double maxX = Double.NEGATIVE_INFINITY;
+                double maxY = Double.NEGATIVE_INFINITY;
+                double maxZ = Double.NEGATIVE_INFINITY;
+                double floorTopLocalY = Double.NEGATIVE_INFINITY;
+                for (final AABB floor : vehicleResourceCache.floors) {
+                        minX = Math.min(minX, floor.minX);
+                        minY = Math.min(minY, floor.minY);
+                        minZ = Math.min(minZ, floor.minZ);
+                        maxX = Math.max(maxX, floor.maxX);
+                        maxY = Math.max(maxY, floor.maxY);
+                        maxZ = Math.max(maxZ, floor.maxZ);
+                        floorTopLocalY = Math.max(floorTopLocalY, floor.maxY);
+                }
+                for (final AABB doorway : vehicleResourceCache.doorways) {
+                        minX = Math.min(minX, doorway.minX);
+                        minY = Math.min(minY, doorway.minY);
+                        minZ = Math.min(minZ, doorway.minZ);
+                        maxX = Math.max(maxX, doorway.maxX);
+                        maxY = Math.max(maxY, doorway.maxY);
+                        maxZ = Math.max(maxZ, doorway.maxZ);
+                }
+                if (minX == Double.POSITIVE_INFINITY) {
+                        // Neither floors nor doorways — nothing to anchor a body box on.
+                        return;
+                }
+                if (floorTopLocalY == Double.NEGATIVE_INFINITY) {
+                        // Doorway-only resource — fall back to the hull top so the platform guard
+                        // still has a sane reference level.
+                        floorTopLocalY = maxY;
+                }
+                final double floorY = carPositionAndRotation.position.y() + floorTopLocalY;
+
+                // Pad the walkable hull out to the physical car body: side walls, car ends,
+                // underframe/bogies below the floor, roof above it.
+                final double WALL_PADDING = 0.5;
+                final double END_PADDING = 0.5;
+                final double UNDER_PADDING = 0.75;
+                final double ROOF_PADDING = 1.25;
+                minX -= WALL_PADDING;
+                maxX += WALL_PADDING;
+                minZ -= END_PADDING;
+                maxZ += END_PADDING;
+                minY -= UNDER_PADDING;
+                maxY += ROOF_PADDING;
+
+                // Carve the open doorway corridors (z ranges, with a little slack) out of the hull;
+                // the complementary z segments each become one full-width collision box.
+                final ObjectArrayList<AABB> localBoxes = new ObjectArrayList<>();
+                if (openDoorways.isEmpty()) {
+                        localBoxes.add(new AABB(minX, minY, minZ, maxX, maxY, maxZ));
+                } else {
+                        final ObjectArrayList<double[]> intervals = new ObjectArrayList<>();
+                        for (final AABB openDoorway : openDoorways) {
+                                intervals.add(new double[]{openDoorway.minZ - 0.3, openDoorway.maxZ + 0.3});
+                        }
+                        intervals.sort((interval1, interval2) -> Double.compare(interval1[0], interval2[0]));
+
+                        double segmentStart = minZ;
+                        for (final double[] interval : intervals) {
+                                final double segmentEnd = Math.min(interval[0], maxZ);
+                                if (segmentEnd - segmentStart >= 0.1) {
+                                        localBoxes.add(new AABB(minX, minY, segmentStart, maxX, maxY, segmentEnd));
+                                }
+                                segmentStart = Math.max(segmentStart, interval[1]);
+                        }
+                        if (maxZ - segmentStart >= 0.1) {
+                                localBoxes.add(new AABB(minX, minY, segmentStart, maxX, maxY, maxZ));
+                        }
+                }
+
+                final ObjectArrayList<AABB> worldBoxes = new ObjectArrayList<>(localBoxes.size());
+                for (final AABB localBox : localBoxes) {
+                        worldBoxes.add(transformBoxToWorld(localBox, carPositionAndRotation));
+                }
+                VehicleCollisions.updateCar(vehicleId, carNumber, clientWorld.dimension(), worldBoxes, floorY);
+        }
+
+        /**
+         * Transforms a car-local box into a world-space bounding box by rotating its eight
+         * corners with the car's full roll/pitch/yaw and taking the bounding box — the exact
+         * box on flat track and a tight bound on gradients.
+         *
+         * @param localBox the box in car-local space (X width, Y up, Z along the car)
+         * @param carPositionAndRotation the car's absolute world position and rotation
+         * @return the world-space bounding box of the rotated corners
+         */
+        private static AABB transformBoxToWorld(AABB localBox, PositionAndRotation carPositionAndRotation) {
+                double minX = Double.POSITIVE_INFINITY;
+                double minY = Double.POSITIVE_INFINITY;
+                double minZ = Double.POSITIVE_INFINITY;
+                double maxX = Double.NEGATIVE_INFINITY;
+                double maxY = Double.NEGATIVE_INFINITY;
+                double maxZ = Double.NEGATIVE_INFINITY;
+                for (int i = 0; i < 8; i++) {
+                        final Vector corner = new Vector(
+                                        (i & 1) == 0 ? localBox.minX : localBox.maxX,
+                                        (i & 2) == 0 ? localBox.minY : localBox.maxY,
+                                        (i & 4) == 0 ? localBox.minZ : localBox.maxZ
+                        ).rotateZ(carPositionAndRotation.roll).rotateX(carPositionAndRotation.pitch).rotateY(carPositionAndRotation.yaw).add(
+                                        carPositionAndRotation.position.x(),
+                                        carPositionAndRotation.position.y(),
+                                        carPositionAndRotation.position.z()
+                        );
+                        minX = Math.min(minX, corner.x());
+                        minY = Math.min(minY, corner.y());
+                        minZ = Math.min(minZ, corner.z());
+                        maxX = Math.max(maxX, corner.x());
+                        maxY = Math.max(maxY, corner.y());
+                        maxZ = Math.max(maxZ, corner.z());
+                }
+                return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
         }
 
         /**
