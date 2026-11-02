@@ -7,6 +7,7 @@ on:
       - 'native/**'
       - 'buildSrc/**'
       - 'src/main/java/**'
+      - 'src/main/resources/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
       - '.github/workflows/native_1.21.x.yml'
@@ -16,10 +17,18 @@ on:
       - 'native/**'
       - 'buildSrc/**'
       - 'src/main/java/**'
+      - 'src/main/resources/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
       - '.github/workflows/native_1.21.x.yml'
   workflow_dispatch:
+
+# src/main/resources/** is in the trigger paths because the build-mod job
+# assembles the shipped jars from this tree: a resource-only change (the
+# yanyang.16 neoforge.mods.toml dependency fix, a mixin json, a texture)
+# alters the jar contents without touching any .java file, and without the
+# path entry it silently skipped the rebuild — the last green native run's
+# artifacts would then be published with the stale resources inside.
 
 # ---------------------------------------------------------------------------
 # The platform matrix — all eight targets the mod ships in every jar
