@@ -2,6 +2,14 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.16 (2026-11-02)
+
+**Falling onto a stationary train's roof now lands you on it — the depenetration learns entry direction 落到静止列车车顶上被撞飞的修复**
+
+- **The bug 从空中落到静止的列车车顶上不是踩在车顶上，而是被撞飞**: the yanyang.15 lithium-proof fallback resolved *every* overlap along the axis of minimum penetration, decided by comparing box centres — it could not tell *how* an overlap came to be. A player falling onto a parked train's roof penetrates the hull box deep in one tick (up to terminal velocity, ~3.9 blocks); once the feet pass the box centre the up direction disqualified itself, a horizontal axis won, and the player was ejected off the train sideways while still falling — reading exactly as "knocked flying by a parked train".
+- **The fix — entry-aware depenetration (按入箱方向解算)**: `EntityMoveMixin` now snapshots the player's bounding box at the **head** of `Entity#move` and hands it to the tail depenetration. The overlap is classified before it is resolved: when the feet were **at or above a box's top surface before the move** (within one vanilla step height, so walking between adjacent cars' roofs on a gradient steps up instead of shoving sideways), the overlap is the tail of a fall and resolves **straight up onto the surface** — the player is snapped to the roof, the fall velocity is cancelled, the fall distance reset and ground contact flagged, so they actually *stand* on the roof: jumping, walking friction, step-up and fall damage all behave. Everything entered from the side — a wall, a crowd at platform level, a train sweeping into a track-level player (the 撞飞 impulse) — keeps the shipped bounded minimum-axis eviction, byte-identical. Landing onto an AI passenger's head behaves the same way (they are solid, after all), while the crowd at platform level is untouched (their 1.8-tall boxes never reach the step-height window).
+- Verified against the real 1.21.1 **and** 1.21.4 official Mojang mappings (`setOnGround`, `fallDistance`, `setDeltaMovement` overloads, `AABB#move` — all present in both stonecutter targets) and simulated across 17 scenarios: deep terminal-velocity falls, roof-edge landings, step-up/down between adjacent cars' roofs, gravity-sink re-landing while standing, jumps, lag-spike deep falls, doorway-gap falls, platform-side blocks and track-level sweeps.
+
 ## 4.1.0-beta-2.yanyang.15 (2026-11-01)
 
 **Collision boxes silently dead on Lithium packs — bytecode root-caused; phone pose rebuilt 碰撞箱在Lithium整合包下静默失效（字节码级根因）；手机姿势重做**
