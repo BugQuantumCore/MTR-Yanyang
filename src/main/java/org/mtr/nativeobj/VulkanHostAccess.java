@@ -39,6 +39,14 @@ final class VulkanHostAccess {
         /** VulkanMod 0.6.x: AbstractTexture GL id → VkGlTexture → VulkanImage. */
         private @Nullable Method vkGlTextureGetTexture;
         private @Nullable Method vkGlTextureGetVulkanImage;
+        /**
+         * The NeoForge ports (yiyuyan/VulkanModNeoForge, TrulyRin/VulkanMod-Reforged): the same
+         * GL-emulation route under its 0.5.x-generation name — AbstractTexture GL id →
+         * net.vulkanmod.gl.GlTexture.getTexture(int) → getVulkanImage(). Both method shapes
+         * verified against both repositories' sources.
+         */
+        private @Nullable Method glTextureGetTexture;
+        private @Nullable Method glTextureGetVulkanImage;
         /** VulkanMod ≤ 0.5.x: mixin-injected AbstractTexture.getVulkanImage(). */
         private @Nullable Method textureGetVulkanImage;
         private @Nullable Method imageGetId;
@@ -156,10 +164,12 @@ final class VulkanHostAccess {
                                 swapChainFormat = null;
                         }
 
-                        // textures: two generations of API. 0.6.x routes through the GL
-                        // emulation layer (AbstractTexture GL id → VkGlTexture.getTexture(int)
-                        // → getVulkanImage()); ≤ 0.5.x exposes a mixin-injected
-                        // AbstractTexture.getVulkanImage() directly.
+                        // textures: three generations of API. Official 0.6.x routes through the
+                        // GL emulation layer named VkGlTexture (AbstractTexture GL id →
+                        // VkGlTexture.getTexture(int) → getVulkanImage()); the NeoForge ports
+                        // ship the same emulation under its 0.5.x-generation name GlTexture;
+                        // ≤0.5.x official exposes a mixin-injected AbstractTexture.getVulkanImage()
+                        // directly. Each route is optional — whichever resolves wins.
                         final Class<?> vulkanImageClass = Class.forName("net.vulkanmod.vulkan.texture.VulkanImage");
                         imageGetId = vulkanImageClass.getMethod("getId");
                         imageGetView = vulkanImageClass.getMethod("getImageView");
@@ -173,6 +183,16 @@ final class VulkanHostAccess {
                                 vkGlTextureGetVulkanImage = null;
                         }
                         if (vkGlTextureGetTexture == null) {
+                                try {
+                                        final Class<?> glTextureClass = Class.forName("net.vulkanmod.gl.GlTexture");
+                                        glTextureGetTexture = glTextureClass.getMethod("getTexture", int.class);
+                                        glTextureGetVulkanImage = glTextureClass.getMethod("getVulkanImage");
+                                } catch (ReflectiveOperationException noGlTexture) {
+                                        glTextureGetTexture = null;
+                                        glTextureGetVulkanImage = null;
+                                }
+                        }
+                        if (vkGlTextureGetTexture == null && glTextureGetTexture == null) {
                                 try {
                                         textureGetVulkanImage = AbstractTexture.class.getMethod("getVulkanImage");
                                 } catch (ReflectiveOperationException noOldTextureApi) {
@@ -402,14 +422,19 @@ final class VulkanHostAccess {
                                 return new long[3];
                         }
                         final Object vulkanImage;
-                        if (vkGlTextureGetTexture != null) {
-                                // VulkanMod 0.5.x+: route through the GL texture emulation layer.
-                                // getId() is a direct (loom-remapped) call, no reflection needed.
-                                final Object glTexture = vkGlTextureGetTexture.invoke(null, abstractTexture.getId());
+                        if (vkGlTextureGetTexture != null || glTextureGetTexture != null) {
+                                // VulkanMod 0.6.x (VkGlTexture) or the NeoForge ports (GlTexture): route
+                                // through the GL texture emulation layer. getId() is a direct
+                                // (loom-remapped) call, no reflection needed.
+                                final Object glTexture = vkGlTextureGetTexture != null
+                                                ? vkGlTextureGetTexture.invoke(null, abstractTexture.getId())
+                                                : glTextureGetTexture.invoke(null, abstractTexture.getId());
                                 if (glTexture == null) {
                                         return new long[3];
                                 }
-                                vulkanImage = vkGlTextureGetVulkanImage.invoke(glTexture);
+                                vulkanImage = vkGlTextureGetTexture != null
+                                                ? vkGlTextureGetVulkanImage.invoke(glTexture)
+                                                : glTextureGetVulkanImage.invoke(glTexture);
                         } else if (textureGetVulkanImage != null) {
                                 // VulkanMod ≤ 0.5.x: mixin-injected accessor on the texture itself.
                                 vulkanImage = textureGetVulkanImage.invoke(abstractTexture);

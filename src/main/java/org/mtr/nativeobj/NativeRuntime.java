@@ -69,6 +69,7 @@ public final class NativeRuntime {
         private static volatile @Nullable NativeRuntime teardownTarget;
         /** One-shot log for the session-long Beryl deferral latch (the skip itself repeats silently). */
         private static volatile boolean berylSkipLogged;
+        private static volatile boolean radianceSkipLogged;
         /**
          * The {@code mtr.nativeVulkan} property, read once at class init — the
          * per-frame gate in {@link #initialise()} stays a constant-time field read.
@@ -178,6 +179,22 @@ public final class NativeRuntime {
                                 if (!berylSkipLogged) {
                                         berylSkipLogged = true;
                                         MTR.LOGGER.info("[wrvk] Beryl shader pipeline detected; the native Vulkan recorder stays off for this session (a mid-session attach after Beryl hands the frame back crashes at the driver level) — the Java renderer draws MTR geometry through Beryl's pipelines; reconnect with shaders off to boot the native pipeline");
+                                }
+                                return;
+                        }
+
+                        // Radiance (Minecraft-Radiance/Radiance, 1.21.4 Fabric) is a Vulkan C++
+                        // renderer with hardware ray tracing — not a VulkanMod build, so the
+                        // VulkanMod probe above normally already kept the native path off. The
+                        // guard here covers the pathological Radiance+VulkanMod combination:
+                        // recording into VulkanMod's command buffers while Radiance owns the
+                        // frame can only fight at the driver level — the same reasoning as the
+                        // Beryl latch above.
+                        if (org.mtr.client.VulkanCompat.isRadianceActive()) {
+                                bootAttempted = true;
+                                if (!radianceSkipLogged) {
+                                        radianceSkipLogged = true;
+                                        MTR.LOGGER.info("[wrvk] Radiance renderer detected; the native Vulkan recorder stays off for this session — the Java renderer draws MTR geometry through Radiance's pipelines");
                                 }
                                 return;
                         }
@@ -363,20 +380,13 @@ public final class NativeRuntime {
         }
 
         private static boolean isVulkanModLoaded() {
-                // fabric loader is on the class path for the fabric builds; the neoforge
-                // build fails this probe softly and the GL path stays active
-                try {
-                        final Class<?> loaderClass = Class.forName("net.fabricmc.loader.api.FabricLoader");
-                        final Object loader = loaderClass.getMethod("getInstance").invoke(null);
-                        final Object mods = loaderClass.getMethod("isModLoaded", String.class).invoke(loader, "vulkanmod");
-                        return Boolean.TRUE.equals(mods);
-                } catch (Throwable e) {
-                        // broadened from ReflectiveOperationException: the probe now also
-                        // runs at class init (VULKAN_MOD_LOADED), where an escaping
-                        // throwable would fail the whole class instead of just this
-                        // probe — every failure still means "not loaded" (GL path)
-                        return false;
-                }
+                // Loader-agnostic class presence, routed through VulkanCompat: the official
+                // Fabric build and both NeoForge ports (yiyuyan/VulkanModNeoForge,
+                // TrulyRin/VulkanMod-Reforged) all ship net.vulkanmod.*. The previous probe
+                // asked the Fabric loader for mod id "vulkanmod" — which soft-failed on
+                // NeoForge (no Fabric loader on the class path) and permanently disabled the
+                // native pipeline there even with a VulkanMod port installed.
+                return org.mtr.client.VulkanCompat.isVulkanModActive();
         }
 
         private static String libraryName() {

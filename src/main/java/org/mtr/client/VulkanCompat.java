@@ -16,7 +16,22 @@ import java.lang.reflect.Field;
  *
  * <p>Detection is done through class presence rather than loader-specific mod-list APIs so that it
  * works identically on Fabric and NeoForge, and it never initialises any VulkanMod class
- * ({@code Class.forName} is called with {@code initialize = false}).</p>
+ * ({@code Class.forName} is called with {@code initialize = false}). The NeoForge ports of
+ * VulkanMod — <a href="https://github.com/yiyuyan/VulkanModNeoForge">yiyuyan/VulkanModNeoForge</a>
+ * (1.21.4) and <a href="https://github.com/TrulyRin/VulkanMod-Reforged">TrulyRin/VulkanMod-Reforged</a>
+ * (1.21.1) — keep the whole {@code net.vulkanmod.*} package tree (verified against both
+ * repositories), so the same probes match them: the Vulkan-safe code paths, the beacon-beam
+ * stage redirect and the native wrvk pipeline all work under the ports exactly as under the
+ * official Fabric build. <a href="https://github.com/Minecraft-Radiance/Radiance">Radiance</a>
+ * (the Vulkan C++ renderer with hardware ray tracing, 1.21.4 Fabric) is detected the same way
+ * through {@link #isRadianceActive()}.</p>
+ *
+ * <p><b>Forward compatibility 保留触发接口.</b> Every probe in this class is un-gated reflection:
+ * the 1.21.4 builds of the mod carry the full detection surface for mods that today only ship a
+ * 1.21.1 build (official VulkanMod, VulkanMod-Reforged, Beryl), so the day those mods publish a
+ * 1.21.4 version the compatibility paths engage without any change here — the probes simply
+ * start matching. Absent mods cost one {@code ClassNotFoundException} per probe at class
+ * initialisation and nothing afterwards.</p>
  *
  * <p>Beryl (the shader pipeline layered on top of VulkanMod) is detected in two tiers.
  * <b>Mod presence</b> — the Beryl jar is in the mods folder — is detected through class presence,
@@ -39,6 +54,7 @@ public final class VulkanCompat {
 
         private static volatile boolean vulkanModActive = detectVulkanMod();
         private static volatile boolean berylInstalled = detectBerylInstalled();
+        private static volatile boolean radianceActive = detectRadiance();
         /**
          * Beryl's runtime "the shader pipeline is driving this frame" flag — the
          * package-private static boolean
@@ -62,10 +78,24 @@ public final class VulkanCompat {
         private static final Field BERYL_CONFIG_SHADERS_ON = resolveBerylConfigShadersOn();
 
         private static boolean detectVulkanMod() {
-                // "net.vulkanmod.Initializer" is the Fabric entrypoint; "net.vulkanmod.vulkan.Vulkan" is
-                // the core class present in every build. Checking both keeps detection stable across
-                // loader variants and future refactors of either class.
-                return isClassPresent("net.vulkanmod.Initializer") || isClassPresent("net.vulkanmod.vulkan.Vulkan");
+                // "net.vulkanmod.Initializer" is the official Fabric entrypoint;
+                // "net.vulkanmod.vulkan.Vulkan" is the core class present in every build. The NeoForge
+                // ports — yiyuyan/VulkanModNeoForge and TrulyRin/VulkanMod-Reforged — keep the whole
+                // net.vulkanmod.* tree (verified against both repositories), so both probes already
+                // match them; "cn.ksmcbrigade.vulkan.NeoVulkanMod" (VulkanModNeoForge's NeoForge
+                // bootstrap) is probed as well so detection survives a future port build dropping the
+                // Fabric-era Initializer class.
+                return isClassPresent("net.vulkanmod.Initializer")
+                                || isClassPresent("net.vulkanmod.vulkan.Vulkan")
+                                || isClassPresent("cn.ksmcbrigade.vulkan.NeoVulkanMod");
+        }
+
+        private static boolean detectRadiance() {
+                // Radiance (Minecraft-Radiance/Radiance, Fabric 1.21.4) replaces the renderer with a
+                // C++ Vulkan backend featuring hardware ray tracing. "com.radiance.Radiance" is the
+                // main entrypoint and "com.radiance.client.RadianceClient" the client entrypoint; both
+                // exist in every build, and probing both keeps detection stable if either is refactored.
+                return isClassPresent("com.radiance.Radiance") || isClassPresent("com.radiance.client.RadianceClient");
         }
 
         private static boolean detectBerylInstalled() {
@@ -136,6 +166,26 @@ public final class VulkanCompat {
          */
         public static boolean isBerylInstalled() {
                 return berylInstalled;
+        }
+
+        /**
+         * @return {@code true} when <a href="https://github.com/Minecraft-Radiance/Radiance">Radiance</a>
+         *         (the Vulkan C++ renderer with hardware ray tracing, 1.21.4 Fabric) is installed.
+         *         Radiance drives the whole frame through its own backend, so MTR behaves exactly as
+         *         under any full renderer replacement that is not VulkanMod: the native wrvk pipeline
+         *         never attaches (it only ever attaches to VulkanMod's device/queue handles), and the
+         *         Java renderer draws through Radiance's captured render layers. Two VulkanMod-specific
+         *         workarounds deliberately stay off under Radiance: the beacon-beam stage redirect is
+         *         unnecessary because Radiance captures each draw's actual {@code BuiltBuffer} with its
+         *         real vertex format (verified against its {@code RenderLayerMixins}: it intercepts
+         *         {@code RenderLayer#draw(BuiltBuffer)} and routes the buffer as-is), and the
+         *         UniversalCraft GL-state fabrication is unnecessary because Radiance keeps an OpenGL
+         *         context alive for UI rendering through its GL↔Vulkan interop ({@code OpenGLUiProxy}:
+         *         {@code exportSurface} + GL-complete semaphore), so UniversalCraft's raw LWJGL state
+         *         queries succeed against that context.
+         */
+        public static boolean isRadianceActive() {
+                return radianceActive;
         }
 
         /**
