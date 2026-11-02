@@ -3,6 +3,7 @@ package com.bugquantumcore.yanyang.easement;
 import com.bugquantumcore.yanyang.easement.item.ItemEasementShapeTool;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.core.Registry;
@@ -10,9 +11,12 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import mtr.CreativeModeTabs;
 
 /**
@@ -27,6 +31,13 @@ import mtr.CreativeModeTabs;
 public class YanyangEasementMod implements ModInitializer {
 
         public static final String MOD_ID = "yanyang_easement";
+
+        private static final Logger LOGGER = LoggerFactory.getLogger("YanyangEasement");
+
+        /**
+         * 诊断报告间隔（服务端 tick，20 tps ≈ 20 秒）。
+         */
+        private static final int REPORT_INTERVAL_TICKS = 400;
 
         public static final Item EASEMENT_SHAPE_TOOL = new ItemEasementShapeTool(new Item.Properties().stacksTo(1));
 
@@ -47,5 +58,28 @@ public class YanyangEasementMod implements ModInitializer {
                 // legacy YMTR 的客户端线型同步：玩家加入与切换维度后全量推送当前维度的印记。
                 ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> ShapeStore.syncPlayerShapes(handler.getPlayer()));
                 ServerEntityWorldChangeEvents.AFTER_PLAYER_CHANGE_WORLD.register((player, originWorld, destinationWorld) -> ShapeStore.syncPlayerShapes(player));
+
+                // 服务端周期诊断报告（线型解析统计；无新活动时不输出）。
+                ServerTickEvents.END_SERVER_TICK.register(YanyangEasementMod::tickReport);
+
+                LOGGER.info("Yanyang easement initialized: YMTR mode = {}, MTR version = {}",
+                                YanyangCompat.RAILDATA_CAPABLE ? "railData-capable (3.6.2.2+)" : "legacy stamp (3.4.4 ~ 3.6.1.2)",
+                                net.fabricmc.loader.api.FabricLoader.getInstance()
+                                                .getModContainer("mtr")
+                                                .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                                                .orElse("(mtr not found)"));
         }
+
+        private static void tickReport(MinecraftServer server) {
+                // 静态计数 + 静态间隔：多个世界实例共享诊断聚合，此处只是报告泵。
+                if (++reportTicks >= REPORT_INTERVAL_TICKS) {
+                        reportTicks = 0;
+                        final String report = ShapeStore.collectReport();
+                        if (report != null) {
+                                LOGGER.info("[server] {}", report);
+                        }
+                }
+        }
+
+        private static int reportTicks;
 }

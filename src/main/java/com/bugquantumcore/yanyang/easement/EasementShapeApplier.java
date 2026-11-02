@@ -8,6 +8,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -31,6 +33,8 @@ import java.util.Map;
  * {@code half_wave_sine}），ANTE（MTRSteamLoco）的 {@code customConfigs} 镜像内容也一致。</p>
  */
 public final class EasementShapeApplier {
+
+        private static final Logger LOGGER = LoggerFactory.getLogger("YanyangEasement");
 
         private EasementShapeApplier() {
         }
@@ -65,10 +69,16 @@ public final class EasementShapeApplier {
                 final EasementShape current = readShape(connections.get(0).forward);
                 final EasementShape next = EasementShape.next(current, backwards);
 
+                int stamped = 0;
                 for (final Connection connection : connections) {
-                        applyShape(level, connection, next);
+                        if (applyShape(level, connection, next)) {
+                                stamped++;
+                        }
                 }
                 railwayData.setDirty();
+
+                LOGGER.info("Shape tool at node {}: {} of {} connection(s) -> {}",
+                                node.toShortString(), stamped, connections.size(), next == null ? "classic" : next.key());
 
                 final MutableComponent shapeName = next == null
                                 ? Text.translatable("easement.yanyang_easement.classic")
@@ -78,29 +88,39 @@ public final class EasementShapeApplier {
         }
 
         /**
-         * 读取一条轨道当前的线型（按能力选择载体）。
+         * 读取一条轨道当前的线型（按能力选择载体：railData → 印记 → ANTE
+         * {@code customConfigs}）。
          */
         private static EasementShape readShape(Rail rail) {
                 if (YanyangCompat.RAILDATA_CAPABLE) {
                         return EasementShape.fromRailData(rail.getRailData());
                 }
-                return EasementShape.fromKey(((RailDuck) rail).yanyang$getShapeStamp());
+                final EasementShape stamped = EasementShape.fromKey(((RailDuck) rail).yanyang$getShapeStamp());
+                if (stamped != null) {
+                        return stamped;
+                }
+                // 被 ANTE 编辑器替换过的轨道印记丢失，但 customConfigs 随网络包保留。
+                return EasementShape.fromKey(AnteMirror.readRailShapeKey(rail));
         }
 
         /**
          * 将线型写入一条连接的正反两条轨道并同步。
+         *
+         * @return 是否实际执行了写入（连接两条轨道齐全时为 {@code true}）
          */
-        private static void applyShape(Level level, Connection connection, EasementShape shape) {
+        private static boolean applyShape(Level level, Connection connection, EasementShape shape) {
                 if (YanyangCompat.RAILDATA_CAPABLE) {
                         applyShapeViaRailData(level, connection, shape);
                 } else {
                         applyShapeViaStamp(level, connection, shape);
                 }
+                return true;
         }
 
         /**
          * capable 路径：写入 {@code railData}（正反向共享同一份键值对，与 YMTR 原生
-         * {@code PacketUpdateRailData} 的写法一致），按 YMTR 流程镜像与广播。
+         * {@code PacketUpdateRailData} 的写法一致），按 YMTR 流程镜像与广播。清除线型
+         * 时在 ANTE 镜像里对线型键写入 {@code null}（= 删除），避免残留旧值。
          */
         private static void applyShapeViaRailData(Level level, Connection connection, EasementShape shape) {
                 final Map<String, String> existing = connection.forward.getRailData();
@@ -111,15 +131,22 @@ public final class EasementShapeApplier {
                 connection.forward.setRailData(railData);
                 connection.backward.setRailData(railDataBackward);
 
-                AnteMirror.setRailCustomConfigsMirror(connection.forward, railData);
-                AnteMirror.setRailCustomConfigsMirror(connection.backward, railDataBackward);
+                final Map<String, String> anteMirror = new HashMap<>(railData);
+                if (shape == null) {
+                        anteMirror.put(EasementShape.RAIL_DATA_KEY, null);
+                        anteMirror.put(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY, null);
+                }
+                AnteMirror.setRailCustomConfigsMirror(connection.forward, anteMirror);
+                AnteMirror.setRailCustomConfigsMirror(connection.backward, new HashMap<>(anteMirror));
 
                 PacketTrainDataGuiServer.createRailS2C(level, connection.forward.transportMode, connection.start, connection.end, connection.forward, connection.backward, 0);
         }
 
         /**
          * legacy 路径：写入轨道实例印记，镜像到 ANTE 后用本补丁的自定义包广播
-         * （YMTR 自身状态未变，无需调用其广播）。
+         * （YMTR 自身状态未变，无需调用其广播）。清除线型时从 ANTE
+         * {@code customConfigs} 一并移除对应键（值为 {@code null} = 删除），
+         * 避免回读路径复活旧线型。
          */
         private static void applyShapeViaStamp(Level level, Connection connection, EasementShape shape) {
                 final String key = shape == null ? null : shape.key();
@@ -127,7 +154,8 @@ public final class EasementShapeApplier {
                 ((RailDuck) connection.backward).yanyang$setShapeStamp(key);
 
                 final Map<String, String> mirror = new HashMap<>();
-                putShapeEntries(mirror, shape);
+                mirror.put(EasementShape.RAIL_DATA_KEY, key);
+                mirror.put(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY, key == null ? null : "string");
                 AnteMirror.setRailCustomConfigsMirror(connection.forward, mirror);
                 AnteMirror.setRailCustomConfigsMirror(connection.backward, mirror);
 

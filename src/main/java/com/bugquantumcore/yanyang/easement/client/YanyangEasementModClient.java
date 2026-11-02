@@ -10,6 +10,8 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 客户端入口（legacy YMTR 3.4.4 ~ 3.6.1.2 的客户端同步）。
@@ -24,9 +26,21 @@ import net.minecraft.resources.ResourceLocation;
  * 因此每客户端 tick 检查镜像脏标志（{@link ShapeStore#consumeClientDirty}，同 tick
  * 内多次更新合并为一次），变化时让 ANTE 重建烘焙轨道（{@link AnteMirror#clearBakedRails}，
  * ANTE 未安装时为无操作）。</p>
+ *
+ * <p><b>诊断</b>：收到的同步包、触发的烘焙重建与周期性的线型解析报告都记 INFO 日志
+ * —— 线型是否生效的每一环（包到达 → 镜像写入 → 烘焙重建 → 几何解析）都可从日志核对。</p>
  */
 @Environment(EnvType.CLIENT)
 public class YanyangEasementModClient implements ClientModInitializer {
+
+        private static final Logger LOGGER = LoggerFactory.getLogger("YanyangEasement");
+
+        /**
+         * 诊断报告间隔（客户端 tick，20 tps ≈ 20 秒）。
+         */
+        private static final int REPORT_INTERVAL_TICKS = 400;
+
+        private int reportTicks;
 
         @Override
         public void onInitializeClient() {
@@ -41,13 +55,23 @@ public class YanyangEasementModClient implements ClientModInitializer {
                         final long a = buf.readLong();
                         final long b = buf.readLong();
                         final String shapeKey = buf.readUtf();
+                        LOGGER.info("Received shape sync: {} for {} in {}", shapeKey.isEmpty() ? "(classic)" : shapeKey, RailPair.of(a, b), dimension);
                         client.execute(() -> ShapeStore.clientPut(dimension, RailPair.of(a, b), shapeKey.isEmpty() ? null : shapeKey));
                 });
 
-                // 客户端 tick（渲染线程）：镜像有实际变化时让 ANTE 重建烘焙轨道。
+                // 客户端 tick（渲染线程）：镜像有实际变化时让 ANTE 重建烘焙轨道；
+                // 并周期性报告线型解析统计（无新活动时不输出）。
                 ClientTickEvents.END_CLIENT_TICK.register(client -> {
                         if (ShapeStore.consumeClientDirty()) {
+                                LOGGER.info("Client rail shapes changed; asking ANTE to rebuild baked rails");
                                 AnteMirror.clearBakedRails();
+                        }
+                        if (++reportTicks >= REPORT_INTERVAL_TICKS) {
+                                reportTicks = 0;
+                                final String report = ShapeStore.collectReport();
+                                if (report != null) {
+                                        LOGGER.info("[client] {}", report);
+                                }
                         }
                 });
         }

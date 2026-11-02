@@ -1,5 +1,6 @@
 package com.bugquantumcore.yanyang.easement.mixin;
 
+import com.bugquantumcore.yanyang.easement.AnteMirror;
 import com.bugquantumcore.yanyang.easement.ClassicRailGeometry;
 import com.bugquantumcore.yanyang.easement.EasedRailPath;
 import com.bugquantumcore.yanyang.easement.EasementShape;
@@ -32,7 +33,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * {@code RailDataCarrierMixin} 实现的 {@link RailDataDuck} 提供）→ 附加数据
  * {@code rail_shape}；legacy YMTR（3.4.4 ~ 3.6.1.2）→ 轨道实例印记
  * （{@link RailDuck}，存档搭载 + 工具写入）→ 客户端镜像
- * （{@link ShapeStore}，按「维度 × 连接键」）；两级皆空 = 经典线型。</li>
+ * （{@link ShapeStore}，按「维度 × 连接键」，空串条目 = 明确的经典线型）→
+ * ANTE {@code customConfigs} 的 {@code rail_shape} 键（轨道配置编辑器路径，
+ * 覆盖被 MTR-ANTE 分支的 {@code PacketUpdateRail} 用新实例替换后印记丢失的
+ * 场景）；全部为空 = 经典线型。</li>
  * <li>{@code getPosition} / {@code getLength} / {@code render} / {@code goodRadius}
  * 在缓和路径存在时改用采样表，列车的移动、信号、渲染、桥隧修建等所有下游消费方
  * 因此自动沿缓和曲线工作；</li>
@@ -146,35 +150,55 @@ public abstract class RailMixin implements RailDuck {
 
         /**
          * 按当前线型求解缓和路径：YMTR 3.6.2.2+ 读轨道附加数据；legacy 读实例印记，
-         * 未命中时（客户端轨道）再查客户端镜像。
+         * 未命中时查客户端镜像（空串条目 = 明确的经典线型，不再回退），最后回退
+         * ANTE {@code customConfigs}（轨道配置编辑器路径）。
          */
         @Unique
         private EasedRailPath yanyang$buildEasedPath() {
                 if (YanyangCompat.RAILDATA_CAPABLE && (Object) this instanceof RailDataDuck duck) {
-                        return yanyang$resolveEased(EasementShape.fromRailData(duck.yanyang$getRailData()));
+                        return yanyang$resolveEased(EasementShape.fromRailData(duck.yanyang$getRailData()), "railData");
                 }
                 final String stamp = yanyang$shapeStamp;
                 if (stamp != null) {
-                        return yanyang$resolveEased(EasementShape.fromKey(stamp));
+                        ShapeStore.noteResolution("stamp");
+                        return yanyang$resolveEased(EasementShape.fromKey(stamp), stamp);
                 }
-                // legacy 客户端轨道：按「维度 × 连接键」查镜像。
+                // legacy 客户端轨道：按「维度 × 连接键」查镜像。空串条目 = 明确的经典线型。
                 final ClassicRailGeometry geometry = yanyang$geometry();
-                final String mirrored = ShapeStore.clientLookup(yanyang$pairKey(geometry));
-                if (mirrored == null) {
-                        return null;
+                final RailPair pair = yanyang$pairKey(geometry);
+                final String mirrored = ShapeStore.clientLookup(pair);
+                if (mirrored != null) {
+                        if (mirrored.isEmpty()) {
+                                ShapeStore.noteResolution("classic");
+                                return null;
+                        }
+                        ShapeStore.noteResolution("mirror");
+                        return yanyang$resolveEased(EasementShape.fromKey(mirrored), mirrored);
                 }
-                return geometry.resolveEased(EasementShape.fromKey(mirrored));
+                // ANTE 轨道配置编辑器路径 / 被编辑器替换后印记丢失的兜底。
+                final String configured = AnteMirror.readRailShapeKey(this);
+                if (configured != null) {
+                        ShapeStore.noteResolution("configs");
+                        return yanyang$resolveEased(EasementShape.fromKey(configured), configured);
+                }
+                ShapeStore.noteMiss(pair);
+                return null;
         }
 
         /**
-         * 从经典几何字段打包几何快照并求解缓和路径。
+         * 从经典几何字段打包几何快照并求解缓和路径。求解失败计入诊断
+         * （线型已知但两族曲线无法表达时回退经典线型）。
          */
         @Unique
-        private EasedRailPath yanyang$resolveEased(EasementShape shape) {
+        private EasedRailPath yanyang$resolveEased(EasementShape shape, String shapeKey) {
                 if (shape == null) {
                         return null;
                 }
-                return yanyang$geometry().resolveEased(shape);
+                final EasedRailPath path = yanyang$geometry().resolveEased(shape);
+                if (path == null) {
+                        ShapeStore.noteSolveFailure(shapeKey);
+                }
+                return path;
         }
 
         @Unique

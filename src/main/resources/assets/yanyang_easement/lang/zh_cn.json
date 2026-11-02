@@ -1,11 +1,11 @@
 {
 	"item.yanyang_easement.easement_shape_tool": "缓和曲线工具",
-	"tooltip.yanyang_easement.easement_shape_tool": "右键轨道节点，循环切换其轨道线型：经典、三次抛物线、半波正弦；潜行反向切换。",
+	"tooltip.yanyang_easement.easement_shape_tool": "右键轨道节点，循环切换其轨道线型：经典、三次抛物线、半波正弦；潜行反向切换。安装 ANTE 时也可在其轨道配置中设置 rail_shape 键。",
 	"easement.yanyang_easement.classic": "经典（直—圆—直）",
 	"easement.yanyang_easement.cubic_parabola": "三次抛物线缓和曲线",
 	"easement.yanyang_easement.half_wave_sine": "半波正弦缓和曲线",
 	"message.yanyang_easement.shape_set": "轨道线型：%s",
 	"message.yanyang_easement.no_rails": "该节点没有连接轨道",
 	"message.yanyang_easement.no_permission": "你没有修改轨道的权限",
-	"message.yanyang_easement.regen_hint": "列车将在车辆段重新生成路径后沿新线型运行。单条轨道也可用「轨道数据编辑器」编辑（键名：rail_shape）。"
+	"message.yanyang_easement.regen_hint": "轨道外观立即更新；列车将在车辆段重新生成路径后沿新线型运行。"
 }
