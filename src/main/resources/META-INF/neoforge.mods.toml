@@ -11,13 +11,13 @@ authors = "${mod_author}"
 description = "${mod_description}"
 logoFile = "assets/mtr/textures/block/sign/logo.png"
 
-[["dependencies.${mod_id}"]]
+[[dependencies.${mod_id}]]
 modId = "neoforge"
 type = "required"
 ordering = "NONE"
 side = "BOTH"
 
-[["dependencies.${mod_id}"]]
+[[dependencies.${mod_id}]]
 modId = "minecraft"
 type = "required"
 ordering = "NONE"
