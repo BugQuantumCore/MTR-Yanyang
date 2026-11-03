@@ -1,31 +1,33 @@
-MTR-Yanyang 4.1.0-beta-2.yanyang.16 — drop-in upgrade for 4.1.0-beta-2.yanyang.15 (1.21.1 & 1.21.4, Fabric & NeoForge).
+MTR-Yanyang 4.1.0-beta-2.yanyang.17 — drop-in upgrade for 4.1.0-beta-2.yanyang.16 (1.21.1 & 1.21.4, Fabric & NeoForge).
 
-The headline: falling onto a stationary train's roof now lands you **on** it. Plus the NeoForge build comes alive under Vulkan, and FML can finally read its dependency declarations.
+Every Radiance release — including every loader and MC build — is now safe to run with the mod. Pre-0.1.6 builds no longer crash the JVM when an MTR screen opens.
 
-## The bug you reported 落到车顶被撞飞
+## The audit 全版本审计
 
-You drop from the sky onto a parked train — and instead of standing on the roof, you're flung off sideways. That was the yanyang.15 depenetration's blind spot, and the code explains it exactly: it resolved **every** overlap along the axis of minimum penetration, decided by comparing box centres — it had no way to tell *how* an overlap came to be. A landing penetrates deep in a single tick (up to terminal velocity, ~3.9 blocks); once your feet pass the hull box's centre, the up direction disqualifies itself, a horizontal axis wins, and the correction ejects you off the train while you're still falling. Reading exactly as "knocked flying by a parked train".
+Radiance's distribution turned out to be far wider than the "1.21.4 Fabric" the yanyang.16 detection was verified against — Modrinth ships **0.1.6-alpha for 1.21.1/1.21.4/1.20.1 × fabric/forge/neoforge** (9 platform jars), plus 0.1.0–0.1.5 for fabric-1.21.4. Every jar was inspected remotely (HTTP-range zip reads, a few hundred KB each):
 
-## The fix: entry-aware depenetration 按入箱方向解算
+- The detection probes (`com.radiance.Radiance` / `com.radiance.client.RadianceClient`) are present in **all 9 releases** — the yanyang.16 detection hits every build.
+- No build bundles `net.vulkanmod` classes — no false-positive VulkanMod probe.
+- The actual `@Mixin` targets — parsed from each shipped jar's bytecode annotations, both mojang-named (NeoForge) and intermediary-named (Fabric) builds — **never overlap** the mod's own mixin targets (`Entity`, `EntityGetter`, `ServerPlayer`, `EditBox`, the MTR-internal classes, UniversalCraft). No apply-time conflict is possible on any combination.
 
-`EntityMoveMixin` now snapshots your bounding box at the **head** of `Entity#move` and hands it to the tail depenetration. The overlap is classified before it is resolved:
+## The one real incompatibility 0.1.6 之前没有 OpenGL 上下文
 
-- **Feet at or above a box's top surface before the move** (within one vanilla step height, so walking between adjacent cars' roofs on a gradient steps up instead of shoving you sideways) — the overlap is the tail of a fall and resolves **straight up onto the surface**: you are snapped to the roof, the fall velocity is cancelled, the fall distance reset and ground contact flagged. You actually *stand* on the roof — jumping, walking friction, step-up and fall damage all behave.
-- **Everything entered from the side** — a wall, a crowd at platform level, a train sweeping into a track-level player (the 撞飞 impulse) — keeps the shipped bounded minimum-axis eviction, byte-identical.
-- Landing onto an AI passenger's head behaves the same way (they are solid, after all), while the platform-level crowd is untouched (their 1.8-tall boxes never reach the step-height window).
+Verified against the shipped 0.1.0–0.1.5 jars' bytecode: `WindowMixins` creates the GLFW window with `GLFW_NO_API`, redirects `glfwMakeContextCurrent` to nothing and stubs `GL.createCapabilities` to return null. Unlike VulkanMod there is also **no GL virtualization** — Radiance only intercepts Minecraft's `GlStateManager`/`RenderSystem`, not raw LWJGL calls. MTR's screens draw through Elementa → UniversalCraft, whose `URenderPass` is built on raw `glGet*`/`glDraw*` — opening any MTR screen (dashboard, ticket machine, PIDS editor…) under those builds was a guaranteed `EXCEPTION_ACCESS_VIOLATION` JVM crash. The state-fabrication mixin that fixes this under VulkanMod cannot help here: the draw calls themselves would crash even with the query fabricated.
 
-Verified against the real 1.21.1 **and** 1.21.4 official Mojang mappings and simulated across 17 scenarios: deep terminal-velocity falls, roof-edge landings, step-up/down between adjacent cars' roofs, gravity-sink re-landing while standing, jumps, lag-spike deep falls, doorway-gap falls, platform-side blocks and track-level sweeps.
+## The fix: graceful degradation 优雅降级
 
-## NeoForge under Vulkan NeoForge 版 Vulkan 兼容
+A new class-presence probe — Radiance 0.1.6's GL↔Vulkan interop classes (`opengl_ui.OpenGLUiBridge`/`OpenGLUiProxy`, present in every shipped 0.1.6 jar, absent before) — tells the two generations apart. `WindowBase#onDrawScreen`, the single funnel every MTR Elementa screen renders through, checks it first: on a pre-0.1.6 Radiance the Elementa draw is replaced by a bilingual vanilla-font notice ("this screen needs Radiance 0.1.6+") drawn through `Font#drawInBatch` into the shared buffer source — the same vanilla path `SignPreviewComponent` already uses inside Elementa screens, which Radiance intercepts and renders safely. The screen stays closable, input keeps working, and a one-shot log line explains the skip.
 
-The native wrvk pipeline was silently dead on NeoForge: the "is VulkanMod loaded" probe asked the **Fabric loader** for mod id `vulkanmod` — a probe that soft-fails on NeoForge, where no Fabric loader exists on the class path. The probe now routes through a loader-agnostic class-presence check, verified against both NeoForge ports — yiyuyan/VulkanModNeoForge (1.21.4) and TrulyRin/VulkanMod-Reforged (1.21.1). Both keep the whole `net.vulkanmod.*` tree, so the existing detection, the beacon-beam stage redirect, the UniversalCraft GL-state fabrication and the reflection chain all match them unchanged. The one real port difference — the GL emulation layer ships as `net.vulkanmod.gl.GlTexture` instead of official 0.6.x's `VkGlTexture` — is now a third, optional texture route, so native-model textures resolve under the ports too.
+**0.1.6+ behaviour is untouched**: the probe reads "interop present" and every renderer path is byte-identical to yanyang.16.
 
-**Radiance** (the Vulkan C++ ray-tracing renderer, 1.21.4 Fabric) is now detected and the native pipeline explicitly stays off under it; its two VulkanMod-specific workarounds are deliberately skipped there, with the evidence recorded in the changelog.
+## Compatibility matrix 兼容矩阵
 
-## mods.toml dependencies FML 依赖声明修复
-
-Inherited from upstream's stonecutter branch: the dependency table headers were written `["dependencies.mtr"]` — **quoted**, which TOML defines as a single literal key, not a `dependencies` table containing a `mtr` array. FML's `ModInfo` reads dependencies with a nested path query that matched nothing, so both declared dependencies silently vanished — no version gating, no mis-install warnings. The headers are now the official MDK form `[[dependencies.mtr]]`; the `minecraft` version range is enforced again, so installing the wrong-MC jar produces FML's normal version error instead of a later, harder-to-read crash. The mixin declarations were already correct — the collision-box mixins were never affected.
+| Radiance | With MTR-Yanyang |
+|---|---|
+| 0.1.6-alpha, 1.21.1/1.21.4 × fabric/neoforge | ✅ fully compatible — trains, collision boxes, screens all work |
+| 0.1.0–0.1.5, fabric 1.21.4 | ✅ co-loads cleanly — game/world/trains/collision boxes/riding all work; MTR screens show the update notice instead of crashing; update Radiance to restore them fully |
+| 1.20.1 / forge builds | no MTR-Yanyang counterpart exists (out of scope) |
 
 ## Install
 
-Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.16+<version>-<loader>.jar`. No config changes; all fixes are always on. The roof-landing fix composes with Lithium at its defaults — it lives in the same `Entity#move` fallback Lithium cannot bypass.
+Replace the mod jar with `mtr-4.1.0-beta-2.yanyang.17+<version>-<loader>.jar`. No config changes; the Radiance guard is always on.

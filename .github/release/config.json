@@ -1,6 +1,6 @@
 {
-  "run_id": "41493870963",
-  "tag": "4.1.0-beta-2.yanyang.16",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.16 (1.21.1 & 1.21.4, Fabric & NeoForge) — falling onto a stationary train's roof lands you on it (entry-aware depenetration); NeoForge comes alive under the VulkanMod NeoForge ports; FML reads the mods.toml dependencies again",
+  "run_id": "41634052128",
+  "tag": "4.1.0-beta-2.yanyang.17",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.17 (1.21.1 & 1.21.4, Fabric & NeoForge) — every Radiance release is now safe to run with the mod: all 9 shipped versions audited (probes, mixin targets, GL context), and pre-0.1.6 builds no longer crash the JVM when an MTR screen opens 全部 Radiance 版本兼容性审计与旧版界面崩溃修复",
   "notes_file": "notes.md"
 }
