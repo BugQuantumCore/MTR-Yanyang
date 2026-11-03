@@ -55,6 +55,7 @@ public final class VulkanCompat {
         private static volatile boolean vulkanModActive = detectVulkanMod();
         private static volatile boolean berylInstalled = detectBerylInstalled();
         private static volatile boolean radianceActive = detectRadiance();
+        private static volatile boolean radianceGlInterop = detectRadianceGlInterop();
         /**
          * Beryl's runtime "the shader pipeline is driving this frame" flag — the
          * package-private static boolean
@@ -96,6 +97,23 @@ public final class VulkanCompat {
                 // main entrypoint and "com.radiance.client.RadianceClient" the client entrypoint; both
                 // exist in every build, and probing both keeps detection stable if either is refactored.
                 return isClassPresent("com.radiance.Radiance") || isClassPresent("com.radiance.client.RadianceClient");
+        }
+
+        private static boolean detectRadianceGlInterop() {
+                // Radiance 0.1.6+ keeps a real OpenGL context alive for UI rendering through its
+                // GL<->Vulkan interop: the opengl_ui package (OpenGLUiBridge adopts the window
+                // context, OpenGLUiProxy.exportSurface hands the finished GL frame to the Vulkan
+                // backend). Verified present in every shipped 0.1.6-alpha jar (fabric/neoforge,
+                // 1.21.1/1.21.4). Versions before 0.1.6 register WindowMixins, which creates the
+                // GLFW window with GLFW_NO_API, cancels glfwMakeContextCurrent and stubs
+                // GL.createCapabilities (verified against the shipped 0.1.0-0.1.5 jars' bytecode):
+                // no GL context exists at all, and any raw LWJGL GL call — UniversalCraft's
+                // glGet*/glDraw* family in particular — crashes the JVM inside the driver.
+                // Probing both classes keeps the probe stable if either is refactored; the probe
+                // is deliberately independent of {@link #detectRadiance()} so a future Radiance
+                // build renaming the interop classes reads as "no interop" (conservative).
+                return isClassPresent("com.radiance.client.opengl_ui.OpenGLUiBridge")
+                                || isClassPresent("com.radiance.client.opengl_ui.OpenGLUiProxy");
         }
 
         private static boolean detectBerylInstalled() {
@@ -186,6 +204,23 @@ public final class VulkanCompat {
          */
         public static boolean isRadianceActive() {
                 return radianceActive;
+        }
+
+        /**
+         * @return {@code true} when the current renderer cannot host UniversalCraft/Elementa's
+         *         raw-OpenGL renderer at all — i.e. <b>Radiance before 0.1.6</b>. Those builds
+         *         create the GLFW window with {@code GLFW_NO_API} and cancel
+         *         {@code glfwMakeContextCurrent}/{@code GL.createCapabilities}, so no GL context
+         *         exists and no GL calls are virtualized (unlike VulkanMod, whose GL emulation
+         *         layer hosts raw draws and whose un-virtualized {@code glGet*} family is covered
+         *         by {@code UniversalCraftManagedGlStateMixin}). Radiance 0.1.6+ keeps a real GL
+         *         context alive through its GL↔Vulkan interop, so it is fine. Callers must
+         *         not let any UniversalCraft rendering happen while this returns {@code true} —
+         *         {@code WindowBase#onDrawScreen} replaces the Elementa draw with a vanilla-font
+         *         notice instead.
+         */
+        public static boolean isUniversalCraftRenderingUnsupported() {
+                return radianceActive && !radianceGlInterop;
         }
 
         /**
