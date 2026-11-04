@@ -143,10 +143,14 @@ public final class EasementShapeApplier {
         }
 
         /**
-         * legacy 路径：写入轨道实例印记，镜像到 ANTE 后用本补丁的自定义包广播
-         * （YMTR 自身状态未变，无需调用其广播）。清除线型时从 ANTE
-         * {@code customConfigs} 一并移除对应键（值为 {@code null} = 删除），
-         * 避免回读路径复活旧线型。
+         * legacy 路径：写入轨道实例印记，镜像到 ANTE 后写入服务器形状记忆，并立即经
+         * YMTR 自己的 {@code createRailS2C} 回推（v1.0.3）—— 客户端用带
+         * {@code rail_shape} 的新 {@code Rail} 对象替换本地副本，ANTE 依据其
+         * {@code equals}（writePacket 字节，含 customConfigs）自动重烘该轨道；
+         * 此后用户再用刷子编辑时客户端会把 {@code rail_shape} 原样带回服务器。
+         * 广播本身由 {@code PacketTrainDataGuiServerMixin} 的 TAIL 注入完成
+         * （v1.0.4 起多键广播）。清除线型时从 ANTE {@code customConfigs} 一并移除
+         * 对应键（值为 {@code null} = 删除），避免回读路径复活旧线型。
          */
         private static void applyShapeViaStamp(Level level, Connection connection, EasementShape shape) {
                 final String key = shape == null ? null : shape.key();
@@ -157,9 +161,10 @@ public final class EasementShapeApplier {
                 mirror.put(EasementShape.RAIL_DATA_KEY, key);
                 mirror.put(EasementShape.RAIL_DATA_TYPE_PREFIX + EasementShape.RAIL_DATA_KEY, key == null ? null : "string");
                 AnteMirror.setRailCustomConfigsMirror(connection.forward, mirror);
-                AnteMirror.setRailCustomConfigsMirror(connection.backward, mirror);
+                AnteMirror.setRailCustomConfigsMirror(connection.backward, new HashMap<>(mirror));
 
-                ShapeStore.broadcastShape(level, connection.start, connection.end, key);
+                ShapeStore.rememberServerShape(level.dimension().location(), RailPair.of(connection.start, connection.end), key);
+                PacketTrainDataGuiServer.createRailS2C(level, connection.forward.transportMode, connection.start, connection.end, connection.forward, connection.backward, 0);
         }
 
         /**

@@ -55,8 +55,11 @@ public class YanyangEasementModClient implements ClientModInitializer {
                         final long a = buf.readLong();
                         final long b = buf.readLong();
                         final String shapeKey = buf.readUtf();
+                        // v1.0.4：镜像条目携带真实节点对（几何被 ANTE 编辑污染时用于端点锚定）。
+                        final long nodeA = buf.readLong();
+                        final long nodeB = buf.readLong();
                         LOGGER.info("Received shape sync: {} for {} in {}", shapeKey.isEmpty() ? "(classic)" : shapeKey, RailPair.of(a, b), dimension);
-                        client.execute(() -> ShapeStore.clientPut(dimension, RailPair.of(a, b), shapeKey.isEmpty() ? null : shapeKey));
+                        client.execute(() -> ShapeStore.clientPut(dimension, RailPair.of(a, b), new ShapeStore.ShapeRecord(shapeKey, nodeA, nodeB)));
                 });
 
                 // 客户端 tick（渲染线程）：镜像有实际变化时让 ANTE 重建烘焙轨道；

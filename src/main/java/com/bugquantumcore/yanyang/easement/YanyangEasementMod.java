@@ -3,6 +3,7 @@ package com.bugquantumcore.yanyang.easement;
 import com.bugquantumcore.yanyang.easement.item.ItemEasementShapeTool;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -58,6 +59,9 @@ public class YanyangEasementMod implements ModInitializer {
                 // legacy YMTR 的客户端线型同步：玩家加入与切换维度后全量推送当前维度的印记。
                 ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> ShapeStore.syncPlayerShapes(handler.getPlayer()));
                 ServerEntityWorldChangeEvents.AFTER_PLAYER_CHANGE_WORLD.register((player, originWorld, destinationWorld) -> ShapeStore.syncPlayerShapes(player));
+
+                // v1.0.3：服务器停止时清空形状记忆（下次启动按存档重建，避免跨存档残留）。
+                ServerLifecycleEvents.SERVER_STOPPED.register(server -> ShapeStore.clearServerShapeMemory());
 
                 // 服务端周期诊断报告（线型解析统计；无新活动时不输出）。
                 ServerTickEvents.END_SERVER_TICK.register(YanyangEasementMod::tickReport);

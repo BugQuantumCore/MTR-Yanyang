@@ -27,4 +27,16 @@ public interface RailDuck {
          *                 {@code null} 表示经典线型
          */
         void yanyang$setShapeStamp(String shapeKey);
+
+        /**
+         * v1.0.4：把「从经典几何推导连接键」的逻辑暴露给服务器侧广播代码使用。
+         *
+         * <p>服务器与客户端用完全相同的推导（{@link ClassicRailGeometry} + floor +
+         * {@link RailPair#pack}），因此即便 ANTE 编辑过的轨道几何无法复原出真实
+         * 节点坐标（MTR 公式推导出错位的端点），两端推导结果仍然一致 ——
+         * 镜像按「几何键」即可命中。</p>
+         *
+         * @return 按本轨道经典几何字段推导出的连接键
+         */
+        RailPair yanyang$pairKey();
 }

@@ -1,6 +1,7 @@
 package com.bugquantumcore.yanyang.easement;
 
 import io.netty.buffer.Unpooled;
+import mtr.data.Rail;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.BlockPos;
@@ -12,7 +13,9 @@ import net.minecraft.world.level.Level;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -61,16 +64,39 @@ public final class ShapeStore {
 
         /**
          * 自定义 S2C 通道：{@code yanyang_easement:shape_sync}。
-         * 载荷：维度 {@code ResourceLocation} + 连接键两个 long + 线型键（空串 = 经典）。
+         * 载荷：维度 {@code ResourceLocation} + 连接键两个 long + 线型键（空串 = 经典）
+         * + v1.0.4 追加的真实节点对两个 long（镜像条目携带，用于端点锚定）。
          */
         public static final ResourceLocation SHAPE_SYNC_CHANNEL =
                         new ResourceLocation(YanyangEasementMod.MOD_ID, "shape_sync");
 
         /**
-         * 客户端镜像：维度 → 连接键 → 线型键（空串 = 明确经典）。仅在客户端环境使用
+         * v1.0.4：镜像条目 —— 线型键 + 真实节点对。客户端几何键命中后把缓和曲线
+         * 端点锚定到真实节点，不再信任被 ANTE 编辑污染的经典几何字段
+         * （其推导端点可能偏离节点若干格）。
+         */
+        public record ShapeRecord(String shapeKey, long nodeA, long nodeB) {
+
+                /**
+                 * @return 是否为明确的经典线型（空串或 {@code null} 键）
+                 */
+                public boolean isClassic() {
+                        return shapeKey == null || shapeKey.isEmpty();
+                }
+        }
+
+        /**
+         * 客户端镜像：维度 → 连接键 → 镜像条目。仅在客户端环境使用
          * （专用服务端恒为空）。
          */
-        private static final Map<ResourceLocation, Map<RailPair, String>> CLIENT_SHAPES = new ConcurrentHashMap<>();
+        private static final Map<ResourceLocation, Map<RailPair, ShapeRecord>> CLIENT_SHAPES = new ConcurrentHashMap<>();
+
+        /**
+         * v1.0.3：服务器形状记忆（维度 → 连接键 → 线型键，空串 = 明确经典）。
+         * MTR GUI 重连等场景会用全新 {@code Rail} 对象重建连接（印记与
+         * {@code customConfigs} 全部丢失），靠这层记忆把线型恢复回去。
+         */
+        private static final Map<ResourceLocation, Map<RailPair, String>> SERVER_SHAPE_MEMORY = new ConcurrentHashMap<>();
 
         /**
          * 失效纪元。任何线型数据变化递增。
@@ -119,9 +145,9 @@ public final class ShapeStore {
          * 客户端轨道的线型查询（legacy 路径）。非客户端环境（专用服务端）恒返回 {@code null}。
          *
          * @param pair 连接键（由经典几何复原的节点对）
-         * @return 线型键；空串 = 明确的经典线型；无记录时 {@code null}（继续回退）
+         * @return 镜像条目（含真实节点对）；无记录时 {@code null}（继续回退）
          */
-        public static String clientLookup(RailPair pair) {
+        public static ShapeRecord clientLookup(RailPair pair) {
                 if (FabricLoader.getInstance().getEnvironmentType() != net.fabricmc.api.EnvType.CLIENT) {
                         return null;
                 }
@@ -133,7 +159,7 @@ public final class ShapeStore {
                 if (dimension == null) {
                         return null;
                 }
-                final Map<RailPair, String> shapes = CLIENT_SHAPES.get(dimension);
+                final Map<RailPair, ShapeRecord> shapes = CLIENT_SHAPES.get(dimension);
                 return shapes == null ? null : shapes.get(pair);
         }
 
@@ -142,18 +168,20 @@ public final class ShapeStore {
          *
          * @param dimension 维度
          * @param pair      连接键
-         * @param shapeKey  线型键；{@code null} 写入空串条目（明确经典线型）
+         * @param record    镜像条目（线型键 + 真实节点对）；{@code null} 键写入空串条目（明确经典）
          * @return 本次写入是否实际改变了镜像（需要重建烘焙轨道等派生缓存）
          */
-        public static boolean clientPut(ResourceLocation dimension, RailPair pair, String shapeKey) {
-                final String effective = shapeKey == null ? "" : shapeKey;
-                final Map<RailPair, String> shapes = CLIENT_SHAPES.computeIfAbsent(dimension, key -> new ConcurrentHashMap<>());
-                final boolean changed = !effective.equals(shapes.put(pair, effective));
+        public static boolean clientPut(ResourceLocation dimension, RailPair pair, ShapeRecord record) {
+                final String effective = record.shapeKey() == null ? "" : record.shapeKey();
+                final ShapeRecord normalized = new ShapeRecord(effective, record.nodeA(), record.nodeB());
+                final Map<RailPair, ShapeRecord> shapes = CLIENT_SHAPES.computeIfAbsent(dimension, key -> new ConcurrentHashMap<>());
+                final boolean changed = !normalized.equals(shapes.put(pair, normalized));
                 if (changed) {
                         bumpEpoch();
                         clientDirty = true;
-                        LOGGER.info("Client shape mirror: {} -> {} (dim {}, mirror size {})",
-                                        pair, effective.isEmpty() ? "(classic)" : effective, dimension, mirrorSize());
+                        LOGGER.info("Client shape mirror: {} -> {} (dim {}, nodes {} <-> {}, mirror size {})",
+                                        pair, effective.isEmpty() ? "(classic)" : effective, dimension,
+                                        RailPair.of(normalized.nodeA(), normalized.nodeB()), RailPair.of(normalized.nodeA(), normalized.nodeB()), mirrorSize());
                 }
                 return changed;
         }
@@ -176,40 +204,84 @@ public final class ShapeStore {
          */
         public static int mirrorSize() {
                 int size = 0;
-                for (final Map<RailPair, String> shapes : CLIENT_SHAPES.values()) {
+                for (final Map<RailPair, ShapeRecord> shapes : CLIENT_SHAPES.values()) {
                         size += shapes.size();
                 }
                 return size;
         }
 
         /**
-         * 向一个维度内的所有玩家广播某条连接的线型真值（服务端）。
+         * v1.0.4：收集一个连接的全部镜像键 —— 节点键（服务器权威 {@code BlockPos}）
+         * 加上 forward/backward 两个 {@code Rail} 对象按经典几何推导的键。
+         * 客户端 {@code RailMixin} 的查询用同一套几何推导，因此即便经典几何
+         * 无法表达真实节点（例如被 ANTE 轨道编辑器重写过），两端推导
+         * 结果仍然一致，镜像按几何键即可命中。
+         */
+        private static Set<RailPair> connectionKeys(BlockPos start, BlockPos end, Rail rail1, Rail rail2) {
+                final Set<RailPair> keys = new LinkedHashSet<>();
+                keys.add(RailPair.of(start, end));
+                appendDerivedKey(keys, rail1);
+                appendDerivedKey(keys, rail2);
+                return keys;
+        }
+
+        /** 把单个 {@code Rail} 的几何推导键追加进键集（推导失败不影响节点键广播）。 */
+        private static void appendDerivedKey(Set<RailPair> keys, Rail rail) {
+                if (rail instanceof RailDuck duck) {
+                        try {
+                                final RailPair derived = duck.yanyang$pairKey();
+                                if (derived != null) {
+                                        keys.add(derived);
+                                }
+                        } catch (Throwable t) {
+                                // 几何推导失败不影响节点键广播
+                        }
+                }
+        }
+
+        /**
+         * 向一个维度内的所有玩家广播某条连接的线型真值（服务端，v1.0.4 多键）。
+         * 对键集（节点键 + 几何推导键）中的每个键各发一包，客户端无论按哪种键
+         * 查询都能命中。
          *
          * @param level    轨道所在维度
          * @param start    连接起点节点
          * @param end      连接终点节点
          * @param shapeKey 线型键；{@code null} 表示经典线型（客户端记录为明确经典）
+         * @param rail1    参与同步的正向 {@code Rail}（几何推导键来源，可为 {@code null}）
+         * @param rail2    参与同步的反向 {@code Rail}（可为 {@code null}）
          */
-        public static void broadcastShape(Level level, BlockPos start, BlockPos end, String shapeKey) {
+        public static void broadcastShape(Level level, BlockPos start, BlockPos end, String shapeKey, Rail rail1, Rail rail2) {
                 if (!(level instanceof ServerLevel serverLevel) || serverLevel.players().isEmpty()) {
                         return;
                 }
                 final ResourceLocation dimension = level.dimension().location();
                 final RailPair pair = RailPair.of(start, end);
-                LOGGER.info("Broadcasting shape {} for {} in {} to {} player(s)",
-                                shapeKey == null ? "(classic)" : shapeKey, pair, dimension, serverLevel.players().size());
+                final Set<RailPair> keys = connectionKeys(start, end, rail1, rail2);
+                LOGGER.info("Broadcasting shape {} for {} in {} to {} player(s) via {} key(s)",
+                                shapeKey == null ? "(classic)" : shapeKey, pair, dimension, serverLevel.players().size(), keys.size());
                 for (final ServerPlayer player : serverLevel.players()) {
-                        final FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
-                        buf.writeResourceLocation(dimension);
-                        buf.writeLong(pair.a());
-                        buf.writeLong(pair.b());
-                        buf.writeUtf(shapeKey == null ? "" : shapeKey);
-                        ServerPlayNetworking.send(player, SHAPE_SYNC_CHANNEL, buf);
+                        for (final RailPair key : keys) {
+                                sendShape(player, dimension, key, shapeKey, pair);
+                        }
                 }
         }
 
+        /** 单玩家单键发送：载荷 = 维度 + 键 + 线型键 + 真实节点对（v1.0.4 追加）。 */
+        private static void sendShape(ServerPlayer player, ResourceLocation dimension, RailPair key, String shapeKey, RailPair nodes) {
+                final FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
+                buf.writeResourceLocation(dimension);
+                buf.writeLong(key.a());
+                buf.writeLong(key.b());
+                buf.writeUtf(shapeKey == null ? "" : shapeKey);
+                buf.writeLong(nodes.a());
+                buf.writeLong(nodes.b());
+                ServerPlayNetworking.send(player, SHAPE_SYNC_CHANNEL, buf);
+        }
+
         /**
-         * 玩家加入 / 切换维度后的全量同步（服务端）：发送该维度所有带线型印记的轨道。
+         * 玩家加入 / 切换维度后的全量同步（服务端）：发送该维度所有带线型的轨道
+         * （印记 → ANTE {@code customConfigs} → 服务器形状记忆三层解析，v1.0.3）。
          * 仅在 legacy 模式下有实际内容（capable 版本的线型随 YMTR 原生数据同步）。
          */
         public static void syncPlayerShapes(ServerPlayer player) {
@@ -222,7 +294,7 @@ public final class ShapeStore {
                         LOGGER.info("Join sync for {}: railway data not available yet", player.getGameProfile().getName());
                         return;
                 }
-                final Map<BlockPos, Map<BlockPos, mtr.data.Rail>> rails =
+                final Map<BlockPos, Map<BlockPos, Rail>> rails =
                                 ((RailwayDataAccessorDuck) railwayData).yanyang$getRails();
                 if (rails == null || rails.isEmpty()) {
                         LOGGER.info("Join sync for {}: no rails in {}", player.getGameProfile().getName(), level.dimension().location());
@@ -231,18 +303,30 @@ public final class ShapeStore {
                 final ResourceLocation dimension = level.dimension().location();
                 int sent = 0;
                 int connections = 0;
-                for (final Map.Entry<BlockPos, Map<BlockPos, mtr.data.Rail>> outgoing : rails.entrySet()) {
-                        for (final Map.Entry<BlockPos, mtr.data.Rail> entry : outgoing.getValue().entrySet()) {
+                for (final Map.Entry<BlockPos, Map<BlockPos, Rail>> outgoing : rails.entrySet()) {
+                        for (final Map.Entry<BlockPos, Rail> entry : outgoing.getValue().entrySet()) {
                                 connections++;
-                                final String stamp = ((RailDuck) entry.getValue()).yanyang$getShapeStamp();
-                                if (stamp != null) {
+                                String shapeKey = ((RailDuck) entry.getValue()).yanyang$getShapeStamp();
+                                if (shapeKey == null) {
+                                        // v1.0.3：ANTE customConfigs 回读（编辑器路径 / 被替换后印记丢失的兑底）。
+                                        final String configured = AnteMirror.readRailShapeKey(entry.getValue());
+                                        if (configured != null && EasementShape.fromKey(configured) != null) {
+                                                shapeKey = configured;
+                                        }
+                                }
+                                if (shapeKey == null) {
+                                        // v1.0.3：服务器形状记忆（MTR GUI 重连等全新对象场景）。
+                                        final String remembered = recallServerShape(dimension, RailPair.of(outgoing.getKey(), entry.getKey()));
+                                        if (remembered != null && !remembered.isEmpty()) {
+                                                shapeKey = remembered;
+                                        }
+                                }
+                                if (shapeKey != null) {
                                         final RailPair pair = RailPair.of(outgoing.getKey(), entry.getKey());
-                                        final FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.buffer());
-                                        buf.writeResourceLocation(dimension);
-                                        buf.writeLong(pair.a());
-                                        buf.writeLong(pair.b());
-                                        buf.writeUtf(stamp);
-                                        ServerPlayNetworking.send(player, SHAPE_SYNC_CHANNEL, buf);
+                                        final Set<RailPair> keys = connectionKeys(outgoing.getKey(), entry.getKey(), entry.getValue(), null);
+                                        for (final RailPair key : keys) {
+                                                sendShape(player, dimension, key, shapeKey, pair);
+                                        }
                                         sent++;
                                 }
                         }
@@ -319,6 +403,37 @@ public final class ShapeStore {
          * 私有字段 {@code rails} 自 YMTR 3.0 起在所有 3.x 版本上同名同构。
          */
         public interface RailwayDataAccessorDuck {
-                Map<BlockPos, Map<BlockPos, mtr.data.Rail>> yanyang$getRails();
+                Map<BlockPos, Map<BlockPos, Rail>> yanyang$getRails();
+        }
+
+        // ---- v1.0.3：服务器形状记忆 ----
+
+        /**
+         * 记住一个连接在服务器侧的线型真值（含空串 = 明确经典）。
+         * 由 {@code PacketTrainDataGuiServerMixin} 在每次 {@code createRailS2C} 时
+         * 与线型工具施印时写入 —— MTR GUI 重连用全新对象重建连接时靠它恢复。
+         */
+        public static void rememberServerShape(ResourceLocation dimension, RailPair pair, String shapeKey) {
+                if (dimension == null || pair == null) {
+                        return;
+                }
+                final String effective = shapeKey == null ? "" : shapeKey;
+                SERVER_SHAPE_MEMORY.computeIfAbsent(dimension, key -> new ConcurrentHashMap<>()).put(pair, effective);
+        }
+
+        /**
+         * 回忆一个连接在服务器侧的线型真值；无记录时 {@code null}。
+         */
+        public static String recallServerShape(ResourceLocation dimension, RailPair pair) {
+                if (dimension == null || pair == null) {
+                        return null;
+                }
+                final Map<RailPair, String> memory = SERVER_SHAPE_MEMORY.get(dimension);
+                return memory == null ? null : memory.get(pair);
+        }
+
+        /** 清空服务器形状记忆（存档卸载 / 服务器重置时由生命周期事件调用）。 */
+        public static void clearServerShapeMemory() {
+                SERVER_SHAPE_MEMORY.clear();
         }
 }

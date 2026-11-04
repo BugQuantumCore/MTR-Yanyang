@@ -119,6 +119,106 @@ public final class ClassicRailGeometry {
                 return EasedRailPath.build(x1, z1, heading1, x2, z2, opposite(heading2Stored), shape == EasementShape.HALF_WAVE_SINE);
         }
 
+        /**
+         * v1.0.4：以「真实节点对」锚定端点求解缓和路径。
+         *
+         * <p>被 ANTE/NTE 轨道编辑器重写过的 {@code Rail}，其经典几何字段（h/k/r/t 等）
+         * 可能不再满足 MTR 构造器的端点锚定性质 —— 从几何推导的端点会偏离真实节点
+         * 若干格（例如一条南北向长轨被推导到错误的 x 上，导致镜像查询 miss、
+         * 线型不生效）。</p>
+         *
+         * <ul>
+         * <li>若几何推导端点与真实节点一致（绝大多数原生 MTR 轨道），行为与
+         * {@link #resolveEased(EasementShape)} 完全相同（采样表逐位一致）；</li>
+         * <li>否则把端点按「就近配对」锚定到服务器广播携带的真实节点；方向角仍取
+         * 几何切向（编辑器写入的几何朝向通常与节点连线方向一致）；竖向剖面由
+         * {@code Rail} 自身的 {@code getPositionY} 决定，与本处无关。</li>
+         * </ul>
+         *
+         * @param shape 线型；{@code null} 表示经典线型
+         * @param nodeA 真实节点 A 的 {@code BlockPos.asLong()} 打包值（服务器广播携带）
+         * @param nodeB 真实节点 B 的 {@code BlockPos.asLong()} 打包值
+         * @return 缓和路径；未设置线型或几何退化时返回 {@code null}
+         */
+        public EasedRailPath resolveEasedAnchored(EasementShape shape, long nodeA, long nodeB) {
+                if (shape == null) {
+                        return null;
+                }
+
+                final double classicLength = length();
+                if (classicLength <= ANGLE_EPSILON) {
+                        return null;
+                }
+
+                final double[] start = positionXZ(0);
+                final double[] end = positionXZ(classicLength);
+                final long geoX1 = (long) Math.floor(start[0]);
+                final long geoZ1 = (long) Math.floor(start[1]);
+                final long geoX2 = (long) Math.floor(end[0]);
+                final long geoZ2 = (long) Math.floor(end[1]);
+
+                // 真实节点解包（与 RailPair.pack / BlockPos.asLong 的布局一致）。
+                final long ax = unpackX(nodeA);
+                final long az = unpackZ(nodeA);
+                final long bx = unpackX(nodeB);
+                final long bz = unpackZ(nodeB);
+
+                final long x1;
+                final long z1;
+                final long x2;
+                final long z2;
+                if (geoX1 == ax && geoZ1 == az && geoX2 == bx && geoZ2 == bz) {
+                        // 几何推导端点 == 真实节点：与 resolveEased 完全一致（无回归）。
+                        x1 = geoX1;
+                        z1 = geoZ1;
+                        x2 = geoX2;
+                        z2 = geoZ2;
+                } else {
+                        // 几何被编辑器污染：按距离就近配对起终点，强制锚定到真实节点。
+                        final double forwardCost = dist2(start[0], start[1], ax, az) + dist2(end[0], end[1], bx, bz);
+                        final double backwardCost = dist2(start[0], start[1], bx, bz) + dist2(end[0], end[1], ax, az);
+                        if (forwardCost <= backwardCost) {
+                                x1 = ax;
+                                z1 = az;
+                                x2 = bx;
+                                z2 = bz;
+                        } else {
+                                x1 = bx;
+                                z1 = bz;
+                                x2 = ax;
+                                z2 = az;
+                        }
+                }
+
+                final double[] startPlus = positionXZ(ANGLE_EPSILON);
+                final double[] endMinus = positionXZ(classicLength - ANGLE_EPSILON);
+                final double heading1 = heading(startPlus[0] - start[0], startPlus[1] - start[1]);
+                final double heading2Stored = heading(endMinus[0] - end[0], endMinus[1] - end[1]);
+
+                return EasedRailPath.build(x1, z1, heading1, x2, z2, opposite(heading2Stored), shape == EasementShape.HALF_WAVE_SINE);
+        }
+
+        /** 平方距离（仅用于端点-节点就近配对的比较，无需开方）。 */
+        private static double dist2(double px, double pz, long qx, long qz) {
+                final double dx = px - qx;
+                final double dz = pz - qz;
+                return dx * dx + dz * dz;
+        }
+
+        /** {@code BlockPos.asLong()} 布局的 X 解包（26 位符号扩展）。 */
+        static long unpackX(long packed) {
+                return signExtend26(packed >> 38 & 0x3FFFFFF);
+        }
+
+        /** {@code BlockPos.asLong()} 布局的 Z 解包（26 位符号扩展）。 */
+        static long unpackZ(long packed) {
+                return signExtend26(packed >> 12 & 0x3FFFFFF);
+        }
+
+        private static long signExtend26(long value) {
+                return (value & 0x2000000) != 0 ? value - 0x4000000 : value;
+        }
+
         private static double[] segmentXZ(double h, double k, double r, double t, boolean isStraight) {
                 if (isStraight) {
                         final double sideOffset = Math.abs(h) >= 0.5 && Math.abs(k) >= 0.5 ? 0 : r;

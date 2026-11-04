@@ -17,7 +17,7 @@ import java.util.Map;
  * 自带的 {@code mtr.client.AnteRailCompat}，但以自有反射实现（该类在更早版本上不存在）。
  * 镜像目标（与 {@code AnteRailCompat} 相同）：
  * <pre>
- * cn.zbx1425.mtrsteamloco.data.RailExtraSupplier
+ * [fabric.]cn.zbx1425.mtrsteamloco.data.RailExtraSupplier   // v1.0.4：Forgix 前缀优先
  *   ├── getCustomConfigs()        // 读取轨道的 ANTE 配置映射
  *   └── setCustomConfigs(Map)     // 写回
  * </pre></li>
@@ -40,9 +40,22 @@ public final class AnteMirror {
 
         private static final Logger LOGGER = LoggerFactory.getLogger("YanyangEasement");
 
-        private static final String SUPPLIER_CLASS = "cn.zbx1425.mtrsteamloco.data.RailExtraSupplier";
+        /**
+         * v1.0.4：Aphrodite MTR-ANTE / NTE 社区分发版使用 Forgix 合并的多 loader jar，
+         * Fabric 侧运行时类名带 {@code fabric.} 前缀（mixins.json 的 package 即为
+         * {@code fabric.cn.zbx1425.mtrsteamloco.mixin}）。反射必须同时尝试两种类名，
+         * 否则 {@code Class.forName} 静默失败，customConfigs 镜像 / rail_shape 回读 /
+         * clearRail 重烘全部变成 no-op —— 这正是 1.0.3 线型不生效的第二个根因。
+         */
+        private static final String[] SUPPLIER_CLASS_CANDIDATES = {
+                        "fabric.cn.zbx1425.mtrsteamloco.data.RailExtraSupplier",
+                        "cn.zbx1425.mtrsteamloco.data.RailExtraSupplier",
+        };
 
-        private static final String MAIN_CLIENT_CLASS = "cn.zbx1425.mtrsteamloco.MainClient";
+        private static final String[] MAIN_CLIENT_CLASS_CANDIDATES = {
+                        "fabric.cn.zbx1425.mtrsteamloco.MainClient",
+                        "cn.zbx1425.mtrsteamloco.MainClient",
+        };
 
         /**
          * ANTE 烘焙轨道清理（{@code MainClient.railRenderDispatcher.clearRail()}）的反射句柄；
@@ -130,17 +143,26 @@ public final class AnteMirror {
                                 return supplierClass != null;
                         }
                         resolved = true;
-                        try {
-                                supplierClass = Class.forName(SUPPLIER_CLASS);
-                                getCustomConfigs = supplierClass.getMethod("getCustomConfigs");
-                                setCustomConfigs = supplierClass.getMethod("setCustomConfigs", Map.class);
-                        } catch (ReflectiveOperationException e) {
-                                supplierClass = null; // ANTE 未安装（常态），不做日志
+                        // v1.0.4：按 Forgix 前缀优先、无前缀兑底的顺序尝试候选类名。
+                        for (final String candidate : SUPPLIER_CLASS_CANDIDATES) {
+                                try {
+                                        final Class<?> cls = Class.forName(candidate);
+                                        getCustomConfigs = cls.getMethod("getCustomConfigs");
+                                        setCustomConfigs = cls.getMethod("setCustomConfigs", Map.class);
+                                        supplierClass = cls;
+                                        break;
+                                } catch (Throwable t) {
+                                        // v1.0.4：捕获 Throwable —— 类存在但链接失败（LinkageError）也不能让施印/同步流程崩溃
+                                }
                         }
                         if (!supplierLogged) {
                                 supplierLogged = true;
                                 if (supplierClass != null) {
-                                        LOGGER.info("ANTE integration: RailExtraSupplier resolved (customConfigs mirror + rail_shape read-back active)");
+                                        LOGGER.info("ANTE integration: RailExtraSupplier resolved as {} (customConfigs mirror + rail_shape read-back active)", supplierClass.getName());
+                                } else {
+                                        // v1.0.4：不再静默。无 ANTE 时这是正常情况（INFO 级提示），
+                                        // 有 ANTE 却解析失败时用户需要知道镜像通路断了。
+                                        LOGGER.info("ANTE integration: RailExtraSupplier not found (tried {}); customConfigs mirror inactive. If an ANTE/NTE build is installed, please report this.", String.join(", ", SUPPLIER_CLASS_CANDIDATES));
                                 }
                         }
                         return supplierClass != null;
@@ -175,14 +197,21 @@ public final class AnteMirror {
                                 return clearBakedRails != null;
                         }
                         clearBakedRailsResolved = true;
-                        try {
-                                final Class<?> mainClient = Class.forName(MAIN_CLIENT_CLASS);
-                                final Object dispatcher = mainClient.getField("railRenderDispatcher").get(null);
-                                clearBakedRails = dispatcher.getClass().getMethod("clearRail");
-                                railRenderDispatcher = dispatcher;
-                                LOGGER.info("ANTE integration: railRenderDispatcher.clearRail resolved (baked rail rebuild available)");
-                        } catch (ReflectiveOperationException e) {
-                                clearBakedRails = null; // ANTE 未安装或结构变化（常态）
+                        // v1.0.4：同样按 Forgix 前缀优先的双候选解析。
+                        for (final String candidate : MAIN_CLIENT_CLASS_CANDIDATES) {
+                                try {
+                                        final Class<?> mainClient = Class.forName(candidate);
+                                        final Object dispatcher = mainClient.getField("railRenderDispatcher").get(null);
+                                        clearBakedRails = dispatcher.getClass().getMethod("clearRail");
+                                        railRenderDispatcher = dispatcher;
+                                        LOGGER.info("ANTE integration: {}.railRenderDispatcher.clearRail resolved (baked rail rebuild available)", mainClient.getName());
+                                        break;
+                                } catch (Throwable t) {
+                                        // v1.0.4：捕获 Throwable —— 链接失败也不能让同步流程崩溃
+                                }
+                        }
+                        if (clearBakedRails == null) {
+                                LOGGER.info("ANTE integration: MainClient/railRenderDispatcher not found (tried {}); baked rail rebuild inactive. If an ANTE/NTE build is installed, please report this.", String.join(", ", MAIN_CLIENT_CLASS_CANDIDATES));
                         }
                         return clearBakedRails != null;
                 }

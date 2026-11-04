@@ -166,14 +166,16 @@ public abstract class RailMixin implements RailDuck {
                 // legacy 客户端轨道：按「维度 × 连接键」查镜像。空串条目 = 明确的经典线型。
                 final ClassicRailGeometry geometry = yanyang$geometry();
                 final RailPair pair = yanyang$pairKey(geometry);
-                final String mirrored = ShapeStore.clientLookup(pair);
+                final ShapeStore.ShapeRecord mirrored = ShapeStore.clientLookup(pair);
                 if (mirrored != null) {
-                        if (mirrored.isEmpty()) {
+                        if (mirrored.isClassic()) {
                                 ShapeStore.noteResolution("classic");
                                 return null;
                         }
                         ShapeStore.noteResolution("mirror");
-                        return yanyang$resolveEased(EasementShape.fromKey(mirrored), mirrored);
+                        // v1.0.4：镜像条目携带真实节点对，命中后把缓和曲线端点锚定到真实节点，
+                        // 不再信任被 ANTE 编辑污染的经典几何字段（其推导端点可能偏离节点若干格）。
+                        return yanyang$resolveEasedAnchored(EasementShape.fromKey(mirrored.shapeKey()), mirrored.shapeKey(), mirrored.nodeA(), mirrored.nodeB());
                 }
                 // ANTE 轨道配置编辑器路径 / 被编辑器替换后印记丢失的兜底。
                 final String configured = AnteMirror.readRailShapeKey(this);
@@ -195,6 +197,22 @@ public abstract class RailMixin implements RailDuck {
                         return null;
                 }
                 final EasedRailPath path = yanyang$geometry().resolveEased(shape);
+                if (path == null) {
+                        ShapeStore.noteSolveFailure(shapeKey);
+                }
+                return path;
+        }
+
+        /**
+         * v1.0.4：端点锚定到镜像记录携带的真实节点对（几何不可信时仍能生成
+         * 正确端点的缓和曲线）。求解失败计入诊断，与 {@link #yanyang$resolveEased} 一致。
+         */
+        @Unique
+        private EasedRailPath yanyang$resolveEasedAnchored(EasementShape shape, String shapeKey, long nodeA, long nodeB) {
+                if (shape == null) {
+                        return null;
+                }
+                final EasedRailPath path = yanyang$geometry().resolveEasedAnchored(shape, nodeA, nodeB);
                 if (path == null) {
                         ShapeStore.noteSolveFailure(shapeKey);
                 }
@@ -223,6 +241,16 @@ public abstract class RailMixin implements RailDuck {
                                 RailPair.pack((long) Math.floor(start[0]), yStart, (long) Math.floor(start[1])),
                                 RailPair.pack((long) Math.floor(end[0]), yEnd, (long) Math.floor(end[1]))
                 );
+        }
+
+        /**
+         * v1.0.4：服务器广播侧复用同一推导（{@link RailDuck} 接口暴露），
+         * 保证广播键与客户端查询键一致 —— 几何无法表达真实节点
+         * （ANTE 编辑过的轨道）时两端仍推导出相同的键，镜像按几何键即可命中。
+         */
+        @Override
+        public RailPair yanyang$pairKey() {
+                return yanyang$pairKey(yanyang$geometry());
         }
 
         /**
