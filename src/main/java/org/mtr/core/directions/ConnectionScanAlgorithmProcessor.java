@@ -66,9 +66,9 @@ public final class ConnectionScanAlgorithmProcessor extends RefreshableObject<Ob
 
 				// Generate caches
 				simulator.platforms.forEach(endPlatform -> {
+					final Position endPosition = endPlatform.getMidPosition();
 					for (final Request request : requests) {
 						// Walking from the start position to platforms
-						final Position endPosition = endPlatform.getMidPosition();
 						final long distanceToStart = request.startPosition().manhattanDistance(endPosition);
 						if (distanceToStart <= DirectionsFinder.MAX_WALKING_DISTANCE) {
 							final long endTime = request.startTime() + Math.round(distanceToStart / DirectionsFinder.WALKING_SPEED);

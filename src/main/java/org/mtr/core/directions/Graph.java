@@ -25,20 +25,23 @@ public final class Graph extends RefreshableObject<Long2ObjectOpenHashMap<Long2O
 			// Clear stale walking connections and leaked route references left over from the previous refresh cycle
 			independentConnections.clear();
 
-			// Grid cell size: choose half of maxWalkingDistance for efficient neighborhood search
-			final double gridSize = DirectionsFinder.MAX_WALKING_DISTANCE / 2D;
+			// A 3x3 neighbourhood covers the full walking radius only when a cell is
+			// at least that wide. Half-radius cells missed transfers two cells apart.
+			final double gridSize = DirectionsFinder.MAX_WALKING_DISTANCE;
 
-			// Build a spatial grid
+			// Compute each midpoint once, instead of allocating it for every nearby pair.
+			final Long2ObjectOpenHashMap<Position> midPositions = new Long2ObjectOpenHashMap<>();
 			final Long2ObjectOpenHashMap<ObjectArrayList<Platform>> grid = new Long2ObjectOpenHashMap<>();
 			simulator.platforms.forEach(platform -> {
 				final Position platformMidPosition = platform.getMidPosition();
+				midPositions.put(platform.getId(), platformMidPosition);
 				final long gridKey = createGridKey(platformMidPosition.getX(), platformMidPosition.getZ(), gridSize);
 				grid.computeIfAbsent(gridKey, key -> new ObjectArrayList<>()).add(platform);
 			});
 
 			// For each platform, connect to nearby platforms within maxWalkingDistance
 			simulator.platforms.forEach(platform -> {
-				final Position platformMidPosition = platform.getMidPosition();
+				final Position platformMidPosition = midPositions.get(platform.getId());
 				final long platformId = platform.getId();
 
 				final int gridX = (int) Math.floor(platformMidPosition.getX() / gridSize);
@@ -58,7 +61,7 @@ public final class Graph extends RefreshableObject<Long2ObjectOpenHashMap<Long2O
 								continue;
 							}
 
-							final long distance = platformMidPosition.manhattanDistance(walkingPlatform.getMidPosition());
+							final long distance = platformMidPosition.manhattanDistance(midPositions.get(walkingPlatform.getId()));
 							if (distance <= DirectionsFinder.MAX_WALKING_DISTANCE) {
 								independentConnections.computeIfAbsent(platformId, key -> new Long2ObjectOpenHashMap<>()).put(walkingPlatform.getId(), new IndependentConnection(
 									null,
