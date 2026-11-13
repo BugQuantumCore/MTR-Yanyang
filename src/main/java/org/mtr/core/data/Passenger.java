@@ -289,6 +289,7 @@ public final class Passenger extends PassengerSchema {
 			// State 5b: vehicle reached target platform or missed stop or vehicle is at depot — alight and consume leg
 			if (currentVehicle.closeToDepot() || currentVehicle.vehicleExtraData.getDoorMultiplier() > 0 && (currentVehicle.vehicleExtraData.getThisPlatformId() == currentEndPlatform.getId() || currentVehicle.vehicleExtraData.getPreviousPlatformId() == currentEndPlatform.getId())) {
 				directions.removeFirst();
+				dirtySync = true;
 
 				// Stay on the vehicle if the next directions is also the same
 				if (!directions.isEmpty() && directions.getFirst().getRouteId() == currentRoute.getId()) {
@@ -434,10 +435,12 @@ public final class Passenger extends PassengerSchema {
 			return;
 		}
 
-		if (currentSiding != null && currentVehicle != null && currentSiding.getId() == sidingId && currentVehicle.getId() == vehicleId) {
+		if (currentSiding != null && currentVehicle != null && currentSiding.getId() == sidingId && currentVehicle.getId() == vehicleId &&
+				simulator.sidingIdMap.get(sidingId) == currentSiding && currentSiding.getVehicleById(vehicleId) == currentVehicle) {
 			return;
 		}
 
+		final Vehicle previousVehicle = currentVehicle;
 		currentSiding = sidingId == 0 ? null : simulator.sidingIdMap.get(sidingId);
 		currentVehicle = currentSiding == null ? null : currentSiding.getVehicleById(vehicleId);
 
@@ -456,6 +459,9 @@ public final class Passenger extends PassengerSchema {
 			}
 		}
 
+		if (previousVehicle != null) {
+			previousVehicle.vehicleExtraData.passengers.forEach(passengersForCar -> passengersForCar.remove(this));
+		}
 		sidingId = 0;
 		currentSiding = null;
 		vehicleId = 0;
@@ -705,19 +711,22 @@ public final class Passenger extends PassengerSchema {
 	}
 
 	private int getBoardingCar() {
-		if (currentVehicle == null) {
-			return 0;
-		} else {
-			final long distance = Math.floorMod(getId(), Math.round(currentVehicle.vehicleExtraData.getTotalVehicleLength()));
-			double currentDistance = 0;
-			final ObjectImmutableList<VehicleCar> immutableVehicleCars = currentVehicle.vehicleExtraData.immutableVehicleCars;
-			for (int i = 0; i < immutableVehicleCars.size(); i++) {
-				if (currentDistance >= distance) {
-					return i;
-				}
-				currentDistance += immutableVehicleCars.get(i).getLength();
-			}
-			return immutableVehicleCars.size() - 1;
+		return currentVehicle == null ? -1 : getBoardingCar(getId(), currentVehicle.vehicleExtraData.getTotalVehicleLength(), currentVehicle.vehicleExtraData.immutableVehicleCars);
+	}
+
+	static int getBoardingCar(long passengerId, double vehicleLength, ObjectImmutableList<VehicleCar> vehicleCars) {
+		final long roundedLength = Math.round(vehicleLength);
+		if (vehicleCars.isEmpty() || !Double.isFinite(vehicleLength) || roundedLength <= 0) {
+			return -1;
 		}
+		final long distance = Math.floorMod(passengerId, roundedLength);
+		double currentDistance = 0;
+		for (int i = 0; i < vehicleCars.size(); i++) {
+			currentDistance += vehicleCars.get(i).getTotalLength(i == 0, i == vehicleCars.size() - 1);
+			if (distance < currentDistance) {
+				return i;
+			}
+		}
+		return vehicleCars.size() - 1;
 	}
 }

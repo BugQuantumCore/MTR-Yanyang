@@ -1,6 +1,9 @@
 name: Build
 on:
   push:
+    branches: [ 'tsc-1.21.x' ]
+  pull_request:
+    branches: [ 'tsc-1.21.x' ]
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
@@ -12,10 +15,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@main
-      - name: Use lowercase project name for publish
-        run: |
-          echo 'rootProject.name = "transport-simulation-core"' > settings.gradle.kts
-          echo 'rootProject.name = "transport-simulation-core-build-tools"' > buildSrc/settings.gradle.kts
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@main
       - name: Setup JDK 21
