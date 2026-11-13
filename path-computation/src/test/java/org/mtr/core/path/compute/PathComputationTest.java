@@ -124,25 +124,52 @@ class PathComputationTest {
 	@Test
 	void workersAreIdleWithoutWorkAndLeaveNoThreadsAfterClose() throws Exception {
 		PathComputePool pool = new PathComputePool(2, 8, true);
+		Thread[] workers = new Thread[2];
+		CountDownLatch workersStarted = new CountDownLatch(workers.length);
+		CountDownLatch releaseWorkers = new CountDownLatch(1);
 		try {
+			// Capture this pool's actual workers. Thread names are reused by other pools,
+			// so a JVM-wide prefix scan can accidentally observe an unrelated executor.
+			for (int i = 0; i < workers.length; i++) {
+				final int index = i;
+				assertTrue(pool.execute(() -> {
+					workers[index] = Thread.currentThread();
+					workersStarted.countDown();
+					try { releaseWorkers.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+				}));
+			}
+			assertTrue(workersStarted.await(5, TimeUnit.SECONDS), "Both pool workers must start");
+			releaseWorkers.countDown();
 			PathBatcher batcher = new PathBatcher(pool, graph(1));
 			PathBatcher.Ticket ticket = batcher.request(0, 3);
 			batcher.flush();
 			await(batcher, ticket);
+			long idleDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+			for (Thread worker : workers) {
+				while (worker.getState() != Thread.State.WAITING && System.nanoTime() < idleDeadline) Thread.sleep(1);
+				assertEquals(Thread.State.WAITING, worker.getState(), "Idle workers must block on the queue");
+			}
 			var bean = ManagementFactory.getThreadMXBean();
-			long[] workers = Thread.getAllStackTraces().keySet().stream().filter(t -> t.getName().startsWith("TSC Path Worker-")).mapToLong(Thread::getId).toArray();
-			assertTrue(workers.length > 0);
+			boolean cpuAccounting = bean.isThreadCpuTimeSupported() && bean.isThreadCpuTimeEnabled();
 			long cpu = 0;
-			for (long worker : workers) cpu += bean.getThreadCpuTime(worker);
+			if (cpuAccounting) for (Thread worker : workers) cpu += bean.getThreadCpuTime(worker.getId());
 			Thread.sleep(100);
 			long after = 0;
-			for (long worker : workers) {
-				after += bean.getThreadCpuTime(worker);
-				assertEquals(Thread.State.WAITING, bean.getThreadInfo(worker).getThreadState());
+			for (Thread worker : workers) {
+				if (cpuAccounting) after += bean.getThreadCpuTime(worker.getId());
+				assertEquals(Thread.State.WAITING, worker.getState());
 			}
-			assertTrue(after - cpu < TimeUnit.MILLISECONDS.toNanos(20), "Idle workers must not spin");
-		} finally { pool.close(); }
-		assertTrue(Thread.getAllStackTraces().keySet().stream().noneMatch(t -> t.getName().startsWith("TSC Path Worker-") && t.isAlive()));
+			if (cpuAccounting) assertTrue(after - cpu < TimeUnit.MILLISECONDS.toNanos(20), "Idle workers must not spin");
+		} finally {
+			releaseWorkers.countDown();
+			pool.close();
+			// ThreadPoolExecutor signals TERMINATED from processWorkerExit before the
+			// worker's Thread.run has returned. Observe actual thread exit with join,
+			// rather than racing isAlive immediately after awaitTermination returns.
+			for (Thread worker : workers) if (worker != null) worker.join(5000);
+		}
+		assertTrue(pool.isTerminated());
+		for (Thread worker : workers) assertFalse(worker.isAlive(), "Closed pool left a worker alive");
 	}
 
 	@Test
