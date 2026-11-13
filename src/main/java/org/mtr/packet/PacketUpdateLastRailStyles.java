@@ -28,7 +28,7 @@ public final class PacketUpdateLastRailStyles extends PacketHandler {
 
 	public PacketUpdateLastRailStyles(PacketBufferReceiver packetBufferReceiver) {
 		transportMode = EnumHelper.valueOf(TransportMode.TRAIN, packetBufferReceiver.readString());
-		final int count = packetBufferReceiver.readInt();
+		final int count = packetBufferReceiver.readCount(Integer.BYTES);
 		styles = new ObjectArrayList<>(count);
 		for (int i = 0; i < count; i++) {
 			styles.add(packetBufferReceiver.readString());

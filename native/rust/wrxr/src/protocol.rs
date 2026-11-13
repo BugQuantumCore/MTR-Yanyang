@@ -38,7 +38,7 @@ pub const CONFIG_FILE: &[u8] = b"wrx.conf";
 // ---------------------------------------------------------------------------
 
 pub const CONTROL_MAGIC: u32 = 0x57525831; // "WRX1"
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const CONTROL_SIZE: usize = 4096;
 
 pub const FLAG_TRANSPORT_FFM: u32 = 1 << 0; // 0 = shm poller, 1 = ffm calls
@@ -131,6 +131,8 @@ pub const RES_ERROR: u32 = 3; // reply to any failed request
 // ---------------------------------------------------------------------------
 
 pub const FRAME_MAGIC: u32 = 0x46524D32; // "FRM2"
+// FrameHeader.reserved1a: preserve the active host render pass dynamic state.
+pub const FRAME_FLAG_HOST_DYNAMIC_STATE: u32 = 1;
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 pub const FRAME_MAX_ITEMS: usize = 65536;
@@ -270,10 +272,10 @@ mod tests {
 
 	#[test]
 	fn frame_offsets_match_wrx_hpp() {
-		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 32 * 64 = 2288
-		assert_eq!(FRAME_ITEMS_OFF_BASE, 2_288);
+		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 32 * 4096 = 131312
+		assert_eq!(FRAME_ITEMS_OFF_BASE, 131_312);
 		assert_eq!(FRAME_EXTERNAL_OFF, 8 + 240);
 		// the java-side total: 8 + FRAME_ITEMS_OFFSET + 65536*80
-		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 80, 5_245_176);
+		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 80, 5_374_200);
 	}
 }

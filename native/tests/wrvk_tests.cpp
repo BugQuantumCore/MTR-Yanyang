@@ -771,6 +771,18 @@ int main() {
                         "frame two binds the new external view");
         }
 
+        std::printf("wrvk: embedded draws preserve host dynamic state\n");
+        {
+                TestEnv env;
+                auto header = basicHeader();
+                header.reserved1a = wrx::FRAME_FLAG_HOST_DYNAMIC_STATE;
+                check(env.recorder->recordFrame(header, nullptr, nullptr), "host-state frame records");
+                check(countOps(env.dispatch, wrvk::RecordingDispatch::Op::CmdSetViewport) == 0,
+                        "host viewport is not overwritten");
+                check(countOps(env.dispatch, wrvk::RecordingDispatch::Op::CmdSetScissor) == 0,
+                        "host scissor is not overwritten");
+        }
+
         std::printf("wrvk: domain initialization and multi-material index rebasing\n");
         {
                 TestEnv env;

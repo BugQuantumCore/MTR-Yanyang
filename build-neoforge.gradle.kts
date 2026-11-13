@@ -75,6 +75,10 @@ dependencies {
 neoForge {
         version = property("dependency.neoforge") as String
 
+        // ModDev configures Minecraft's compile/runtime dependencies for main
+        // only by default. The regression tests also use AABB/ResourceKey.
+        addModdingDependenciesTo(sourceSets["test"])
+
         mods {
                 register(property("mod.id") as String) {
                         sourceSet(sourceSets["main"])

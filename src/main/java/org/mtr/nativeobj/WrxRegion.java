@@ -44,7 +44,7 @@ public final class WrxRegion implements AutoCloseable {
         private static final VarHandle INTS = MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.LITTLE_ENDIAN);
 
         public static final int CONTROL_MAGIC = 0x57525831; // "WRX1"
-        public static final int PROTOCOL_VERSION = 2;
+        public static final int PROTOCOL_VERSION = 3;
         public static final int CONTROL_SIZE = 4096;
 
         public static final int FLAG_TRANSPORT_FFM = 1 << 0;
@@ -111,6 +111,8 @@ public final class WrxRegion implements AutoCloseable {
         // native pool (MSG_UPLOAD_TEXTURE), and only animated (mcmeta) textures
         // travel per frame as a small FrameExternal override table.
         public static final int FRAME_MAGIC = 0x46524D32; // "FRM2"
+        /** FrameHeader reserved1a: preserve the host's active viewport and scissor. */
+        public static final int FRAME_FLAG_HOST_DYNAMIC_STATE = 1;
         public static final int FRAME_MAX_ITEMS = 65536;
         public static final int FRAME_HEADER_BYTES = 240;
         public static final int FRAME_ITEM_BYTES = 80;

@@ -1207,8 +1207,10 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                 std::memcpy(raw + UBO_LIGHT1_OFF, header.lightDir1, sizeof(header.lightDir1));
         }
 
-        d.cmdSetViewport(cmd, 0.0F, static_cast<float>(header.viewportHeight), static_cast<float>(header.viewportWidth), -static_cast<float>(header.viewportHeight));
-        d.cmdSetScissor(cmd, 0, 0, header.viewportWidth, header.viewportHeight);
+        if ((header.reserved1a & wrx::FRAME_FLAG_HOST_DYNAMIC_STATE) == 0) {
+                d.cmdSetViewport(cmd, 0.0F, static_cast<float>(header.viewportHeight), static_cast<float>(header.viewportWidth), -static_cast<float>(header.viewportHeight));
+                d.cmdSetScissor(cmd, 0, 0, header.viewportWidth, header.viewportHeight);
+        }
 
         uint64_t pool = impl_->pools[frameIndex % POOL_RING];
         d.resetDescriptorPool(impl_->device(), pool);

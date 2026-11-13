@@ -31,6 +31,8 @@ final class VulkanHostAccess {
         private @Nullable Method queueHandleGetter;
         private @Nullable Method getRenderer;
         private @Nullable Field currentCmdBufferField;
+        private @Nullable Field boundPipelineField;
+        private @Nullable Field boundPipelineHandleField;
         private @Nullable Method getBoundRenderPass;
         private @Nullable Method getMainPass;
         private @Nullable Method renderPassId;
@@ -139,6 +141,19 @@ final class VulkanHostAccess {
                         getRenderer = rendererClass.getMethod("getInstance");
                         currentCmdBufferField = rendererClass.getDeclaredField("currentCmdBuffer");
                         currentCmdBufferField.setAccessible(true);
+                        // Native commands bypass the host's pipeline cache. Without
+                        // invalidation its next draw can skip vkCmdBindPipeline and
+                        // accidentally draw vanilla geometry with MTR's pipeline.
+                        boundPipelineField = findFieldInHierarchy(rendererClass, "boundPipeline");
+                        boundPipelineHandleField = findFieldInHierarchy(rendererClass, "boundPipelineHandle");
+                        if (boundPipelineField == null || boundPipelineHandleField == null || boundPipelineHandleField.getType() != long.class) {
+                                logFail("pipeline-cache invalidation hooks unavailable");
+                                return false;
+                        }
+                        final Object renderer = getRenderer.invoke(null);
+                        // Verify accessibility before the first native command can run.
+                        boundPipelineField.set(renderer, boundPipelineField.get(renderer));
+                        boundPipelineHandleField.setLong(renderer, boundPipelineHandleField.getLong(renderer));
                         getBoundRenderPass = rendererClass.getMethod("getBoundRenderPass");
                         getMainPass = rendererClass.getMethod("getMainPass");
 
@@ -331,6 +346,17 @@ final class VulkanHostAccess {
                 } catch (ReflectiveOperationException e) {
                         return 0;
                 }
+        }
+
+        /**
+         * Make the next host draw rebind its pipeline after our raw Vulkan commands.
+         * Do not reset descriptor pools: earlier host draws still reference them.
+         * Viewport/scissor are inherited by the recorder and never changed here.
+         */
+        void invalidatePipelineState() throws ReflectiveOperationException {
+                final Object renderer = getRenderer.invoke(null);
+                boundPipelineHandleField.setLong(renderer, 0);
+                boundPipelineField.set(renderer, null);
         }
 
         long boundRenderPass() {

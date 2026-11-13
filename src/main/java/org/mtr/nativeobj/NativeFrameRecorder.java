@@ -189,7 +189,7 @@ public final class NativeFrameRecorder {
                 }
                 frame.putInt(Minecraft.getInstance().getWindow().getWidth());
                 frame.putInt(Minecraft.getInstance().getWindow().getHeight());
-                frame.putInt(0); // reserved1a (v1 carried the informational depth format here)
+                frame.putInt(WrxRegion.FRAME_FLAG_HOST_DYNAMIC_STATE); // inherit viewport/scissor
                 frame.putInt(0); // reserved1b
                 frame.putLong(runtime.host().currentCommandBuffer());
                 frame.putLong(runtime.host().boundRenderPass());

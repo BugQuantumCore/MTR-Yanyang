@@ -713,6 +713,13 @@ public final class NativeRuntime {
                 } catch (Throwable throwable) {
                         MTR.LOGGER.error("[wrvk] FFM submit_frame failed", throwable);
                         disable();
+                } finally {
+                        try {
+                                host.invalidatePipelineState();
+                        } catch (ReflectiveOperationException | RuntimeException exception) {
+                                MTR.LOGGER.error("[wrvk] failed to invalidate the host pipeline state; disabling native recording", exception);
+                                disable();
+                        }
                 }
         }
 

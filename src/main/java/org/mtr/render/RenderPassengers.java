@@ -101,11 +101,8 @@ public class RenderPassengers {
 		// Dropping the collision boxes of a previous world/session: boxes are dimension-keyed
 		// but a same-dimension rejoin would otherwise resurrect the old crowd's walls.
 		if (clientWorld != cachedCollisionLevel) {
+			clear();
 			cachedCollisionLevel = clientWorld;
-			PassengerCollisions.clear();
-			SMOOTHED_POSITIONS.clear();
-			GROUND_SCAN_CACHE.clear();
-			PassengerRenderCache.clear();
 		}
 
 		if (passengers != null) {
@@ -205,6 +202,15 @@ public class RenderPassengers {
 
 		// Publish the collision boxes gathered this frame (also prunes stale ones).
 		PassengerCollisions.endFrame();
+	}
+
+	/** Releases client-world references even when disconnect stops all world rendering. */
+	public static void clear() {
+		cachedCollisionLevel = null;
+		PassengerCollisions.clear();
+		SMOOTHED_POSITIONS.clear();
+		GROUND_SCAN_CACHE.clear();
+		PassengerRenderCache.clear();
 	}
 
 	private static PositionAndYaw getIdlePosition(SimpleAreaBase area, long passengerId) {

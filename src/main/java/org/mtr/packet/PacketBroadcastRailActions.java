@@ -13,7 +13,7 @@ public final class PacketBroadcastRailActions extends PacketHandler {
 	public PacketBroadcastRailActions(PacketBufferReceiver packetBufferReceiver) {
 		railActions = new ObjectArrayList<>();
 		dashboardListItems = new ObjectArrayList<>();
-		final int actionCount = packetBufferReceiver.readInt();
+		final int actionCount = packetBufferReceiver.readCount(Long.BYTES + 2 * Integer.BYTES);
 		for (int i = 0; i < actionCount; i++) {
 			dashboardListItems.add(new DashboardListItem(packetBufferReceiver.readLong(), packetBufferReceiver.readString(), packetBufferReceiver.readInt()));
 		}

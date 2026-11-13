@@ -602,7 +602,7 @@ pub mod testkit {
         pub const BUILD_CAPACITY: u64 = 1 << 20;
         pub const RESULTS_CAPACITY: u64 = 1 << 18;
         // The production frame-region size (mirrors NativeRuntime's sizing on
-        // the Java side): 8 + 2288 budget + 65536 items. Keeping the test
+        // the Java side): seq + header + external budget + 65536 items. Keeping the test
         // regions at full size means the bounds check in process_frame is
         // exercised against the real budget, including a maximal frame.
         pub const FRAME_CAPACITY: usize = 8 + FRAME_ITEMS_OFF_BASE

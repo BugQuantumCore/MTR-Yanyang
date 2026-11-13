@@ -173,7 +173,7 @@ public final class RegistryServer {
 //? if fabric {
 		PayloadTypeRegistry.playS2C().register(MTR.PACKET_IDENTIFIER_S2C, StreamCodec.composite(ByteBufCodecs.BYTE_ARRAY, CustomPacketS2C::buffer, CustomPacketS2C::new));
 		PayloadTypeRegistry.playC2S().register(MTR.PACKET_IDENTIFIER_C2S, StreamCodec.composite(ByteBufCodecs.BYTE_ARRAY, CustomPacketC2S::buffer, CustomPacketC2S::new));
-		ServerPlayNetworking.registerGlobalReceiver(MTR.PACKET_IDENTIFIER_C2S, (customPacketC2S, context) -> PacketBufferReceiver.receive(customPacketC2S.buffer(), packetBufferReceiver -> {
+		ServerPlayNetworking.registerGlobalReceiver(MTR.PACKET_IDENTIFIER_C2S, (customPacketC2S, context) -> PacketBufferReceiver.receive(context.player(), customPacketC2S.buffer(), packetBufferReceiver -> {
 			final Function<PacketBufferReceiver, ? extends PacketHandler> getInstance = MTRFabric.PACKETS.get(packetBufferReceiver.readString());
 			if (getInstance != null) {
 				getInstance.apply(packetBufferReceiver).runServer(context.player().server, context.player());
@@ -186,7 +186,7 @@ public final class RegistryServer {
 		}, (customPacketC2S, context) -> {
 			final Player player = context.player();
 			if (player instanceof ServerPlayer) {
-				PacketBufferReceiver.receive(customPacketC2S.buffer(), packetBufferReceiver -> {
+				PacketBufferReceiver.receive(player, customPacketC2S.buffer(), packetBufferReceiver -> {
 					final Function<PacketBufferReceiver, ? extends PacketHandler> getInstance = ModEventBus.PACKETS.get(packetBufferReceiver.readString());
 					if (getInstance != null) {
 						getInstance.apply(packetBufferReceiver).runServer(((ServerPlayer) player).server, (ServerPlayer) player);

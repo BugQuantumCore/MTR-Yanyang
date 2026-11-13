@@ -73,8 +73,8 @@ public final class RenderVehicles {
                 final boolean[] ridingAnyVehicle = {false};
 
                 if (clientWorld != cachedCollisionLevel) {
+                        clear();
                         cachedCollisionLevel = clientWorld;
-                        VehicleCollisions.clear();
                 }
 
                 // Iterate all vehicles that the client knows about
@@ -389,6 +389,13 @@ public final class RenderVehicles {
                 if (canRide && !ridingAnyVehicle[0]) {
                         VehicleCollisions.applyKnockback(clientWorld, clientPlayerEntity);
                 }
+        }
+
+        /** Releases session state when leaving a world, before rendering can stop. */
+        public static void clear() {
+                cachedCollisionLevel = null;
+                VehicleCollisions.clear();
+                RIDING_PLAYER_INTERPOLATIONS.clear();
         }
 
         /**

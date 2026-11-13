@@ -349,7 +349,7 @@ jobs:
           # that branch, so there is no patch to apply at build time.
           repository: BugQuantumCore/MTR-Yanyang
           # Audited passenger lifecycle fixes; immutable for reproducible builds.
-          ref: '8cca71313300fcccd4ae1131ce05e747af414dac'
+          ref: '60a5e8c1be1691c384f24855093188a4e9cf23bd'
           path: Transport-Simulation-Core
 
       - name: Download natives

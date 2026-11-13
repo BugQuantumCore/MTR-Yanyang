@@ -32,12 +32,16 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
   loaded and every Vulkan handle resolves (`NativeRuntime.initialise`,
   feature-detected through reflection; the fork's Java renderer stays exactly
   as-is everywhere else, including every GL-based install).
+* **Protocol v3** — the control handshake rejects older native libraries. The
+  `FRM2` header/item layout is unchanged; v3 adds synchronous host recording,
+  inherited host viewport/scissor, and up to 4096 host texture references.
 * **Transports** — the "Java 与 C++ 通信方式" setting:
-  * *共享内存* (default): the Rust poller thread drains the queues; works on
-    any JDK (Unsafe-level access before JDK 22). Highest throughput, tiny
-    bounded wait per frame.
-  * *Panama FFM* (JDK 22+): `Linker.downcallHandle` calls
-    `wr_submit_builds`/`wr_submit_frame` directly — deterministic, no poller.
+  * *共享内存* (default): the Rust poller drains build queues. JDK 21+ invokes
+    two zero-payload JNI entry points for frame recording and shutdown; draw
+    command recording stays on the Java render thread.
+  * *Panama FFM* (JDK 22+): `Linker.downcallHandle` invokes the same
+    `wr_submit_builds`/`wr_submit_frame` handlers directly. A render-thread flag
+    prevents the build poller from touching host command buffers.
 * **Protocol** — see `include/wrx/wrx.hpp`; mirrored in
   `rust/wrxr/src/protocol.rs` and `org.mtr.nativeobj.WrxRegion`
   (three sides, one contract — the Rust port caught and fixed one
@@ -51,10 +55,12 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
   time (byte-identical 128-byte push constants), the frame UBO carries
   projection/fog/directional lights, and the emitted GLSL mirrors vanilla's
   entity/beacon shader chain (0.4+0.6·n·L two light accumulation, 0.1 alpha
-  cutoff, linear fog). Static textures live in a native pool (`wrvk` owns the
-  `VkImage`/view/sampler, uploaded once via `MSG_UPLOAD_TEXTURE` and staged
-  on the frame's command buffer); only animated (mcmeta) textures stay
-  external, resolved per frame through VulkanMod's own images.
+  cutoff, linear fog). Production textures use VulkanMod-owned image views
+  and samplers, including static textures: the host handles uploads, animation,
+  filtering and resource reload. The legacy native texture-pool API remains
+  covered by recording tests but is not used by Java, because buffer-to-image
+  transfers are illegal inside the active host render pass. It must not be
+  re-enabled without a separate host transfer phase and fence ownership.
 * **Leak safety** — per-mesh `VkBuffer`+`VkDeviceMemory` with a refcounted
   alias for identity instances; frees retire after `vkDeviceWaitIdle`;
   `CustomResourceLoader.reload` frees every model before the rebuild; the
@@ -63,12 +69,12 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
 ## Building and testing
 
 ```bash
-native/build.sh wrobj_tests run   # 198 checks (parser/builder semantics)
-native/build.sh wrvk_tests  run   # 184 checks (command stream, texture pool, native math, descriptor cache, leaks)
-native/build.sh wrctor_tests run  # 22 checks (dlopen ctor boot smoke)
+native/build.sh wrobj_tests run   # parser/builder semantics
+native/build.sh wrvk_tests  run   # command stream, domain integration, memory layout, cache, leaks
+native/build.sh wrctor_tests run  # dlopen boot, JNI entry points and teardown
 (cd native/rust/wrxr && cargo test --release --offline)
-                                   # 11 tests (transport protocol round-trips, v2 frame
-                                   #  poison advancement, wr_* ABI, poller)
+                                   # transport round-trips, bounds, frame ownership,
+                                   # poison advancement, wr_* ABI, poller
 ```
 
 CI (`.github/workflows/native_1.21.x.yml`) builds all 8 shipped platforms with

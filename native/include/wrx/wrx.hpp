@@ -29,7 +29,9 @@
 // org.mtr.nativeobj.WrxRegion, and the Rust core mirrors them in
 // rust/wrxr/src/protocol.rs — three sides, one contract.
 //
-// PROTOCOL VERSION 2 — "zero-Java model rendering under Vulkan":
+// PROTOCOL VERSION 3 — synchronous embedded rendering with host textures:
+//   * FRM2 item/header byte layouts remain unchanged. The v3 control handshake
+//     requires synchronous frame entry and a 4096-entry external texture budget.
 //   * The per-frame texture table is gone. Textures live in a native pool
 //     (Vulkan images wrvk owns itself), uploaded once through
 //     MSG_UPLOAD_TEXTURE; only animated (mcmeta) textures stay external and
@@ -74,7 +76,7 @@ inline constexpr const char* CONFIG_FILE = "wrx.conf";
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t CONTROL_MAGIC = 0x57525831; // "WRX1"
-inline constexpr uint32_t PROTOCOL_VERSION = 2;
+inline constexpr uint32_t PROTOCOL_VERSION = 3;
 inline constexpr uint32_t CONTROL_SIZE = 4096;
 
 inline constexpr uint32_t FLAG_TRANSPORT_FFM = 1u << 0; // 0 = shm poller, 1 = ffm calls
@@ -174,6 +176,8 @@ inline constexpr uint32_t RES_ERROR = 3;    // reply to any failed request
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t FRAME_MAGIC = 0x46524D32; // "FRM2"
+// FrameHeader.reserved1a: inherit viewport/scissor from the active host pass.
+inline constexpr uint32_t FRAME_FLAG_HOST_DYNAMIC_STATE = 1u;
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 inline constexpr uint32_t FRAME_MAX_ITEMS = 65536;

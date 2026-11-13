@@ -131,10 +131,11 @@ fn config_parsing() {
                 let config = region.directory.join("wrx.conf");
                 std::fs::write(
                         &config,
-                        format!("protocol=1\ndirectory={}\n", region.directory.display()),
+                        format!("protocol=2\ndirectory={}\n", region.directory.display()),
                 )
                 .unwrap();
-                // a stale v1 sidecar must be rejected now that the protocol is 2
+                // Reject v2 libraries/sidecars: v3 requires synchronous rendering and
+                // the expanded host-texture budget.
                 check(wrxr::shmem::parse_config_file(&config).is_none(), "wrong protocol rejected");
         }
         check(wrxr::shmem::parse_config_file(std::path::Path::new("/nonexistent/wrx.conf")).is_none(), "missing config rejected");

@@ -19,7 +19,7 @@ public final class PacketUpdatePIDSConfig extends BlockEntityPacketHandler {
 	public PacketUpdatePIDSConfig(PacketBufferReceiver packetBufferReceiver) {
 		blockPos = BlockPos.of(packetBufferReceiver.readLong());
 
-		final int maxMessages = packetBufferReceiver.readInt();
+		final int maxMessages = packetBufferReceiver.readCount(Integer.BYTES + 1);
 		messages = new String[maxMessages];
 		for (int i = 0; i < maxMessages; i++) {
 			messages[i] = packetBufferReceiver.readString();
@@ -30,7 +30,7 @@ public final class PacketUpdatePIDSConfig extends BlockEntityPacketHandler {
 			hideArrivalArray[i] = packetBufferReceiver.readBoolean();
 		}
 
-		final int platformIdCount = packetBufferReceiver.readInt();
+		final int platformIdCount = packetBufferReceiver.readCount(Long.BYTES);
 		platformIds = new LongAVLTreeSet();
 		for (int i = 0; i < platformIdCount; i++) {
 			platformIds.add(packetBufferReceiver.readLong());

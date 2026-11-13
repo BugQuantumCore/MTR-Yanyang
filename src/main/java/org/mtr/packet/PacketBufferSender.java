@@ -4,7 +4,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 
 public final class PacketBufferSender {
@@ -12,9 +12,10 @@ public final class PacketBufferSender {
 	private int capacity;
 	private ByteBuf currentByteBuf;
 	private final ObjectArrayList<ByteBuf> byteBufObjects = new ObjectArrayList<>();
+	private boolean sent;
 
-	private static final int HEADER_BYTES = 8 + 4 + 4;
-	private static final int MAX_PACKET_BYTES = 0x7FFF - HEADER_BYTES;
+	static final int HEADER_BYTES = 8 + 4 + 4;
+	static final int MAX_PACKET_BYTES = 0x7FFF - HEADER_BYTES;
 
 	public PacketBufferSender() {
 		create();
@@ -51,31 +52,51 @@ public final class PacketBufferSender {
 	}
 
 	public void writeString(String data) {
-		final char[] characters = data.toCharArray();
-		writeInt(characters.length);
-		for (char character : characters) {
-			writeChar(character);
+		writeInt(data.length());
+		for (int index = 0; index < data.length(); index++) {
+			writeChar(data.charAt(index));
 		}
 	}
 
 	public void send(Consumer<byte[]> consumer, Consumer<Runnable> scheduler) {
-		byteBufObjects.add(currentByteBuf);
-		final long id = new Random().nextLong();
-		final ObjectArrayList<Runnable> queue = new ObjectArrayList<>();
-		for (int i = 0; i < byteBufObjects.size(); i++) {
-			final ByteBuf byteBuf = byteBufObjects.get(i);
-			byteBuf.writerIndex(0);
-			byteBuf.writeLong(id);
-			byteBuf.writeInt(i);
-			byteBuf.writeInt(byteBufObjects.size());
-			final byte[] bytes = byteBuf.array();
-			queue.add(() -> consumer.accept(bytes));
+		if (sent) {
+			throw new IllegalStateException("Packet already sent");
 		}
-		schedule(queue, scheduler);
+		sent = true;
+		byteBufObjects.add(currentByteBuf);
+		final long id = ThreadLocalRandom.current().nextLong();
+		final ObjectArrayList<byte[]> packets = new ObjectArrayList<>(byteBufObjects.size());
+		try {
+			for (int i = 0; i < byteBufObjects.size(); i++) {
+				final ByteBuf byteBuf = byteBufObjects.get(i);
+				byteBuf.setLong(0, id);
+				byteBuf.setInt(8, i);
+				byteBuf.setInt(12, byteBufObjects.size());
+				final byte[] bytes = new byte[byteBuf.writerIndex()];
+				byteBuf.getBytes(0, bytes);
+				packets.add(bytes);
+			}
+		} finally {
+			byteBufObjects.forEach(ByteBuf::release);
+			byteBufObjects.clear();
+		}
+		// One scheduled task also works with synchronous schedulers and avoids
+		// recursive removeFirst() calls and O(chunkCount²) array shifts.
+		scheduler.accept(() -> packets.forEach(consumer));
 	}
 
 	private void write(int size) {
-		if (capacity + size >= MAX_PACKET_BYTES) {
+		if (sent) {
+			throw new IllegalStateException("Packet already sent");
+		}
+		if (capacity + size > MAX_PACKET_BYTES) {
+			if (byteBufObjects.size() + 1 >= PacketBufferReceiver.MAX_CHUNKS) {
+				currentByteBuf.release();
+				byteBufObjects.forEach(ByteBuf::release);
+				byteBufObjects.clear();
+				sent = true;
+				throw new IllegalArgumentException("Packet exceeds the chunk budget");
+			}
 			byteBufObjects.add(currentByteBuf);
 			create();
 			capacity = 0;
@@ -84,18 +105,7 @@ public final class PacketBufferSender {
 	}
 
 	private void create() {
-		currentByteBuf = Unpooled.buffer();
-		currentByteBuf.writeLong(0);
-		currentByteBuf.writeInt(0);
-		currentByteBuf.writeInt(0);
-	}
-
-	private static void schedule(ObjectArrayList<Runnable> queue, Consumer<Runnable> scheduler) {
-		if (!queue.isEmpty()) {
-			scheduler.accept(() -> {
-				queue.removeFirst().run();
-				schedule(queue, scheduler);
-			});
-		}
+		currentByteBuf = Unpooled.buffer(256, HEADER_BYTES + MAX_PACKET_BYTES);
+		currentByteBuf.writeZero(HEADER_BYTES);
 	}
 }

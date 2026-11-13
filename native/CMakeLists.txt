@@ -134,8 +134,9 @@ add_dependencies(wrvk wrxr_rust)
 if(WIN32)
     # The Rust staticlib embeds std, which references the Winsock/NT APIs
     # rustc would normally link itself; from the MSVC side they must be
-    # named explicitly.
-    target_link_libraries(wrvk PRIVATE gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 ${WRXR_STATICLIB})
+    # named explicitly. Newer Rust std uses WaitOnAddress/WakeByAddress,
+    # provided by the Windows SDK synchronization import library.
+    target_link_libraries(wrvk PRIVATE gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 synchronization ${WRXR_STATICLIB})
 elseif(ANDROID)
     # Bionic: pthread lives in libc, the dl/log/m/vulkan libs exist on every
     # Vulkan-capable device, and libatomic covers the 16-byte atomics the
@@ -213,7 +214,7 @@ if(WRVK_BUILD_TESTS)
     target_include_directories(wrvk_tests PRIVATE include)
     add_dependencies(wrvk_tests wrxr_rust)
     if(WIN32)
-            target_link_libraries(wrvk_tests PRIVATE wrobj_core gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 ${WRXR_STATICLIB})
+            target_link_libraries(wrvk_tests PRIVATE wrobj_core gdi32 user32 ws2_32 bcrypt userenv ntdll advapi32 crypt32 synchronization ${WRXR_STATICLIB})
     else()
             target_link_libraries(wrvk_tests PRIVATE wrobj_core Threads::Threads ${CMAKE_DL_LIBS} m ${WRXR_STATICLIB})
     endif()

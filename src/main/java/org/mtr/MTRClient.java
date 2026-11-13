@@ -328,6 +328,12 @@ public final class MTRClient {
                 });
 
                 EventRegistryClient.registerClientDisconnect(() -> {
+                        RegistryClient.clearPacketBuffers();
+                        lastClientWorld = null;
+                        mapTileProvider = null;
+                        movePlayer = null;
+                        RenderPassengers.clear();
+                        RenderVehicles.clear();
                         DynamicTextureCache.instance.close();
                         if (webserver != null) {
                                 webserver.stop();

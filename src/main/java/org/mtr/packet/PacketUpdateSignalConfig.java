@@ -20,7 +20,7 @@ public final class PacketUpdateSignalConfig extends BlockEntityPacketHandler {
 		blockPos = BlockPos.of(packetBufferReceiver.readLong());
 		acceptRedstone = packetBufferReceiver.readBoolean();
 		outputRedstone = packetBufferReceiver.readBoolean();
-		final int signalColorCount = packetBufferReceiver.readInt();
+		final int signalColorCount = packetBufferReceiver.readCount(Integer.BYTES);
 		signalColors = new IntAVLTreeSet();
 		for (int i = 0; i < signalColorCount; i++) {
 			signalColors.add(packetBufferReceiver.readInt());
