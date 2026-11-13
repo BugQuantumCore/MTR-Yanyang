@@ -107,9 +107,8 @@ public final class WrxRegion implements AutoCloseable {
         public static final int RES_ERROR = 3;
 
         // frame.bin payload (after the 8-byte seq word) — matches C++ FrameHeader v2.
-        // The v1 per-frame texture table is gone: static textures live in the
-        // native pool (MSG_UPLOAD_TEXTURE), and only animated (mcmeta) textures
-        // travel per frame as a small FrameExternal override table.
+        // Protocol v3 uses FrameExternal for all host-owned textures. The
+        // native pool upload API is retained for tests, not production draws.
         public static final int FRAME_MAGIC = 0x46524D32; // "FRM2"
         /** FrameHeader reserved1a: preserve the host's active viewport and scissor. */
         public static final int FRAME_FLAG_HOST_DYNAMIC_STATE = 1;

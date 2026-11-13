@@ -21,7 +21,7 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
 │ ObjModelLoader ─────┼──▶│ region + control page,   │──▶│ wrcore_domain:        │
 │                     │   │ bump queues, seqlocked   │   │  model/mesh registry, │
 │ MainRenderer drain ─┼──▶│ frame slot, poller,      │   │  reply payloads;      │
-│                     │   │ wr_* C ABI (no JNI)      │   │  wrobj parse/build;   │
+│                     │   │ wr_* C ABI               │   │  wrobj parse/build;   │
 │ NativeRuntime ──────┼──▶│                          │──▶│ wrvk recorder:       │
 │ (detect, transports,│   │ (system.load ctor boot   │   │  pipelines/descriptors/│
 │  registry)          │   │  or wr_boot downcalls)   │   │  push constants (128 B)│
@@ -47,8 +47,8 @@ Java (org.mtr.nativeobj)         Rust (rust/wrxr)                C++ (native/)
   (three sides, one contract — the Rust port caught and fixed one
   absolute/relative offset drift during migration through its layout test). Queue wraps are lossless (writer wraps only
   after a full drain; the reader resets whenever it sees `readPos > writePos`).
-* **Draw semantics (protocol v2 — zero-Java rendering)** — `FrameItem` is an
-  80-byte record: mesh id, native texture-pool key, render stage, the RAW
+* **Draw semantics (FRM2 layout, protocol v3 transport)** — `FrameItem` is an
+  80-byte record: mesh id, host texture key, render stage, the RAW
   packed lightmap int and the RAW pose matrix straight out of the
   `PoseStack`. The C++ recorder computes `MV = view × pose`, the
   inverse-transpose normal matrix and the `Kd × brightness` colour at record
@@ -88,9 +88,9 @@ and runs the full Gradle test suite.
 | windows-arm64       | windows-11-arm      | native MSVC ARM64 + `aarch64-pc-windows-msvc`    |
 | linux-x64           | ubuntu-latest       | native gcc + `x86_64-unknown-linux-gnu`          |
 | linux-arm64         | ubuntu-24.04-arm    | native gcc + `aarch64-unknown-linux-gnu`          |
-| macos-arm64         | macos-14            | native AppleClang + `aarch64-apple-darwin`       |
+| macos-arm64         | macos-26            | native AppleClang + `aarch64-apple-darwin`, deployment target 15.0 |
 | android-arm64       | ubuntu-latest       | Android NDK (bionic, API 26) + `aarch64-linux-android` |
-| ios-arm64           | macos-14            | iPhoneOS SDK + `aarch64-apple-ios`, ad-hoc signed |
+| ios-arm64           | macos-15-intel      | iPhoneOS SDK + `aarch64-apple-ios`, ad-hoc signed |
 | ipados-arm64        | (assemble copy)     | iPadOS shares the iPhoneOS platform binary byte-for-byte; the jar carries it under its own directory |
 
 Cross builds pass `-DWRXR_TARGET=<triple>` to CMake so the Rust transport core

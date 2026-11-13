@@ -25,16 +25,16 @@ import java.util.stream.Stream;
 /**
  * Lifecycle of the native Vulkan OBJ pipeline.
  *
- * <p>Protocol v2 ("zero-Java model rendering"): textures live in a native
- * pool uploaded once ({@code NativeTextureManager}), and the frame recorder
- * only appends raw pose matrices — the C++ recorder owns every matrix,
- * colour and texture computation. See {@code docs/NATIVE_VULKAN.md}.</p>
+ * <p>Transport protocol v3 retains the FRM2 draw layout. Java appends raw pose
+ * matrices and references to host-owned textures; C++ derives model-view,
+ * normal and material-light values while recording on the render thread.
+ * See {@code docs/NATIVE_VULKAN.md} for ownership and validation limits.</p>
  *
  * <p>Activation is fully automatic and conservative: the pipeline turns on
  * only when VulkanMod is present and every Vulkan handle resolves, and any
- * failure at any stage leaves the fork's Java renderer exactly as it was,
- * with a single log line explaining why. There is no user toggle — the
- * graphics API being Vulkan IS the switch (VulkanMod detection). One rule
+ * startup failure selects the Java renderer, with a log explaining why.
+ * The {@code mtr.nativeVulkan=false} system property disables native recording.
+ * One rule
  * bounds the whole lifecycle: the attach happens at boot time only (the
  * first resource reload / first frame window), never mid-session — while
  * Beryl's shaders are driving the frame the boot is latched OFF for the

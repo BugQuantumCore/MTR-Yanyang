@@ -94,6 +94,7 @@ public final class LiftCustomizationScreen extends WindowBase {
 			.setWidth(new RelativeConstraint());
 
 		isDoubleSidedCheckboxComponent.setText(TranslationProvider.GUI_MTR_LIFT_IS_DOUBLE_SIDED.getString());
+		isDoubleSidedCheckboxComponent.setChecked(lift.getIsDoubleSided());
 		isDoubleSidedCheckboxComponent.onClick(() -> lift.setIsDoubleSided(isDoubleSidedCheckboxComponent.isChecked()));
 
 		GuiHelper.createSpacing(scrollComponent);

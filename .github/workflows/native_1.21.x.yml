@@ -40,9 +40,9 @@ on:
 #   windows-arm64   native, windows-11-arm  (MSVC ARM64)
 #   linux-x64       native, ubuntu-latest
 #   linux-arm64     native, ubuntu-24.04-arm
-#   macos-arm64     native, macos-15
+#   macos-arm64     native, macos-26 (Apple Silicon; deployment target 15.0)
 #   android-arm64   cross, ubuntu-latest + Android NDK (bionic, API 26)
-#   ios-arm64       cross, macos-15 + iOS SDK (arm64, ad-hoc signed)
+#   ios-arm64       cross, macos-15-intel + iOS SDK (arm64, ad-hoc signed)
 #   ipados-arm64    iPadOS shares the iphoneos platform binary with iOS —
 #                   the assemble job copies the ios-arm64 artifact; a
 #                   separate platform directory exists because the jar
@@ -55,6 +55,10 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # Both CMake and rustc honor this on macOS. Building on a newer image must
+    # not silently raise the minimum OS above the previous macos-15 build.
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +88,7 @@ jobs:
             cross: ''
             rustTargets: ''
           - name: macos-arm64
-            os: macos-15
+            os: macos-26
             platform: macos-arm64
             library: libwrvk.dylib
             cross: ''
@@ -96,7 +100,9 @@ jobs:
             cross: android
             rustTargets: aarch64-linux-android
           - name: ios-arm64
-            os: macos-15
+            # Device code is cross-compiled; an Intel runner avoids competing
+            # with the native macOS ARM job for the limited ARM runner pool.
+            os: macos-15-intel
             platform: ios-arm64
             library: libwrvk.dylib
             cross: ios
@@ -297,7 +303,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: spirv
-          pattern: wrvk-spirv
+          name: wrvk-spirv
 
       - name: Layout
         # One directory per platform, matching the jar layout
@@ -428,7 +434,42 @@ jobs:
             sourcesJar=$(ls "$project"/*sources*.jar | head -1)
             if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo "binaries leaked into $sourcesJar"; exit 1; fi
           done
-          echo "native packaging contract verified in all eight jars, all eight platforms"
+          # Existence alone cannot distinguish this run's binaries/shaders from
+          # stale copies already checked into the repository.
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          expected = {}
+          for path in Path('../natives').glob('*/*'):
+              if path.is_file():
+                  expected['native/' + path.relative_to('../natives').as_posix()] = hashlib.sha256(path.read_bytes()).digest()
+          for path in Path('../native/shaders/spirv').glob('*.spv'):
+              expected['shaders/spirv/' + path.name] = hashlib.sha256(path.read_bytes()).digest()
+          if len(expected) != 14:
+              raise SystemExit(f'Expected eight libraries and six shaders, got {len(expected)}')
+          for project in ('1.21.1-fabric', '1.21.1-neoforge', '1.21.4-fabric', '1.21.4-neoforge'):
+              jars = [path for path in Path(project).glob('*.jar') if 'sources' not in path.name]
+              if len(jars) != 1:
+                  raise SystemExit(f'Expected one release jar for {project}, got {len(jars)}')
+              with ZipFile(jars[0]) as archive:
+                  for name, digest in expected.items():
+                      if hashlib.sha256(archive.read(name)).digest() != digest:
+                          raise SystemExit(f'Stale packaged artifact: {jars[0]}:{name}')
+          print('Verified current-run native and shader bytes in all four release jars')
+          PY
+
+      - name: Upload packaged regression reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-test-reports
+          path: |
+            Minecraft-Transit-Railway/versions/**/build/test-results/test/*.xml
+            Transport-Simulation-Core/build/test-results/test/*.xml
+            Transport-Simulation-Core/path-computation/build/test-results/test/*.xml
+          if-no-files-found: ignore
 
       - name: Upload mod jars
         uses: actions/upload-artifact@v4

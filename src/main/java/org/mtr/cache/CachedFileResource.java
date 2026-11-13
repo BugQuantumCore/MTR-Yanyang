@@ -15,7 +15,7 @@ import java.util.function.BiConsumer;
  * <br/>
  * The resource also has a lifespan. After the timeout, the resource is regenerated when next requested and rewritten to the filesystem.
  */
-public abstract class CachedFileResource {
+public abstract class CachedFileResource implements AutoCloseable {
 
 
 	private byte @Nullable [] data;
@@ -77,6 +77,11 @@ public abstract class CachedFileResource {
 	 * @param data the new data
 	 */
 	protected abstract void dataUpdated(byte @Nullable [] data);
+
+	/** Releases resources on the same owner thread used by {@link #get()}. */
+	@Override
+	public void close() {
+	}
 
 	private void generateAndWrite(byte @Nullable [] oldData) {
 		final byte[] newData = generate(oldData);

@@ -245,15 +245,23 @@ public class BlockRailwaySign extends Block implements IBlock, EntityBlock {
 		}
 
 		public void setData(LongAVLTreeSet[] selectedIds, @Nullable String[] signIds) {
+			// Network data must match this sign's slot count before changing any slot.
+			if (selectedIds == null || signIds == null || selectedIds.length != this.selectedIds.length || signIds.length != this.signIds.length) {
+				return;
+			}
+			for (final LongAVLTreeSet selection : selectedIds) {
+				if (selection == null) {
+					return;
+				}
+			}
+
 			for (int i = 0; i < this.signIds.length; i++) {
 				final LongAVLTreeSet selectedIdsCopy = new LongAVLTreeSet(selectedIds[i]);
 				this.selectedIds[i].clear();
 				this.selectedIds[i].addAll(selectedIdsCopy);
 			}
 
-			if (this.signIds.length == signIds.length) {
-				System.arraycopy(signIds, 0, this.signIds, 0, signIds.length);
-			}
+			System.arraycopy(signIds, 0, this.signIds, 0, signIds.length);
 
 			setChanged();
 		}

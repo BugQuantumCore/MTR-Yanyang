@@ -265,6 +265,7 @@ public final class VehicleResource extends VehicleResourceSchema {
 			transportMode,
 			length,
 			width,
+			capacity,
 			bogie1Position,
 			bogie2Position,
 			couplingPadding1,
@@ -368,9 +369,6 @@ public final class VehicleResource extends VehicleResourceSchema {
 			}
 		}
 
-		// Build door models and map them to the closest doorway using combined doorways from all models
-		builtModels.forEach(builtVehicleModelHolder -> builtVehicleModelHolder.mapDoors(doorways));
-
 		// TODO don't rebuild shared models, e.g. bogies
 		final ObjectArrayList<BuiltVehicleModelHolder> builtBogie1Models = new ObjectArrayList<>();
 		for (final VehicleModel vehicleModel : bogie1Models) {
@@ -392,20 +390,29 @@ public final class VehicleResource extends VehicleResourceSchema {
 			}
 		}
 
-		if (floors.isEmpty() && doorways.isEmpty()) {
+		if (floors.isEmpty() && doorways.isEmpty() && !builtModels.isEmpty()) {
 			MTR.LOGGER.info("[{}] No floors or doorways found in vehicle models", id);
-			final double x1 = width / 2 + 0.25;
-			final double x2 = width / 2 + 0.5;
-			final double y = 1 + legacyRiderOffset;
-			final double z = length / 2 - 0.5;
-			builtModels.getFirst().floors.add(new AABB(-x1, y, -z, x1, y, z));
-			for (double j = -z; j <= z + 0.001; j++) {
-				builtModels.getFirst().doorways.add(new AABB(-x1, y, j, -x2, y, j + 1));
-				builtModels.getFirst().doorways.add(new AABB(x1, y, j, x2, y, j + 1));
-			}
+			addFallbackBounds(floors, doorways, width, length, legacyRiderOffset);
 		}
 
+		// Only build doors after every model is ready. A pending bogie used to
+		// return null after this work, appending another set of door meshes on
+		// every retry. Include the fallback doorways in the final mapping too.
+		builtModels.forEach(builtVehicleModelHolder -> builtVehicleModelHolder.mapDoors(doorways));
+
 		return new VehicleResourceCache(builtModels, builtBogie1Models, builtBogie2Models, new ObjectImmutableList<>(floors), new ObjectImmutableList<>(doorways));
+	}
+
+	static void addFallbackBounds(ObjectArrayList<AABB> floors, ObjectArrayList<AABB> doorways, double width, double length, double legacyRiderOffset) {
+		final double x1 = width / 2 + 0.25;
+		final double x2 = width / 2 + 0.5;
+		final double y = 1 + legacyRiderOffset;
+		final double z = length / 2 - 0.5;
+		floors.add(new AABB(-x1, y, -z, x1, y, z));
+		for (double j = -z; j <= z + 0.001; j++) {
+			doorways.add(new AABB(-x1, y, j, -x2, y, j + 1));
+			doorways.add(new AABB(x1, y, j, x2, y, j + 1));
+		}
 	}
 
 	private Supplier<VehicleSoundBase> createVehicleSoundBaseInitializer() {

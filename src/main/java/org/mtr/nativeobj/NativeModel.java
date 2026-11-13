@@ -11,7 +11,7 @@ import org.mtr.resource.RenderStage;
  * data never leaves the native side: the {@code meshId} addresses a GPU
  * buffer the C++ recorder owns.
  *
- * <p>Protocol v2: draws reference the texture by the native pool key
+ * <p>Protocol v3: draws reference the host texture by a stable key
  * ({@link #textureKey}, assigned once per client session by
  * {@code NativeTextureManager}); the material Kd and the raw lightmap
  * brightness are combined natively at record time.</p>
@@ -24,7 +24,7 @@ public final class NativeModel {
         public final int meshIndex;
         public final ResourceLocation texture;
         /**
-         * The native texture-pool key for {@link #texture} (0 when the texture
+         * The host texture key for {@link #texture} (0 when the texture
          * never registered — the C++ side then skips the draw). Stable for the
          * whole client session.
          */

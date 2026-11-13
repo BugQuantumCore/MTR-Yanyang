@@ -50,6 +50,7 @@ public abstract class BlockTrainSensorBase extends Block implements EntityBlock 
 
 		@Override
 		protected void readNbt(CompoundTag nbtCompound) {
+			filterRouteIds.clear();
 			final long[] routeIdsArray = nbtCompound.getLongArray(KEY_ROUTE_IDS);
 			for (final long routeId : routeIdsArray) {
 				filterRouteIds.add(routeId);

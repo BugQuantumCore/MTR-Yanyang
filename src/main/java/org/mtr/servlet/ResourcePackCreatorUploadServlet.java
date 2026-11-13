@@ -23,11 +23,12 @@ import org.mtr.libraries.jakarta.servlet.http.Part;
 import org.mtr.resource.*;
 import org.mtr.screen.ReloadCustomResourcesScreen;
 
-import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.zip.ZipEntry;
@@ -35,6 +36,10 @@ import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 public final class ResourcePackCreatorUploadServlet extends AbstractResourcePackCreatorServlet {
+
+	public static final long MAX_UPLOAD_FILE_BYTES = 64L * 1024 * 1024;
+	public static final long MAX_UPLOAD_BYTES = 256L * 1024 * 1024;
+	private static final int MAX_UPLOAD_ENTRIES = 4096;
 
 	@Override
 	protected void doGet(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse) {
@@ -109,6 +114,8 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 
 	private static void uploadZip(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, AsyncContext asyncContext) {
 		try {
+			long uploadedBytes = 0;
+			int uploadedEntries = 0;
 			for (final Part part : httpServletRequest.getParts()) {
 				MTR.LOGGER.info("Processing {} uploaded from the Resource Pack Creator", part.getSubmittedFileName());
 				JsonObject customResourcesObject = null;
@@ -120,11 +127,15 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 					ZipEntry zipEntry;
 
 					while ((zipEntry = zipInputStream.getNextEntry()) != null) {
+						if (++uploadedEntries > MAX_UPLOAD_ENTRIES) {
+							throw new IOException("Resource pack contains too many entries");
+						}
 						final String name = pathToIdentifier(zipEntry.getName());
 						lastNameRead = name;
 						MTR.LOGGER.debug("Reading {}", name);
-						final byte[] bytes = IOUtils.toByteArray(zipInputStream);
-						final String content = new String(bytes, StandardCharsets.UTF_8);
+						final byte[] bytes = ResourcePackFileHelper.readBounded(zipInputStream, Math.min(MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_BYTES - uploadedBytes));
+						uploadedBytes += bytes.length;
+						final String content = name.endsWith(".png") ? "" : new String(bytes, StandardCharsets.UTF_8);
 
 						if (name.equals(String.format("%s:%s.json", MTR.MOD_ID, CustomResourceLoader.CUSTOM_RESOURCES_ID))) {
 							customResourcesObject = Utilities.parseJson(content);
@@ -139,6 +150,8 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 				} catch (Exception e) {
 					MTR.LOGGER.error("Processing {} failed; last successful file read was {}", part.getSubmittedFileName(), lastNameRead);
 					MTR.LOGGER.error("", e);
+					returnErrorResponse(httpServletResponse, asyncContext);
+					return;
 				}
 
 				if (customResourcesObject == null) {
@@ -166,12 +179,18 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 	private static void uploadResource(HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse, AsyncContext asyncContext) {
 		if (resourceWrapper != null) {
 			try {
+				long uploadedBytes = 0;
+				int uploadedEntries = 0;
 				for (final Part part : httpServletRequest.getParts()) {
+					if (++uploadedEntries > MAX_UPLOAD_ENTRIES) {
+						throw new IOException("Resource pack contains too many entries");
+					}
 					try (final InputStream inputStream = part.getInputStream()) {
-						final byte[] bytes = IOUtils.toByteArray(inputStream);
-						uploadResource(String.format("%s:%s", MTR.MOD_ID, part.getSubmittedFileName()), bytes, new String(bytes, StandardCharsets.UTF_8));
-					} catch (Exception e) {
-						MTR.LOGGER.error("", e);
+						final String name = String.format("%s:%s", MTR.MOD_ID, part.getSubmittedFileName());
+						ResourcePackFileHelper.zipEntryPath(name);
+						final byte[] bytes = ResourcePackFileHelper.readBounded(inputStream, Math.min(MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_BYTES - uploadedBytes));
+						uploadedBytes += bytes.length;
+						uploadResource(name, bytes, name.endsWith(".png") ? "" : new String(bytes, StandardCharsets.UTF_8));
 					}
 				}
 				returnStandardResponse(httpServletResponse, asyncContext, null);
@@ -189,6 +208,14 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 		final String description = httpServletRequest.getParameter("description");
 
 		if (resourceWrapper != null && name != null && description != null) {
+			final Path resourcePackFolder = Minecraft.getInstance().gameDirectory.toPath().resolve("resourcepacks");
+			final Path filePath;
+			try {
+				filePath = ResourcePackFileHelper.exportPath(resourcePackFolder, name, DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now()));
+			} catch (IllegalArgumentException e) {
+				returnErrorResponse(httpServletResponse, asyncContext);
+				return;
+			}
 			final JsonObject vehiclesFlattened = resourceWrapper.flatten();
 			Minecraft.getInstance().execute(() -> {
 				final ObjectArrayList<VehicleResource> vehicles = new ObjectArrayList<>();
@@ -199,12 +226,10 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 					return modelString == null ? ResourceManagerHelper.readResource(identifier) : modelString;
 				}, modelPropertiesMap, positionDefinitionsMap)));
 				final CustomResources customResources = new CustomResources(vehicles, new ObjectArrayList<>());
-				final String resourcePackFolder = String.format("%s/resourcepacks", Minecraft.getInstance().gameDirectory);
-				final String filePath = String.format("%s/%s-%s.zip", resourcePackFolder, name, DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now()));
 				MTR.LOGGER.info("Exporting Resource Pack at {}", filePath);
 
 				try (
-					final FileOutputStream fileOutputStream = new FileOutputStream(filePath);
+					final FileOutputStream fileOutputStream = new FileOutputStream(filePath.toFile());
 					final ZipOutputStream zipOutputStream = new ZipOutputStream(fileOutputStream)
 				) {
 					writeToZipOutputStream(modelPropertiesMap, zipOutputStream, modelProperties -> IOUtils.write(Utilities.getJsonObjectFromData(modelProperties).toString(), zipOutputStream, StandardCharsets.UTF_8));
@@ -235,7 +260,7 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 					MTR.LOGGER.error("", e);
 				}
 
-				Util.getPlatform().openFile(new File(resourcePackFolder));
+				Util.getPlatform().openFile(resourcePackFolder.toFile());
 			});
 
 			returnStandardResponse(httpServletResponse, asyncContext, null);
@@ -247,7 +272,7 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 	private static <T> void writeToZipOutputStream(Object2ObjectMap<String, T> dataMap, ZipOutputStream zipOutputStream, DataConsumer<T> writeData) {
 		dataMap.forEach((name, data) -> {
 			try {
-				zipOutputStream.putNextEntry(new ZipEntry(identifierToPath(name)));
+				zipOutputStream.putNextEntry(new ZipEntry(ResourcePackFileHelper.zipEntryPath(name)));
 				writeData.accept(data);
 			} catch (Exception e) {
 				MTR.LOGGER.error("", e);
@@ -263,16 +288,6 @@ public final class ResourcePackCreatorUploadServlet extends AbstractResourcePack
 			return String.format("%s:%s", nameSplit[1], String.join("/", newNameSplit));
 		} else {
 			return "";
-		}
-	}
-
-	private static String identifierToPath(String identifierString) {
-		final String[] stringSplit = identifierString.split(":");
-		if (stringSplit.length == 2) {
-			return String.format("assets/%s/%s", stringSplit[0], stringSplit[1]);
-		} else {
-			MTR.LOGGER.error("Invalid identifier {}", identifierString);
-			return MTR.randomString();
 		}
 	}
 

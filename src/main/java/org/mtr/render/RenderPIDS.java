@@ -29,7 +29,6 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.mtr.tool.Drawing;
 
 import java.awt.*;
-import java.util.regex.Pattern;
 
 public class RenderPIDS<T extends BlockPIDSBase.BlockEntityBase> extends BlockEntityRendererExtension<T> implements IGui, Utilities {
 
@@ -44,11 +43,6 @@ public class RenderPIDS<T extends BlockPIDSBase.BlockEntityBase> extends BlockEn
 	public static final int SWITCH_LANGUAGE_TICKS = 60;
 	private static final int STATIONS_PER_PAGE = 10;
 	private static final int SWITCH_PAGE_TICKS = 120;
-	/**
-	 * Precompiled row separator — String#split compiles a fresh Pattern per call,
-	 * which ran per row per frame for every PIDS display.
-	 */
-	private static final Pattern PIPE_SPLIT = Pattern.compile("\\|");
 
 	public RenderPIDS(float startX, float startY, float startZ, float maxHeight, int maxWidth, boolean rotate90, float textPadding) {
 		this.startX = startX;
@@ -125,7 +119,7 @@ public class RenderPIDS<T extends BlockPIDSBase.BlockEntityBase> extends BlockEn
 			final ArrivalResponse arrivalResponse;
 			final String customMessage = entity.getMessage(i);
 			final String[] destinationSplit;
-			final String[] customMessageSplit = PIPE_SPLIT.split(customMessage);
+			final String[] customMessageSplit = PidsLanguageText.split(customMessage);
 			final boolean renderCustomMessage;
 			final int languageIndex;
 
@@ -147,11 +141,11 @@ public class RenderPIDS<T extends BlockPIDSBase.BlockEntityBase> extends BlockEn
 					renderCustomMessage = true;
 					languageIndex = languageTicks % customMessageSplit.length;
 				} else {
-					final String[] tempDestinationSplit = PIPE_SPLIT.split(arrivalResponse.getDestination());
+					final String[] tempDestinationSplit = PidsLanguageText.split(arrivalResponse.getDestination());
 					if (arrivalResponse.getRouteNumber().isEmpty()) {
 						destinationSplit = tempDestinationSplit;
 					} else {
-						final String[] tempNumberSplit = PIPE_SPLIT.split(arrivalResponse.getRouteNumber());
+						final String[] tempNumberSplit = PidsLanguageText.split(arrivalResponse.getRouteNumber());
 						int destinationIndex = 0;
 						int numberIndex = 0;
 						final ObjectArrayList<String> newDestinations = new ObjectArrayList<>();
@@ -227,7 +221,7 @@ public class RenderPIDS<T extends BlockPIDSBase.BlockEntityBase> extends BlockEn
 							for (int j = 0; j < STATIONS_PER_PAGE; j++) {
 								final SimplifiedRoutePlatform simplifiedRoutePlatform = Utilities.getElement(stations, j + callingAtPage * STATIONS_PER_PAGE);
 								if (simplifiedRoutePlatform != null) {
-									final String[] stationNameSplit = PIPE_SPLIT.split(simplifiedRoutePlatform.getStationName());
+									final String[] stationNameSplit = PidsLanguageText.split(simplifiedRoutePlatform.getStationName());
 									lines.add(stationNameSplit[languageTicks % stationNameSplit.length]);
 								}
 							}

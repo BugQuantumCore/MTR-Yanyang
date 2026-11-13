@@ -19,7 +19,8 @@ native binaries; the existing **FRM2** frame payload layout remains unchanged.
 | VulkanMod with active Beryl pipeline | Java path through the host's shader pipelines |
 | Active Radiance | Model/stage batches through `RenderType.draw(MeshData)` so Radiance captures the geometry |
 
-Backend transitions rebuild model resources. The Radiance path transforms
+Backend transitions require model resources to be rebuilt; runtime-failure
+fallback coverage still needs validation. The Radiance path transforms
 positions and normals into the submitted vertex stream and retains packed
 lighting. This is capture-compatible batching, not a claim of hardware
 instancing or a measured frame-rate improvement.

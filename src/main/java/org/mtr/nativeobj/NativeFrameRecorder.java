@@ -12,23 +12,22 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * The per-frame native draw list writer — protocol v2, a thin appender.
+ * The per-frame native draw list writer — v3 transport with the FRM2 layout.
  * During the model drain (which runs exactly where the GL path issues its
  * draws — inside the world render phase, with VulkanMod's command buffer
  * recording), native items are appended into the frame slot and one
  * submission per drain pass records them on the C++ side.
  *
- * <p><b>v2 semantics ("zero-Java model rendering"):</b> the draw items carry
+ * <p><b>Draw semantics:</b> the draw items carry
  * the RAW pose matrix straight out of the {@code PoseStack}, the RAW packed
- * lightmap int and the native texture-pool key — nothing is pre-multiplied,
+ * lightmap int and the host texture key — nothing is pre-multiplied,
  * inverted or colour-computed in Java. The frame header carries the camera
  * view and projection matrices (one 16-float copy each, per frame, not per
  * item); the C++ recorder derives {@code MV = view × pose}, the
  * inverse-transpose normal matrix and the {@code Kd × brightness} colour at
- * record time. Static textures live in the native pool
- * ({@code MSG_UPLOAD_TEXTURE}); only animated (mcmeta) textures travel per
- * frame, as a small external-handle override table resolved through
- * VulkanMod.</p>
+ * record time. All textures, including static resources, use a deduplicated
+ * per-frame image-view/sampler table resolved through VulkanMod. Uploads and
+ * image lifetimes remain owned by the host.</p>
  *
  * <p>Hot-path discipline ({@code docs/PERFORMANCE.md} §3.2): the item store
  * is a static grow-only array bank reused across frames — the steady state
@@ -54,7 +53,7 @@ public final class NativeFrameRecorder {
         private static final float[] MATRIX_16_SCRATCH = new float[16];
 
         /**
-         * Per-frame external (animated) textures, deduplicated, capped at
+         * Per-frame host textures, deduplicated, capped at
          * {@link WrxRegion#FRAME_MAX_EXTERNAL}. Cleared with the item store
          * on every submit.
          */
@@ -77,8 +76,7 @@ public final class NativeFrameRecorder {
          * {@code NewOptimizedModel.render(pose, lightMultiplier, shader)},
          * and {@code light} is the RAW packed lightmap int — no model-view
          * multiply, no normal matrix, no brightness scaling; all of that is
-         * native math under protocol v2. The only per-item work here is one
-         * 16-float copy.
+         * native math. Java copies the pose and deduplicates host texture keys.
          */
         public void queue(NativeModel model, Matrix4f pose, int light) {
                 if (model.renderStage == null) {
@@ -104,8 +102,8 @@ public final class NativeFrameRecorder {
                 System.arraycopy(MATRIX_16_SCRATCH, 0, itemPose, base * 16, 16);
                 itemCount++;
 
-                // animated (mcmeta) textures stay external: VulkanMod owns
-                // their images, so they travel as per-frame handle overrides
+                // VulkanMod owns all production images; publish host handles
+                // once per distinct texture in this drain.
                 final ResourceLocation texture = model.texture;
                 if (texture != null && NativeTextureManager.INSTANCE.isExternal(texture) && !externalSet.contains(texture)) {
                         if (frameExternals.size() >= WrxRegion.FRAME_MAX_EXTERNAL) {

@@ -138,7 +138,7 @@ public class BveVehicleSound extends VehicleSoundBase {
 		}
 
 		if (isCompressorActive) {
-			mrPress += (int) (secondsElapsed * config.config.mrCompressorSpeed);
+			mrPress += secondsElapsed * config.config.mrCompressorSpeed;
 		}
 
 		if (vehicleLoopingSoundHolder.soundLoopCompressor != null) {
@@ -223,6 +223,8 @@ public class BveVehicleSound extends VehicleSoundBase {
 			playSoundInWorld(config.config.brakeEmergency, blockPos);
 		}
 
+		oldSpeedChange = speedChange;
+		oldOnRoute = isOnRoute;
 		isCompressorActiveLastElapsed = isCompressorActive;
 	}
 
