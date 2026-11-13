@@ -433,6 +433,7 @@ jobs:
           cd Minecraft-Transit-Railway/wr-vk-release
           python3 - <<'PY'
           import hashlib
+          from collections import Counter
           from pathlib import Path
           from zipfile import ZipFile
 
@@ -466,8 +467,9 @@ jobs:
                   raise SystemExit(f'Expected one release jar for {project}, got {len(jars)}')
               with ZipFile(jars[0]) as archive:
                   names = [info.filename for info in archive.infolist() if not info.is_dir()]
-                  if len(names) != len(set(names)):
-                      raise SystemExit(f'Duplicate file entries in {jars[0]}')
+                  duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+                  if duplicates:
+                      raise SystemExit(f'Duplicate file entries in {jars[0]}: {duplicates}')
                   packaged = {name for name in names if name.startswith(('native/', 'shaders/spirv/'))}
                   if packaged != set(expected):
                       raise SystemExit(f'Unexpected native/shader file set in {jars[0]}')

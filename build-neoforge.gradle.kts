@@ -1,4 +1,6 @@
+import com.github.jengelman.gradle.plugins.shadow.transformers.PreserveFirstFoundResourceTransformer
 import org.apache.tools.ant.filters.ReplaceTokens
+import org.gradle.api.file.DuplicatesStrategy
 import org.mtr.BuildTools
 import org.mtr.core.Generator
 import org.mtr.core.WebserverSetup
@@ -211,6 +213,22 @@ tasks {
                 relocate("gg.essential", "org.mtr.libraries.gg.essential")
                 relocate("kotlin.", "org.mtr.libraries.kotlin")
                 relocate("org.jetbrains", "org.mtr.libraries.org.jetbrains")
+                // TSC already supplies these relocated annotations. Filter only the
+                // original inputs before relocation, keeping TSC's retained copies.
+                exclude("org/jetbrains/annotations/NotNull.class", "org/jetbrains/annotations/Nullable.class")
+                // Retain one copy of the duplicated Maven metadata without discarding
+                // service descriptors, license files, or unrelated dependency resources.
+                val annotationMetadata = listOf(
+                        "META-INF/maven/org.jetbrains/annotations/pom.properties",
+                        "META-INF/maven/org.jetbrains/annotations/pom.xml",
+                )
+                filesMatching(annotationMetadata) {
+                        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+                }
+                transform<PreserveFirstFoundResourceTransformer> {
+                        include(annotationMetadata)
+                }
+                failOnDuplicateEntries.set(true)
                 // Two kotlin-stdlib versions live on this classpath (the
                 // loader's language-kotlin line and the bundled line), so the
                 // fat jar would get duplicate META-INF/*.kotlin_module entries
