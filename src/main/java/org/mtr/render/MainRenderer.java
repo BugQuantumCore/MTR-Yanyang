@@ -337,7 +337,7 @@ public class MainRenderer {
          *
          * @param models                      the pre-built optimised models keyed by render stage
          * @param storedMatrixTransformations the transform applied at draw time
-         * @param light                       packed lightmap value (block + sky in the low bits)
+         * @param light                       legacy raw 0-15 brightness or an already packed lightmap value
          */
         public static void renderModel(Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<NewOptimizedModel>> models, StoredMatrixTransformations storedMatrixTransformations, int light) {
                 models.forEach((renderStage, newOptimizedModels) -> newOptimizedModels.forEach(newOptimizedModel -> (renderStage.isTranslucent ? MODEL_RENDERS_TRANSLUCENT : MODEL_RENDERS)
@@ -512,7 +512,7 @@ public class MainRenderer {
                                 newOptimizedModel.renderCaptured(renderLayer, consumer -> renderDetails.forEach(renderDetailsEntry -> {
                                         renderDetailsEntry.left().transform(matrixStack, offset);
                                         try {
-                                                newOptimizedModel.appendCaptured(consumer, matrixStack.last(), renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : renderDetailsEntry.rightInt());
+                                                newOptimizedModel.appendCaptured(consumer, matrixStack.last(), renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : CapturedModelLight.toPackedLight(renderDetailsEntry.rightInt()));
                                         } finally {
                                                 matrixStack.popPose();
                                         }

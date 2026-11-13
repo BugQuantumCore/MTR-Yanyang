@@ -1,0 +1,25 @@
+name: Release verification checks (1.21.x)
+
+on:
+  push:
+    branches: [ '1.21.x' ]
+  pull_request:
+    branches: [ '1.21.x' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release-logic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exercise release validation with synthetic ZIPs and metadata
+        run: python3 -m unittest discover -s .github/scripts/tests -p 'test_*.py' -v

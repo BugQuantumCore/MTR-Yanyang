@@ -6,9 +6,15 @@ on:
     paths:
       - 'native/**'
       - 'buildSrc/**'
-      - 'src/main/java/**'
-      - 'src/test/**'
-      - 'src/main/resources/**'
+      - 'src/**'
+      - 'website/**'
+      - 'versions/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'stonecutter.gradle.kts'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
       - '.github/workflows/native_1.21.x.yml'
@@ -17,20 +23,24 @@ on:
     paths:
       - 'native/**'
       - 'buildSrc/**'
-      - 'src/main/java/**'
-      - 'src/test/**'
-      - 'src/main/resources/**'
+      - 'src/**'
+      - 'website/**'
+      - 'versions/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'stonecutter.gradle.kts'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
       - '.github/workflows/native_1.21.x.yml'
   workflow_dispatch:
 
-# src/main/resources/** is in the trigger paths because the build-mod job
-# assembles the shipped jars from this tree: a resource-only change (the
-# yanyang.16 neoforge.mods.toml dependency fix, a mixin json, a texture)
-# alters the jar contents without touching any .java file, and without the
-# path entry it silently skipped the rebuild — the last green native run's
-# artifacts would then be published with the stale resources inside.
+# Rebuild for every authored input to the shipped jars, including resources,
+# schemas, websites, version/toolchain properties and Gradle configuration.
+# Release configuration/notes are deliberately excluded: they select a completed
+# source build and must not change the identity of that build's artifacts.
 
 # ---------------------------------------------------------------------------
 # The platform matrix — all eight targets the mod ships in every jar
@@ -355,7 +365,7 @@ jobs:
           # that branch, so there is no patch to apply at build time.
           repository: BugQuantumCore/MTR-Yanyang
           # Audited passenger lifecycle fixes; immutable for reproducible builds.
-          ref: '60a5e8c1be1691c384f24855093188a4e9cf23bd'
+          ref: '601876836d8eb4fdf010c6a2ff969dda8ee19b72'
           path: Transport-Simulation-Core
 
       - name: Download natives
@@ -416,47 +426,59 @@ jobs:
         # Guards the jar-layout contract of org.mtr.nativeobj.NativeRuntime:
         # native/<platform>/<library> and shaders/spirv/*.spv in every
         # release jar for every shipped platform, and their absence from the
-        # sources jars. The library FILE name carries the platform prefix —
-        # wrvk.dll on Windows, libwrvk.so/.dylib everywhere else — so the
-        # assertion must accept the optional "lib".
+        # sources jars when present (NeoForge does not collect a sources jar).
+        # Validate exact names and bytes, not just the presence of directories.
         run: |
-          set -e
+          set -euo pipefail
           cd Minecraft-Transit-Railway/wr-vk-release
-          platforms="windows-x64 windows-arm64 linux-x64 linux-arm64 macos-arm64 android-arm64 ios-arm64 ipados-arm64"
-          for project in 1.21.1-fabric 1.21.1-neoforge 1.21.4-fabric 1.21.4-neoforge; do
-            jar=$(ls "$project"/*.jar | grep -v sources | head -1)
-            echo "verifying $jar"
-            for platform in $platforms; do
-              unzip -l "$jar" | grep -qE "native/$platform/(lib)?wrvk\.(dll|so|dylib)" \
-                || { echo "native library for $platform missing from $jar"; exit 1; }
-            done
-            unzip -l "$jar" | grep -E 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
-            sourcesJar=$(ls "$project"/*sources*.jar | head -1)
-            if unzip -l "$sourcesJar" | grep -qE 'native/.+|shaders/spirv/'; then echo "binaries leaked into $sourcesJar"; exit 1; fi
-          done
-          # Existence alone cannot distinguish this run's binaries/shaders from
-          # stale copies already checked into the repository.
           python3 - <<'PY'
           import hashlib
           from pathlib import Path
           from zipfile import ZipFile
 
+          libraries = {
+              'windows-x64': 'wrvk.dll', 'windows-arm64': 'wrvk.dll',
+              'linux-x64': 'libwrvk.so', 'linux-arm64': 'libwrvk.so',
+              'macos-arm64': 'libwrvk.dylib', 'android-arm64': 'libwrvk.so',
+              'ios-arm64': 'libwrvk.dylib', 'ipados-arm64': 'libwrvk.dylib',
+          }
+          shaders = {
+              f'{name}.{stage}.spv'
+              for name in ('beacon_beam', 'entity_cutout', 'entity_translucent')
+              for stage in ('vert', 'frag')
+          }
           expected = {}
-          for path in Path('../natives').glob('*/*'):
-              if path.is_file():
-                  expected['native/' + path.relative_to('../natives').as_posix()] = hashlib.sha256(path.read_bytes()).digest()
-          for path in Path('../native/shaders/spirv').glob('*.spv'):
-              expected['shaders/spirv/' + path.name] = hashlib.sha256(path.read_bytes()).digest()
-          if len(expected) != 14:
-              raise SystemExit(f'Expected eight libraries and six shaders, got {len(expected)}')
+          for platform, library in libraries.items():
+              path = Path('../natives') / platform / library
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty native library: {path}')
+              expected[f'native/{platform}/{library}'] = hashlib.sha256(path.read_bytes()).digest()
+          for shader in sorted(shaders):
+              path = Path('../native/shaders/spirv') / shader
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty shader: {path}')
+              expected[f'shaders/spirv/{shader}'] = hashlib.sha256(path.read_bytes()).digest()
+          if expected['native/ios-arm64/libwrvk.dylib'] != expected['native/ipados-arm64/libwrvk.dylib']:
+              raise SystemExit('iPadOS library must be identical to iOS')
           for project in ('1.21.1-fabric', '1.21.1-neoforge', '1.21.4-fabric', '1.21.4-neoforge'):
               jars = [path for path in Path(project).glob('*.jar') if 'sources' not in path.name]
               if len(jars) != 1:
                   raise SystemExit(f'Expected one release jar for {project}, got {len(jars)}')
               with ZipFile(jars[0]) as archive:
+                  names = [info.filename for info in archive.infolist() if not info.is_dir()]
+                  if len(names) != len(set(names)):
+                      raise SystemExit(f'Duplicate file entries in {jars[0]}')
+                  packaged = {name for name in names if name.startswith(('native/', 'shaders/spirv/'))}
+                  if packaged != set(expected):
+                      raise SystemExit(f'Unexpected native/shader file set in {jars[0]}')
                   for name, digest in expected.items():
                       if hashlib.sha256(archive.read(name)).digest() != digest:
                           raise SystemExit(f'Stale packaged artifact: {jars[0]}:{name}')
+              for source in Path(project).glob('*sources*.jar'):
+                  with ZipFile(source) as archive:
+                      if any(name.startswith(('native/', 'shaders/spirv/')) for name in archive.namelist()):
+                          raise SystemExit(f'Native/shader binaries leaked into {source}')
+              print(f'Verified {jars[0]}: eight libraries and six shaders')
           print('Verified current-run native and shader bytes in all four release jars')
           PY
 

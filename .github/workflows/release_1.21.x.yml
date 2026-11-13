@@ -1,18 +1,8 @@
 name: Release 1.21.x
 
-# Publishes the jars a completed Native Vulkan OBJ pipeline run produced.
-# workflow_dispatch only fires for workflows on the default branch (this
-# fork's default is 1.20.x), so the trigger is a push touching
-# .github/release/** only: the commit itself carries the parameters —
-#
-#   .github/release/config.json   {"run_id","tag","title","notes","notes_file"}
-#   .github/release/notes.md      optional notes body when notes_file is set
-#
-# The job downloads that run's artifacts (CI-to-GitHub bandwidth, no
-# rebuild), re-verifies the 8-platform jar contract, then drafts a GitHub
-# release with the four mod jars + the all-platform natives zip.
-# Verify the draft via the API, then publish it.
-
+# Commit this configuration only after the formal 1.21.x push build succeeds.
+# Required: run_id, source_sha, tag, title. Optional: notes, notes_file,
+# prerelease. This workflow creates a DRAFT only; verify before publishing.
 on:
   push:
     branches: [ '1.21.x' ]
@@ -23,79 +13,39 @@ permissions:
   contents: write
   actions: read
 
+concurrency:
+  group: release-1.21.x
+  cancel-in-progress: false
+
 jobs:
   release:
     name: draft-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout release configuration and verifier
         uses: actions/checkout@v4
-
-      - name: Read the release configuration
-        run: |
-          set -e
-          python3 - <<'PY'
-          import json
-          with open('.github/release/config.json') as f:
-              cfg = json.load(f)
-          for key in ('run_id', 'tag', 'title'):
-              assert cfg.get(key), 'missing config key: ' + key
-          notes = cfg.get('notes', '')
-          notes_file = cfg.get('notes_file', '')
-          if notes_file:
-              if not notes_file.startswith('.github/release/'):
-                  notes_file = '.github/release/' + notes_file
-              with open(notes_file) as f:
-                  notes = f.read()
-          with open('notes.md', 'w') as f:
-              f.write(notes)
-          print('config ok; tag:', cfg['tag'], '| notes bytes:', len(notes))
-          PY
-          echo "RUN_ID=$(python3 -c "import json;print(json.load(open('.github/release/config.json'))['run_id'])")" >> "$GITHUB_ENV"
-          echo "TAG=$(python3 -c "import json;print(json.load(open('.github/release/config.json'))['tag'])")" >> "$GITHUB_ENV"
-          echo "TITLE=$(python3 -c "import json;print(json.load(open('.github/release/config.json'))['title'])")" >> "$GITHUB_ENV"
-          echo "--- notes.md preview ---"
-          head -5 notes.md
-
-      - name: Download the release jars
-        uses: actions/download-artifact@v4
         with:
-          run-id: ${{ env.RUN_ID }}
-          name: YYMTR-release-jars
-          path: jars
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-      - name: Download the natives bundle
-        uses: actions/download-artifact@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          run-id: ${{ env.RUN_ID }}
-          name: wrvk-natives
-          path: natives-artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.12'
 
-      - name: Flatten assets and re-verify the 8-platform contract
-        run: |
-          set -e
-          mkdir -p assets
-          find jars -name '*.jar' -not -name '*sources*' -exec cp {} assets/ \;
-          platforms="windows-x64 windows-arm64 linux-x64 linux-arm64 macos-arm64 android-arm64 ios-arm64 ipados-arm64"
-          [ "$(find assets -name '*.jar' | wc -l)" -eq 4 ] || { find assets -type f; echo "expected exactly 4 release jars"; exit 1; }
-          for jar in assets/*.jar; do
-            echo "re-verifying $jar"
-            for platform in $platforms; do
-              unzip -l "$jar" | grep -qE "native/$platform/(lib)?wrvk\.(dll|so|dylib)" \
-                || { echo "native library for $platform missing from $jar"; exit 1; }
-            done
-            unzip -l "$jar" | grep -qE 'shaders/spirv/.+\.spv' || { echo "spirv shaders missing from $jar"; exit 1; }
-          done
-          (cd natives-artifact && zip -qr "$PWD/../assets/wrvk-natives-all-platforms.zip" natives native)
-          sha256sum assets/* | tee assets.sha256
+      - name: Verify source, artifact archives and all four packaged jars
+        run: python3 .github/scripts/release_verify.py verify --config .github/release/config.json
 
-      - name: Create the draft release and upload the assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TITLE" --notes-file notes.md assets/*
-          echo "draft created:"
-          gh release view "$TAG" --json name,isDraft,assets --jq '{name, isDraft, assets: [.assets[] | {name, size}]}'
+      - name: Preserve the verified release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-provenance-${{ github.run_id }}
+          path: |
+            .release-staging/assets/SHA256SUMS
+            .release-staging/assets/build-provenance.json
+          if-no-files-found: error
+
+      - name: Create exact-source tag and draft release
+        run: python3 .github/scripts/release_verify.py draft

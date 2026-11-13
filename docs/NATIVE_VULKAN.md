@@ -21,9 +21,11 @@ native binaries; the existing **FRM2** frame payload layout remains unchanged.
 
 Backend transitions require model resources to be rebuilt; runtime-failure
 fallback coverage still needs validation. The Radiance path transforms
-positions and normals into the submitted vertex stream and retains packed
-lighting. This is capture-compatible batching, not a claim of hardware
-instancing or a measured frame-rate improvement.
+positions and normals into the submitted vertex stream. Legacy scalar model
+brightness (0-15) is converted to packed block/sky coordinates at the capture
+boundary, while already packed and full-bright values are preserved. The scalar
+source does not retain separate block and sky samples. This is capture-compatible
+batching, not a claim of hardware instancing or a measured frame-rate improvement.
 
 The host bridge checks the native handles and pipeline-cache invalidation
 fields before activation. Unknown host APIs fail closed to the Java path.

@@ -36,7 +36,7 @@ jobs:
           # there is no patch to apply at build time any more.
           repository: BugQuantumCore/MTR-Yanyang
           # Audited passenger lifecycle fixes; immutable for reproducible builds.
-          ref: '60a5e8c1be1691c384f24855093188a4e9cf23bd'
+          ref: '601876836d8eb4fdf010c6a2ff969dda8ee19b72'
           path: Transport-Simulation-Core
 
       - name: Set up JDK 21 (TSC toolchain)

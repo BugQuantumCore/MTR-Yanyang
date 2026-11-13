@@ -103,12 +103,15 @@ dispatch tests do not render on a real GPU. Ordinary Java matrix artifacts
 also omit the newly built native libraries; only the native workflow's
 `build-mod` outputs exercise the complete injected JAR contract.
 
-This provenance check is scoped to the native workflow's packaged outputs.
-The separate release workflow still trusts the configured `run_id` without
-verifying its success, workflow identity or source SHA, and uses the release
-configuration commit rather than the artifact run's SHA as the tag target.
-Those checks must be repaired before claiming end-to-end release provenance.
-No release was created or published as part of this audit.
+The original provenance check was scoped to the native workflow's outputs.
+The pre-release follow-up repairs the separate release path: it requires a
+successful native push build on `1.21.x`, the configured source SHA and source
+version, matching artifact archive digests and four exact JAR payloads. It
+creates a tag at that source SHA and a draft release, with checksums and a
+build-provenance manifest for publication review. Synthetic metadata/ZIP
+regressions run only in GitHub. Consult the corresponding Actions and release
+for actual execution and publication status; these checks are not a signed
+build attestation or reproducible-build guarantee.
 
 The macOS jobs in run `43474395663` failed before obtaining a runner, not inside
 the compiler or tests. The next matrix uses macOS 26 ARM with deployment target
