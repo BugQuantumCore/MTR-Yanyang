@@ -71,6 +71,15 @@ outputs; the production initializer call was verified by source inspection,
 not by that particular test. Empty-resource and capacity JSON round trips are
 separate cases. No test here claims actual GPU visual parity.
 
+`CollisionSnapshotTest` checks insertion/movement, complete vehicle IDs,
+dimension isolation, removal/empty geometry and a one-dimensional separation
+helper. `CarBoxTransformTest` compares AABB math using 100 fixed-seed samples.
+These do not execute Mixin transformation, real player movement or landing,
+the total correction budget, high-FPS velocity estimation, Lithium compatibility,
+passenger ground caches or model reload. The TSC boarding tests use helpers;
+lifecycle tests use reflection-created fixtures; transfer tests check graph
+connections. They are not in-game boarding, full-journey or multiplayer tests.
+
 `CachedFileProviderTest` uses controlled entries and a negative lifespan with
 enough margin for the existing randomized offset; it does not depend on sleeps.
 Repeated close does not release already-removed resources again. The visible
@@ -86,6 +95,20 @@ the files injected by the same native workflow run. Regression XML artifacts are
 retained even on failing jobs. Cross targets are machine/platform-checked, not
 executed as Android/iOS games; iPadOS is the same iOS binary under a separate
 packaging directory.
+
+The native CTest invocation does not provide a golden-data directory to
+`wrobj`; its Java/C++ golden-equivalence phase is therefore skipped. Uploaded
+test binaries are not evidence that this comparison ran. `wrvk` recording
+dispatch tests do not render on a real GPU. Ordinary Java matrix artifacts
+also omit the newly built native libraries; only the native workflow's
+`build-mod` outputs exercise the complete injected JAR contract.
+
+This provenance check is scoped to the native workflow's packaged outputs.
+The separate release workflow still trusts the configured `run_id` without
+verifying its success, workflow identity or source SHA, and uses the release
+configuration commit rather than the artifact run's SHA as the tag target.
+Those checks must be repaired before claiming end-to-end release provenance.
+No release was created or published as part of this audit.
 
 The macOS jobs in run `43474395663` failed before obtaining a runner, not inside
 the compiler or tests. The next matrix uses macOS 26 ARM with deployment target
