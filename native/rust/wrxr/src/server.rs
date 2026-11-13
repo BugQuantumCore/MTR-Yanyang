@@ -158,18 +158,25 @@ impl WrxServer {
 
                 let mut read_pos = unsafe { atomic64(build, OFF_BUMP_READ_POS).load(Ordering::Relaxed) };
                 let write_pos = unsafe { atomic64(build, OFF_BUMP_WRITE_POS).load(Ordering::Acquire) };
+                let capacity = unsafe { atomic64(build, OFF_BUMP_CAPACITY).load(Ordering::Relaxed) };
+                let mapped_capacity = (region.build.len() - BUMP_HEADER_SIZE) as u64;
+                if capacity > mapped_capacity || write_pos > capacity || read_pos > capacity
+                        || (write_pos & 7) != 0 || (read_pos & 7) != 0
+                {
+                        set_error_flag(control, ERR_INCONSISTENT);
+                        return -1;
+                }
                 if read_pos > write_pos {
                         // the writer wrapped; restart from the new generation
                         read_pos = 0;
                         unsafe { atomic64(build, OFF_BUMP_READ_POS).store(0, Ordering::Release) };
                 }
-                let capacity = unsafe { atomic64(build, OFF_BUMP_CAPACITY).load(Ordering::Relaxed) };
 
                 let mut processed: i64 = 0;
                 while read_pos + MESSAGE_HEADER_SIZE as u64 <= write_pos {
                         let message_type = unsafe { read_u32(payload.add(read_pos as usize)) };
                         let size = unsafe { read_u32(payload.add(read_pos as usize + 4)) };
-                        let total = MESSAGE_HEADER_SIZE as u64 + round_up8(size) as u64;
+                        let total = MESSAGE_HEADER_SIZE as u64 + ((size as u64 + 7) & !7);
                         if size as u64 > capacity || read_pos + total > write_pos {
                                 // A malformed record would otherwise be re-read on every pass
                                 // and wedge the queue (and every Java publish waiting for its
@@ -188,8 +195,10 @@ impl WrxServer {
                         // this message is acked, so a Java consumer that sees buildAck
                         // covering its request can always find the result.
                         if reply.result_type != 0 {
-                                let reply_bytes = unsafe {
-                                        std::slice::from_raw_parts(reply.result_ptr, reply.result_len as usize)
+                                let reply_bytes = if reply.result_len == 0 {
+                                        &[]
+                                } else {
+                                        unsafe { std::slice::from_raw_parts(reply.result_ptr, reply.result_len as usize) }
                                 };
                                 let _published = publish_result(inner, reply.result_type, reply_bytes);
                                 if reply.bump_result_seq != 0 {
@@ -251,7 +260,7 @@ impl WrxServer {
                 let mut attempted = 0;
                 while attempted < 200 {
                         attempted += 1;
-                        let seq = unsafe { read_u64(frame) };
+                        let seq = unsafe { atomic64(frame, 0).load(Ordering::Acquire) };
                         if seq & 1 != 0 {
                                 std::thread::sleep(std::time::Duration::from_micros(25));
                                 continue;
@@ -268,7 +277,7 @@ impl WrxServer {
                         // Bounds from the ACTUAL counts (the externals are
                         // variable-length, so the fixed FRAME_ITEMS_OFF_BASE is only
                         // the region budget, never this frame's end). A maximal frame
-                        // (64 externals + 65536 items) ends exactly at the region
+                        // (FRAME_MAX_EXTERNAL externals + 65536 items) ends exactly at the region
                         // size, so this check must not add slack.
                         let needed = FRAME_EXTERNAL_OFF as u64 + external_bytes as u64 + item_bytes as u64;
                         if needed > frame_size as u64 {
@@ -281,7 +290,9 @@ impl WrxServer {
                         // emits them back-to-back — so both copy from one span starting
                         // at FRAME_EXTERNAL_OFF, and the items sit at external_bytes into
                         // the snapshot.
-                        inner.frame_snapshot.clear();
+                        // Retain the initialized bytes between frames: clear()+resize()
+                        // zero-filled the entire draw list immediately before overwriting
+                        // it, adding an unnecessary full memory pass every frame.
                         inner.frame_snapshot.resize(external_bytes + item_bytes, 0);
                         unsafe {
                                 std::ptr::copy_nonoverlapping(
@@ -290,7 +301,9 @@ impl WrxServer {
                                         external_bytes + item_bytes,
                                 );
                         }
-                        let recheck = unsafe { read_u64(frame) };
+                        // Keep the payload reads ahead of the final sequence sample.
+                        core::sync::atomic::fence(Ordering::Acquire);
+                        let recheck = unsafe { atomic64(frame, 0).load(Ordering::Acquire) };
                         if recheck == seq {
                                 let snapshot = inner.frame_snapshot.as_ptr();
                                 let recorded_now = unsafe {
@@ -318,6 +331,16 @@ impl WrxServer {
                         atomic64(control, OFF_CONTROL_FRAME_ACK).store(frame_seq, Ordering::Release);
                 }
                 0
+        }
+
+        /// The host owns command-buffer synchronization. When it advertises
+        /// synchronous rendering, the shared-memory poller must never record.
+        pub fn frames_on_render_thread(&self) -> bool {
+                let inner = self.lock();
+                inner.region.as_ref().map(|region| unsafe {
+                        atomic32(region.control.base(), OFF_CONTROL_FLAGS).load(Ordering::Acquire)
+                                & FLAG_RENDER_THREAD_FRAMES != 0
+                }).unwrap_or(false)
         }
 
         /// Best-effort FLAG_POLLER_STARTED bookkeeping (the old C++ declared the
@@ -404,9 +427,18 @@ fn publish_result(inner: &mut Inner, result_type: u32, payload: &[u8]) -> bool {
         let results = region.results.base();
         let capacity = unsafe { atomic64(results, OFF_BUMP_CAPACITY).load(Ordering::Relaxed) };
         let mut write_pos = unsafe { atomic64(results, OFF_BUMP_WRITE_POS).load(Ordering::Relaxed) };
-        let total = MESSAGE_HEADER_SIZE as u64 + round_up8(payload.len() as u32) as u64;
+        let mapped_capacity = (region.results.len() - BUMP_HEADER_SIZE) as u64;
+        if capacity > mapped_capacity || write_pos > capacity || (write_pos & 7) != 0 {
+                set_error_flag(region.control.base(), ERR_INCONSISTENT);
+                return false;
+        }
+        let total = MESSAGE_HEADER_SIZE as u64 + ((payload.len() as u64 + 7) & !7);
+        if payload.len() > u32::MAX as usize || total > capacity {
+                set_error_flag(region.control.base(), ERR_OVERFLOW);
+                return false;
+        }
 
-        if write_pos + total > capacity {
+        if total > capacity - write_pos {
                 // Wait for a full drain, then wrap. Bounded: a stalled Java consumer
                 // is an anomaly; surface it via the error flag.
                 let mut drained = false;
@@ -501,7 +533,7 @@ fn poller_loop(server: &'static WrxServer) {
         while !POLLER_STOP.load(Ordering::Relaxed) {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let builds = server.process_builds();
-                        let frames = server.process_frame();
+                        let frames = if server.frames_on_render_thread() { 0 } else { server.process_frame() };
                         server.pulse();
                         (builds, frames)
                 }));

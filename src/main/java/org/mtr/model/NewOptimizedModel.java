@@ -3,7 +3,9 @@ package org.mtr.model;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.renderer.RenderType;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
 import org.mtr.nativeobj.NativeModel;
 
@@ -51,6 +53,10 @@ public final class NewOptimizedModel {
 	 */
 	@Nullable
 	private final NativeModel nativeModel;
+	private final VertexFormat.Mode drawMode;
+	@Nullable
+	private final Consumer<VertexConsumer> capturedVertices;
+	private static final CapturedVertexConsumer CAPTURED_CONSUMER = new CapturedVertexConsumer();
 
 	/**
 	 * Reusable model-view matrix scratch — render is single-threaded on the GL thread, so
@@ -103,7 +109,10 @@ public final class NewOptimizedModel {
 	}
 
 	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel) {
-		this.vertexBuffer = callback == null ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
+		final boolean capture = org.mtr.client.VulkanCompat.isRadianceActive();
+		this.vertexBuffer = callback == null || capture ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
+		this.capturedVertices = capture ? callback : null;
+		this.drawMode = drawMode;
 		this.texture = texture;
 		this.nativeModel = nativeModel;
 		if (vertexBuffer != null) {
@@ -117,6 +126,34 @@ public final class NewOptimizedModel {
 	@Nullable
 	public NativeModel getNativeModel() {
 		return nativeModel;
+	}
+
+	public boolean usesCapturedRendering() {
+		return capturedVertices != null;
+	}
+
+	/**
+	 * Radiance captures RenderType.draw(MeshData), not direct VBO draws. One
+	 * mesh per model/stage batch gives it all instances with camera-relative
+	 * positions and transformed normals already in the vertex stream.
+	 * Ownership of the built mesh passes to RenderType/Radiance.
+	 */
+	public void renderCaptured(RenderType layer, Consumer<VertexConsumer> instances) {
+		final BufferBuilder builder = Tesselator.getInstance().begin(drawMode, DefaultVertexFormat.NEW_ENTITY);
+		instances.accept(builder);
+		final MeshData mesh = builder.build();
+		if (mesh != null) {
+			layer.draw(mesh);
+		}
+	}
+
+	public void appendCaptured(VertexConsumer target, PoseStack.Pose pose, int light) {
+		if (capturedVertices != null) {
+			CAPTURED_CONSUMER.target = target;
+			CAPTURED_CONSUMER.pose = pose;
+			CAPTURED_CONSUMER.light = light;
+			capturedVertices.accept(CAPTURED_CONSUMER);
+		}
 	}
 
 	/**
@@ -193,8 +230,13 @@ public final class NewOptimizedModel {
 			// pipelines — stretched rectangles, wrong-blend translucent stages
 			// (see-through ceilings and windows) and non-additive light stages
 			// (misplaced colour blocks).
-			vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
-			RenderSystem.setShaderColor(SAVED_COLOR_SCRATCH[0], SAVED_COLOR_SCRATCH[1], SAVED_COLOR_SCRATCH[2], SAVED_COLOR_SCRATCH[3]);
+			try {
+				vertexBuffer.bind();
+				vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
+			} finally {
+				VertexBuffer.unbind();
+				RenderSystem.setShaderColor(SAVED_COLOR_SCRATCH[0], SAVED_COLOR_SCRATCH[1], SAVED_COLOR_SCRATCH[2], SAVED_COLOR_SCRATCH[3]);
+			}
 		}
 	}
 
@@ -229,6 +271,54 @@ public final class NewOptimizedModel {
 			return COLOR_MODULATORS[index];
 		}
 		return new float[]{lightMultiplier, lightMultiplier, lightMultiplier, 1f};
+	}
+
+	/** Render-thread scratch adapter; source geometry is retained without a redundant GL upload. */
+	private static final class CapturedVertexConsumer implements VertexConsumer {
+		private VertexConsumer target;
+		private PoseStack.Pose pose;
+		private int light;
+		private final Vector3f normal = new Vector3f();
+
+		@Override
+		public VertexConsumer addVertex(float x, float y, float z) {
+			target.addVertex(pose.pose(), x, y, z);
+			return this;
+		}
+
+		@Override
+		public VertexConsumer setColor(int red, int green, int blue, int alpha) {
+			target.setColor(red, green, blue, alpha);
+			return this;
+		}
+
+		@Override
+		public VertexConsumer setUv(float u, float v) {
+			target.setUv(u, v);
+			return this;
+		}
+
+		@Override
+		public VertexConsumer setUv1(int u, int v) {
+			target.setUv1(u, v);
+			return this;
+		}
+
+		@Override
+		public VertexConsumer setUv2(int u, int v) {
+			target.setLight(light);
+			return this;
+		}
+
+		@Override
+		public VertexConsumer setNormal(float x, float y, float z) {
+			pose.normal().transform(x, y, z, normal);
+			if (normal.lengthSquared() > 0) {
+				normal.normalize();
+			}
+			target.setNormal(normal.x, normal.y, normal.z);
+			return this;
+		}
 	}
 
 }

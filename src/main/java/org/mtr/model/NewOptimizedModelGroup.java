@@ -153,13 +153,15 @@ public final class NewOptimizedModelGroup {
                                 )
                         );
                 });
+                // A model's INSTANCE reply includes all its materials. Cache that reply
+                // for this merge, then select exactly one corresponding mesh per entry.
+                final java.util.Map<Integer, NativeModelLoader.Placement> placements = new java.util.HashMap<>();
                 for (final NativeEntry entry : newOptimizedModelGroup.nativeEntries) {
                         final RenderStage newRenderStage = entry.renderStage() == null ? defaultRenderStage : entry.renderStage();
-                        // One placed model owns one mesh per source material — keep
-                        // them all; keeping only mesh zero dropped every material
-                        // except the first (invisible vehicle parts).
-                        final List<NativeModel> placedModels = NativeModelLoader.INSTANCE.place(entry.model(), newRenderStage, translateX, translateY, translateZ, flip);
-                        for (final NativeModel placed : placedModels) {
+                        final NativeModelLoader.Placement placement = placements.computeIfAbsent(entry.model().modelId,
+                                        modelId -> NativeModelLoader.INSTANCE.place(modelId, translateX, translateY, translateZ, flip));
+                        final NativeModel placed = placement.forSource(entry.model(), newRenderStage);
+                        if (placed != null) {
                                 boxes.add(new AABB(placed.aabb[0], placed.aabb[1], placed.aabb[2], placed.aabb[3], placed.aabb[4], placed.aabb[5]));
                                 nativeEntries.add(new NativeEntry(newRenderStage, entry.texture(), placed, entry.colorSet()));
                         }

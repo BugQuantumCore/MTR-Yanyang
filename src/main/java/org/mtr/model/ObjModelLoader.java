@@ -255,7 +255,8 @@ public final class ObjModelLoader extends ModelLoaderBase {
 	private void addNativeModels(org.mtr.nativeobj.NativeModelLoader.NativeBuild build, List<String[]> mtlFiles, Function<String, ResourceLocation> textureResolver, boolean splitModel, boolean flipTextureV) {
 		for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Group group : build.groups()) {
 			final NewOptimizedModelGroup newOptimizedModelGroup = new NewOptimizedModelGroup();
-			for (final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Mesh mesh : group.meshes()) {
+			for (int meshIndex = 0; meshIndex < group.meshes().size(); meshIndex++) {
+				final org.mtr.nativeobj.NativeModelLoader.NativeBuild.Mesh mesh = group.meshes().get(meshIndex);
 				final Object2ObjectOpenHashMap<String, String> materialOptions = splitMaterialOptions(mesh.name());
 				final String materialGroupName = materialOptions.get("");
 
@@ -279,7 +280,7 @@ public final class ObjModelLoader extends ModelLoaderBase {
 				// like the GL channel — never coerced here
 				final org.mtr.resource.RenderStage stage = getRenderStage(materialOptions.get("#"));
 				newOptimizedModelGroup.addNative(stage, resolvedTexture,
-					new org.mtr.nativeobj.NativeModel(group.modelId(), mesh.meshId(), resolvedTexture,
+					new org.mtr.nativeobj.NativeModel(group.modelId(), mesh.meshId(), meshIndex, resolvedTexture,
 						stage, mesh.colorPacked(), mesh.aabb(), textureKey));
 			}
 			addModel(group.name(), newOptimizedModelGroup);

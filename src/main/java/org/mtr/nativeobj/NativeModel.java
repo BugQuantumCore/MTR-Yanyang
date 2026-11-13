@@ -20,6 +20,8 @@ public final class NativeModel {
 
         public final int modelId;
         public final int meshId;
+        /** Position in the native model's mesh table, preserved by MSG_INSTANCE. */
+        public final int meshIndex;
         public final ResourceLocation texture;
         /**
          * The native texture-pool key for {@link #texture} (0 when the texture
@@ -46,8 +48,13 @@ public final class NativeModel {
         public final float[] aabb;
 
         public NativeModel(int modelId, int meshId, ResourceLocation texture, @Nullable RenderStage renderStage, int colorPacked, float[] aabb, int textureKey) {
+                this(modelId, meshId, 0, texture, renderStage, colorPacked, aabb, textureKey);
+        }
+
+        public NativeModel(int modelId, int meshId, int meshIndex, ResourceLocation texture, @Nullable RenderStage renderStage, int colorPacked, float[] aabb, int textureKey) {
                 this.modelId = modelId;
                 this.meshId = meshId;
+                this.meshIndex = meshIndex;
                 this.texture = texture;
                 this.textureKey = textureKey;
                 this.renderStage = renderStage;

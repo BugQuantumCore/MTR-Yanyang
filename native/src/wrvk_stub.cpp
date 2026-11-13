@@ -22,6 +22,11 @@ uint64_t asHandle(const void* pointer) {
 }
 } // namespace
 
+void RecordingDispatch::getPhysicalDeviceProperties(uint64_t, void* outProps) {
+        auto* props = static_cast<VkPhysicalDeviceProperties*>(outProps);
+        props->limits.minUniformBufferOffsetAlignment = uniformBufferAlignment;
+}
+
 uint32_t RecordingDispatch::getPhysicalDeviceMemoryProperties(uint64_t, void* outProps) {
         auto* props = static_cast<VkPhysicalDeviceMemoryProperties*>(outProps);
         props->memoryTypeCount = 1;
@@ -33,7 +38,8 @@ uint32_t RecordingDispatch::getPhysicalDeviceMemoryProperties(uint64_t, void* ou
         return VK_SUCCESS;
 }
 
-uint32_t RecordingDispatch::createBuffer(uint64_t, const void* createInfo, uint64_t* outBuffer) {
+uint32_t RecordingDispatch::createBuffer(uint64_t device, const void* createInfo, uint64_t* outBuffer) {
+        lastDevice = device;
         const auto* info = static_cast<const VkBufferCreateInfo*>(createInfo);
         const uint64_t handle = newHandle();
         buffers.emplace(handle, BufferRecord{info->size});
@@ -48,7 +54,7 @@ void RecordingDispatch::getBufferMemoryRequirements(uint64_t, uint64_t buffer, v
         auto* requirements = static_cast<VkMemoryRequirements*>(outRequirements);
         requirements->size = it == buffers.end() ? 0 : (it->second.size + 15) & ~15ULL;
         requirements->alignment = 16;
-        requirements->memoryTypeBits = 1;
+        requirements->memoryTypeBits = bufferMemoryTypeBits;
 }
 
 uint32_t RecordingDispatch::allocateMemory(uint64_t, const void* allocInfo, uint64_t* outMemory) {
@@ -213,6 +219,10 @@ void RecordingDispatch::updateDescriptorSets(uint64_t, uint32_t writeCount, cons
                         sampler = asHandle(descriptors[i].pImageInfo[0].sampler);
                         descriptorImageInfos.push_back(DescriptorImageRecord{view, sampler});
                 }
+                if (descriptors[i].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && descriptors[i].pBufferInfo != nullptr) {
+                        const auto& info = descriptors[i].pBufferInfo[0];
+                        descriptorBufferInfos.push_back({asHandle(info.buffer), info.offset, info.range});
+                }
                 log.push_back({Op::UpdateDescriptorSets, asHandle(descriptors[i].dstSet), view, sampler});
         }
 }
@@ -253,6 +263,11 @@ void RecordingDispatch::destroyShaderModule(uint64_t, uint64_t module) {
 uint32_t RecordingDispatch::createGraphicsPipelines(uint64_t, uint64_t, uint32_t count, const void* createInfos, uint64_t* outPipelines) {
         const auto* infos = static_cast<const VkGraphicsPipelineCreateInfo*>(createInfos);
         for (uint32_t i = 0; i < count; i++) {
+                for (uint32_t stage = 0; stage < infos[i].stageCount; stage++) {
+                        if (infos[i].pStages[stage].pName == nullptr || std::strcmp(infos[i].pStages[stage].pName, "main") != 0) {
+                                return VK_ERROR_INITIALIZATION_FAILED;
+                        }
+                }
                 outPipelines[i] = newHandle();
                 livePipelines++;
                 createdPipelineRenderPass[outPipelines[i]] = asHandle(infos[i].renderPass);

@@ -47,7 +47,7 @@ void check(bool condition, const char* what) {
 constexpr uint64_t BUILD_CAPACITY = 1 << 20;
 constexpr uint64_t RESULTS_CAPACITY = 1 << 18;
 // v2 frame budget, mirroring the Java side's region sizing (NativeRuntime):
-// seq word + 240-byte header + the externals region (64 × 32) + the items
+// seq word + 240-byte header + the externals region (FRAME_MAX_EXTERNAL × 32) + the items
 // region (65536 × 80). The externals are variable-length per frame; this is
 // the worst-case capacity, not a fixed layout.
 constexpr uint64_t FRAME_CAPACITY = 8
@@ -196,6 +196,10 @@ int run(const char* libraryPath) {
 	auto* wrAbi = reinterpret_cast<int32_t (*)()>(::dlsym(library, "wr_abi_version"));
 	check(wrStatus != nullptr, "wr_status exported");
 	check(wrShutdown != nullptr, "wr_shutdown exported");
+        auto* submitFrameNative = reinterpret_cast<int32_t (*)(void*, void*)>(::dlsym(library, "Java_org_mtr_nativeobj_NativeRuntime_submitFrameNative"));
+        auto* shutdownNative = reinterpret_cast<int32_t (*)(void*, void*)>(::dlsym(library, "Java_org_mtr_nativeobj_NativeRuntime_shutdownNative"));
+        check(submitFrameNative != nullptr, "JDK 21 synchronous frame JNI entry exported");
+        check(shutdownNative != nullptr, "JDK 21 synchronous shutdown JNI entry exported");
 	check(wrBoot != nullptr, "wr_boot exported");
 	check(wrVersion != nullptr && std::strcmp(wrVersion(), "wrvk 1.0.0 (native Vulkan OBJ pipeline)") == 0, "version string exported");
 	check(wrAbi != nullptr && wrAbi() == static_cast<int32_t>(wrx::PROTOCOL_VERSION), "abi version exported");
@@ -266,7 +270,9 @@ int run(const char* libraryPath) {
 	check(wrBoot(configPath.c_str()) == 0, "wr_boot idempotent after ctor");
 
 	// graceful shutdown through the exported ABI
-	check(wrShutdown() == 0, "wr_shutdown clean");
+        check(submitFrameNative != nullptr && submitFrameNative(nullptr, nullptr) == 0, "JNI frame entry synchronously handles no pending frame");
+        check(shutdownNative != nullptr && shutdownNative(nullptr, nullptr) == 0, "JNI shutdown entry shuts down synchronously");
+	check(wrShutdown() == 0, "wr_shutdown remains idempotent after JNI shutdown");
 	check((a32(control, 8)->load() & wrx::FLAG_SHUTDOWN) != 0, "shutdown flag published");
 	check(a64(control, 16)->load() == heartbeat(), "heartbeat frozen after shutdown");
 

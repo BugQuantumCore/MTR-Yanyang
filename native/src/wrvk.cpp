@@ -101,7 +101,7 @@ static constexpr uint32_t STAGE_COUNT = 5;
 // Descriptor set / binding layout.
 static constexpr uint32_t SET_SAMPLER = 0;
 static constexpr uint32_t SET_UBO = 1;
-static constexpr uint32_t UBO_SLOTS = 64;      // 128 B each, 8 KiB total
+static constexpr uint32_t UBO_SLOTS = 64;      // 128 B payload, device-aligned stride
 static constexpr uint32_t POOL_RING = 8;      // > any sane swapchain in-flight depth (2 recordFrames per MC frame)
 static constexpr uint32_t MAX_MESHES = 2048;   // vkAllocateMemory budget guard
 static constexpr uint32_t UBO_BYTES = 128;
@@ -111,7 +111,10 @@ static constexpr uint32_t UBO_BYTES = 128;
 // first revision allocated one set per ITEM with a 512 budget, and a busy
 // station (several trains + platform doors + rails) blew through it, silently
 // dropping every item past the 512th ("partially transparent" models).
-static constexpr uint32_t POOL_MAX_SETS = 2048;
+static constexpr uint32_t POOL_MAX_SETS = 4096;
+// Room for the complete external table plus every descriptor this pass can
+// allocate. Generations retain storage across frames without stale handles.
+static constexpr uint32_t TEXTURE_CACHE_SIZE = 16384;
 
 // Native texture pool budget (v2): mirrors the wrcore message-budget and the
 // Java NativeTextureManager upload cap.
@@ -119,13 +122,14 @@ static constexpr uint32_t MAX_TEXTURES = 4096;
 static constexpr uint32_t MAX_TEXTURE_DIM = 16384;
 
 // std140 frame uniform block: mat4 P; vec4 FogColor; float FogStart; float
-// FogEnd; vec4 Light0; vec4 Light1 — offsets 0/64/80/84/88/104, size 120.
+// FogEnd; vec4 Light0; vec4 Light1 — offsets 0/64/80/84/96/112, size 128.
+// std140 aligns each vec4 to 16 bytes; the two fog scalars leave 8 bytes of padding.
 static constexpr uint32_t UBO_P_OFF = 0;
 static constexpr uint32_t UBO_FOG_COLOR_OFF = 64;
 static constexpr uint32_t UBO_FOG_START_OFF = 80;
 static constexpr uint32_t UBO_FOG_END_OFF = 84;
-static constexpr uint32_t UBO_LIGHT0_OFF = 88;
-static constexpr uint32_t UBO_LIGHT1_OFF = 104;
+static constexpr uint32_t UBO_LIGHT0_OFF = 96;
+static constexpr uint32_t UBO_LIGHT1_OFF = 112;
 
 // Push constants (128 B guaranteed): vec4 Color; mat4 MV; mat3 N (3×vec4).
 static constexpr uint32_t PUSH_BYTES = 128;
@@ -143,6 +147,8 @@ struct WrvkRecorder::Impl {
         std::mutex mutex;
         wrx::HostHandles host{};
         bool hostReady{false};
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+        uint64_t uboStride{UBO_BYTES};
 
         std::unordered_map<uint32_t, std::pair<std::vector<uint8_t>, std::vector<uint8_t>>> shaders;
         bool shadersDirty{true};
@@ -159,6 +165,22 @@ struct WrvkRecorder::Impl {
 
         uint64_t pools[POOL_RING]{};
         uint64_t frameCounter{0};
+        struct TexSetEntry {
+                uint64_t generation{0};
+                uint32_t key{0};
+                uint64_t view{0};
+                uint64_t sampler{0};
+                uint64_t set{0};
+        };
+        std::array<TexSetEntry, TEXTURE_CACHE_SIZE> textureCache{};
+
+        TexSetEntry& textureEntry(uint32_t key, uint64_t generation) {
+                uint32_t bucket = (key * 2654435761u) & (TEXTURE_CACHE_SIZE - 1);
+                while (textureCache[bucket].generation == generation && textureCache[bucket].key != key) {
+                        bucket = (bucket + 1) & (TEXTURE_CACHE_SIZE - 1);
+                }
+                return textureCache[bucket];
+        }
 
         uint64_t currentRenderPass{0};
         uint64_t pipelines[STAGE_COUNT]{};
@@ -214,9 +236,10 @@ struct WrvkRecorder::Impl {
                                 pipelines[i] = 0;
                         }
                 }
-                for (uint64_t pool : pools) {
+                for (uint64_t& pool : pools) {
                         if (pool != 0) {
                                 destroyPool(pool);
+                                pool = 0;
                         }
                 }
                 for (auto& entry : gpuByMesh) {
@@ -234,6 +257,9 @@ struct WrvkRecorder::Impl {
                         uboBuffer = 0;
                 }
                 if (uboMemory != 0) {
+                        if (uboMapped != nullptr) {
+                                d().unmapMemory(device(), uboMemory);
+                        }
                         freeMem(uboMemory);
                         uboMemory = 0;
                         uboMapped = nullptr;
@@ -254,13 +280,15 @@ struct WrvkRecorder::Impl {
                         destroySetLayout(uboSetLayout);
                         uboSetLayout = 0;
                 }
+                std::fill(std::begin(uboSets), std::end(uboSets), 0);
+                currentRenderPass = 0;
                 hostReady = false;
         }
 
         // dispatch helpers (IVkDispatch& lives on the recorder)
         IVkDispatch& d();
 
-        uint32_t device() const { return static_cast<uint32_t>(host.device); }
+        uint64_t device() const { return host.device; }
 
         void dispatchDeviceWaitIdle() { d().deviceWaitIdle(device()); }
         void destroyPipeline(uint64_t p) { d().destroyPipeline(device(), p); }
@@ -323,12 +351,11 @@ struct WrvkRecorder::Impl {
         }
 
         // find a HOST_VISIBLE | HOST_COHERENT memory type
-        int32_t hostVisibleMemoryType() {
-                VkPhysicalDeviceMemoryProperties props{};
-                d().getPhysicalDeviceMemoryProperties(host.physicalDevice, &props);
+        int32_t hostVisibleMemoryType(uint32_t memoryTypeBits) {
+                const auto& props = memoryProperties;
                 const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
                 for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
-                        if ((props.memoryTypes[i].propertyFlags & wanted) == wanted) {
+                        if ((memoryTypeBits & (1u << i)) != 0 && (props.memoryTypes[i].propertyFlags & wanted) == wanted) {
                                 return static_cast<int32_t>(i);
                         }
                 }
@@ -339,8 +366,7 @@ struct WrvkRecorder::Impl {
         // falling back to any allowed type (integrated GPUs expose everything
         // through one heap anyway).
         int32_t deviceLocalMemoryType(uint32_t memoryTypeBits) {
-                VkPhysicalDeviceMemoryProperties props{};
-                d().getPhysicalDeviceMemoryProperties(host.physicalDevice, &props);
+                const auto& props = memoryProperties;
                 int32_t anyType = -1;
                 for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
                         if ((memoryTypeBits & (1u << i)) == 0) {
@@ -357,19 +383,17 @@ struct WrvkRecorder::Impl {
         }
 
         bool allocateAndMap(VkBufferCreateInfo& bufferInfo, uint64_t& outBuffer, uint64_t& outMemory, void** outMapped) {
-                VkDeviceSize required{};
+                VkMemoryRequirements requirements{};
                 {
                         if (d().createBuffer(device(), &bufferInfo, &outBuffer) != VK_SUCCESS) {
                                 return false;
                         }
-                        VkMemoryRequirements requirements{};
                         d().getBufferMemoryRequirements(device(), outBuffer, &requirements);
-                        required = requirements.size;
                 }
                 VkMemoryAllocateInfo allocInfo{};
                 allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-                allocInfo.allocationSize = required;
-                const int32_t type = hostVisibleMemoryType();
+                allocInfo.allocationSize = requirements.size;
+                const int32_t type = hostVisibleMemoryType(requirements.memoryTypeBits);
                 if (type < 0) {
                         destroyBuffer(outBuffer);
                         outBuffer = 0;
@@ -627,9 +651,24 @@ WrvkRecorder::~WrvkRecorder() = default;
 
 void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        host_ = host;
+        if (impl_->hostReady && impl_->host.device == host.device && impl_->host.physicalDevice == host.physicalDevice) {
+                return;
+        }
+        impl_->destroyAll();
+        host_ = {};
         impl_->host = host;
-        if (!impl_->hostReady) {
+        if (!host.valid || host.device == 0 || host.physicalDevice == 0 || host.maxPushConstants < PUSH_BYTES) {
+                return;
+        }
+        // Mark ownership before the first allocation so partial initialization
+        // follows exactly the same cleanup path as a complete recorder.
+        impl_->hostReady = true;
+        const bool initialized = [&]() {
+                VkPhysicalDeviceProperties properties{};
+                impl_->d().getPhysicalDeviceProperties(host.physicalDevice, &properties);
+                const uint64_t alignment = std::max<uint64_t>(1, properties.limits.minUniformBufferOffsetAlignment);
+                impl_->uboStride = (UBO_BYTES + alignment - 1) / alignment * alignment;
+                impl_->d().getPhysicalDeviceMemoryProperties(host.physicalDevice, &impl_->memoryProperties);
                 // create the descriptor set layouts, pipeline layout, UBO ring and pools
                 VkDescriptorSetLayoutBinding samplerBinding{};
                 samplerBinding.binding = 0;
@@ -640,7 +679,9 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                 samplerLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
                 samplerLayoutInfo.bindingCount = 1;
                 samplerLayoutInfo.pBindings = &samplerBinding;
-                impl_->d().createDescriptorSetLayout(impl_->device(), &samplerLayoutInfo, &impl_->samplerSetLayout);
+                if (impl_->d().createDescriptorSetLayout(impl_->device(), &samplerLayoutInfo, &impl_->samplerSetLayout) != VK_SUCCESS) {
+                        return false;
+                }
 
                 VkDescriptorSetLayoutBinding uboBinding{};
                 uboBinding.binding = 0;
@@ -651,7 +692,9 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                 uboLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
                 uboLayoutInfo.bindingCount = 1;
                 uboLayoutInfo.pBindings = &uboBinding;
-                impl_->d().createDescriptorSetLayout(impl_->device(), &uboLayoutInfo, &impl_->uboSetLayout);
+                if (impl_->d().createDescriptorSetLayout(impl_->device(), &uboLayoutInfo, &impl_->uboSetLayout) != VK_SUCCESS) {
+                        return false;
+                }
 
                 VkPushConstantRange pushRange{};
                 pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -664,15 +707,19 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                 layoutInfo.pSetLayouts = setLayouts;
                 layoutInfo.pushConstantRangeCount = 1;
                 layoutInfo.pPushConstantRanges = &pushRange;
-                impl_->d().createPipelineLayout(impl_->device(), &layoutInfo, &impl_->pipelineLayout);
+                if (impl_->d().createPipelineLayout(impl_->device(), &layoutInfo, &impl_->pipelineLayout) != VK_SUCCESS) {
+                        return false;
+                }
 
-                // UBO ring: one buffer, 64 slots of 128 bytes, permanently mapped.
+                // UBO ring: 128-byte payloads with device-aligned descriptor offsets.
                 VkBufferCreateInfo uboInfo{};
                 uboInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-                uboInfo.size = UBO_SLOTS * UBO_BYTES;
+                uboInfo.size = UBO_SLOTS * impl_->uboStride;
                 uboInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 uboInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-                impl_->allocateAndMap(uboInfo, impl_->uboBuffer, impl_->uboMemory, &impl_->uboMapped);
+                if (!impl_->allocateAndMap(uboInfo, impl_->uboBuffer, impl_->uboMemory, &impl_->uboMapped)) {
+                        return false;
+                }
 
                 // one UBO descriptor set per slot, never reset
                 if (impl_->uboBuffer != 0) {
@@ -684,7 +731,9 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                         size.descriptorCount = UBO_SLOTS;
                         poolInfo.poolSizeCount = 1;
                         poolInfo.pPoolSizes = &size;
-                        impl_->d().createDescriptorPool(impl_->device(), &poolInfo, &impl_->uboPool);
+                        if (impl_->d().createDescriptorPool(impl_->device(), &poolInfo, &impl_->uboPool) != VK_SUCCESS) {
+                                return false;
+                        }
                         VkDescriptorSetAllocateInfo allocInfo{};
                         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
                         allocInfo.descriptorPool = poolH(impl_->uboPool);
@@ -693,10 +742,12 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                         allocInfo.pSetLayouts = &uboLayoutHandle;
                         for (uint32_t slot = 0; slot < UBO_SLOTS; slot++) {
                                 uint64_t set = 0;
-                                if (impl_->d().allocateDescriptorSets(impl_->device(), &allocInfo, &set) == VK_SUCCESS) {
+                                if (impl_->d().allocateDescriptorSets(impl_->device(), &allocInfo, &set) != VK_SUCCESS) {
+                                        return false;
+                                } else {
                                         VkDescriptorBufferInfo bufferInfo{};
                                         bufferInfo.buffer = bufH(impl_->uboBuffer);
-                                        bufferInfo.offset = slot * UBO_BYTES;
+                                        bufferInfo.offset = slot * impl_->uboStride;
                                         bufferInfo.range = UBO_BYTES;
                                         VkWriteDescriptorSet write{};
                                         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -722,21 +773,28 @@ void WrvkRecorder::attachHost(const wrx::HostHandles& host) {
                         size.descriptorCount = POOL_MAX_SETS;
                         poolInfo.poolSizeCount = 1;
                         poolInfo.pPoolSizes = &size;
-                        impl_->d().createDescriptorPool(impl_->device(), &poolInfo, &impl_->pools[i]);
+                        if (impl_->d().createDescriptorPool(impl_->device(), &poolInfo, &impl_->pools[i]) != VK_SUCCESS) {
+                                return false;
+                        }
                 }
-                impl_->hostReady = true;
+                return true;
+        }();
+        if (!initialized) {
+                impl_->destroyAll();
+                return;
         }
+        host_ = host;
         impl_->shadersDirty = true;
 }
 
 void WrvkRecorder::uploadShader(uint32_t key, const uint8_t* code, uint32_t size) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (key > SHADER_BEACON || size < 4) {
+        if (key > SHADER_BEACON || code == nullptr || size < 4) {
                 return;
         }
         uint32_t vertSize = 0;
         std::memcpy(&vertSize, code, sizeof(uint32_t));
-        if (vertSize > size - 4) {
+        if (vertSize == 0 || vertSize >= size - 4 || (vertSize & 3) != 0 || ((size - 4 - vertSize) & 3) != 0) {
                 return;
         }
         auto pair = std::make_pair(std::vector<uint8_t>(code + 4, code + 4 + vertSize),
@@ -1015,9 +1073,11 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
                         stages[0].module = shaderModuleH(vertModule);
+                        stages[0].pName = "main";
                         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
                         stages[1].module = shaderModuleH(fragModule);
+                        stages[1].pName = "main";
 
                         VkVertexInputBindingDescription binding{};
                         binding.stride = wrx::VERTEX_BYTES;
@@ -1129,11 +1189,16 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
         const uint64_t cmd = header.cmdBuffer;
         impl_->flushPendingTextureUploads(cmd);
 
+        // Advance even when descriptor allocation later fails: resetting the
+        // same pool on the next pass would invalidate draws already recorded.
+        const uint64_t frameIndex = impl_->frameCounter++;
+        const uint64_t generation = frameIndex + 1;
         // frame uniforms into the rotating UBO slot
-        const uint64_t slot = impl_->frameCounter % UBO_SLOTS;
-        float* ubo = reinterpret_cast<float*>(static_cast<uint8_t*>(impl_->uboMapped) + slot * UBO_BYTES);
+        const uint64_t slot = frameIndex % UBO_SLOTS;
+        float* ubo = reinterpret_cast<float*>(static_cast<uint8_t*>(impl_->uboMapped) + slot * impl_->uboStride);
         {
                 uint8_t* raw = reinterpret_cast<uint8_t*>(ubo);
+                std::memset(raw, 0, UBO_BYTES);
                 std::memcpy(raw + UBO_P_OFF, header.projection, sizeof(header.projection));
                 std::memcpy(raw + UBO_FOG_COLOR_OFF, header.fogColor, sizeof(header.fogColor));
                 std::memcpy(raw + UBO_FOG_START_OFF, &header.fogStart, sizeof(float));
@@ -1145,7 +1210,7 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
         d.cmdSetViewport(cmd, 0.0F, static_cast<float>(header.viewportHeight), static_cast<float>(header.viewportWidth), -static_cast<float>(header.viewportHeight));
         d.cmdSetScissor(cmd, 0, 0, header.viewportWidth, header.viewportHeight);
 
-        uint64_t pool = impl_->pools[impl_->frameCounter % POOL_RING];
+        uint64_t pool = impl_->pools[frameIndex % POOL_RING];
         d.resetDescriptorPool(impl_->device(), pool);
         VkDescriptorSetAllocateInfo setAlloc{};
         setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -1161,27 +1226,26 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
         const uint32_t externalCount = externals != nullptr
                 ? std::min(header.externalTextureCount, wrx::FRAME_MAX_EXTERNAL)
                 : 0;
-        uint32_t cachedExternalKey = 0xFFFFFFFFu;
-        const wrx::FrameExternal* cachedExternal = nullptr;
-
-        // Per-call texture→descriptor-set cache: ONE set per DISTINCT texture
-        // per drain pass instead of one per item. Hundreds of items routinely
-        // share a handful of textures (a train's parts, rails, doors), so this
-        // keeps the deepest scenes far below the pool budget — the first
-        // revision allocated per item and dropped everything past item 512.
-        // An entry remembers the view it was written for: external overrides
-        // resolve to fresh handles every frame, so a stale entry is rewritten
-        // in place (updateDescriptorSets on an already-written set is legal).
-        struct TexSetEntry {
-                uint32_t key;
-                uint64_t view;
-                uint64_t set;
-        };
-        std::vector<TexSetEntry> texSets;
-        texSets.reserve(16);
+        // Seed a reusable open-addressed table once per pass. Looking up a
+        // texture is then O(1) for every draw, including when thousands of
+        // train parts share it. The old vector cache and external-table scans
+        // repeated O(distinct textures) work for every item.
+        for (uint32_t e = 0; e < externalCount; e++) {
+                const auto& external = externalTable[e];
+                auto& entry = impl_->textureEntry(external.key, generation);
+                if (entry.generation != generation) {
+                        entry = {generation, external.key, external.view, external.sampler, 0};
+                }
+        }
 
         uint64_t lastPipeline = 0;
         uint64_t lastTextureSet = 0;
+        uint64_t lastVertexBuffer = 0;
+        uint64_t lastIndexOffset = 0;
+        float lastPose[16]{};
+        float lastMv[16]{};
+        float lastNormal[12]{};
+        bool haveTransform = false;
         bool anyDrawn = false;
 
         for (uint32_t i = 0; i < header.itemCount; i++) {
@@ -1196,37 +1260,16 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                 }
                 const Impl::MeshGpu& gpu = gpuIt->second;
 
-                // resolve the texture: the externals table first, the pool second
-                uint64_t textureView = 0;
-                uint64_t textureSampler = 0;
-                if (externalCount > 0) {
-                        const wrx::FrameExternal* external = nullptr;
-                        if (item->textureKey == cachedExternalKey) {
-                                external = cachedExternal; // last matched key
-                        } else {
-                                for (uint32_t e = 0; e < externalCount; e++) {
-                                        if (externalTable[e].key == item->textureKey) {
-                                                external = &externalTable[e];
-                                                cachedExternalKey = item->textureKey;
-                                                cachedExternal = external;
-                                                break;
-                                        }
-                                }
-                        }
-                        if (external != nullptr) {
-                                textureView = external->view;
-                                textureSampler = external->sampler;
-                        }
-                }
-                if (textureView == 0) {
+                auto& texture = impl_->textureEntry(item->textureKey, generation);
+                if (texture.generation != generation || texture.view == 0) {
                         const auto texIt = impl_->textures.find(item->textureKey);
-                        if (texIt != impl_->textures.end()) {
-                                textureView = texIt->second.view;
-                                textureSampler = texIt->second.sampler;
+                        if (texIt == impl_->textures.end()) {
+                                continue;
                         }
+                        texture = {generation, item->textureKey, texIt->second.view, texIt->second.sampler, 0};
                 }
-                if (textureView == 0 || textureSampler == 0) {
-                        continue; // unknown texture key / empty external handle
+                if (texture.view == 0 || texture.sampler == 0) {
+                        continue;
                 }
 
                 const uint64_t pipeline = impl_->pipelines[item->stage];
@@ -1238,17 +1281,7 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                         lastPipeline = pipeline;
                 }
 
-                // resolve the texture from the per-call cache: reuse the set
-                // when the key AND the resolved view are unchanged
-                uint64_t textureSet = 0;
-                for (const TexSetEntry& entry : texSets) {
-                        if (entry.key == item->textureKey) {
-                                if (entry.view == textureView) {
-                                        textureSet = entry.set;
-                                }
-                                break;
-                        }
-                }
+                uint64_t textureSet = texture.set;
                 if (textureSet == 0) {
                         if (d.allocateDescriptorSets(impl_->device(), &setAlloc, &textureSet) != VK_SUCCESS) {
                                 if (!impl_->descriptorBudgetWarned) {
@@ -1256,23 +1289,12 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                                         std::fprintf(stderr, "[wrvk] descriptor set budget (%u distinct textures) reached; the remaining draws of this pass were dropped\n",
                                                         static_cast<unsigned>(POOL_MAX_SETS));
                                 }
-                                return anyDrawn; // pool exhausted this frame; keep what we recorded
+                                return anyDrawn;
                         }
-                        bool replaced = false;
-                        for (TexSetEntry& entry : texSets) {
-                                if (entry.key == item->textureKey) {
-                                        entry.view = textureView;
-                                        entry.set = textureSet;
-                                        replaced = true;
-                                        break;
-                                }
-                        }
-                        if (!replaced) {
-                                texSets.push_back(TexSetEntry{item->textureKey, textureView, textureSet});
-                        }
+                        texture.set = textureSet;
                         VkDescriptorImageInfo imageInfo{};
-                        imageInfo.sampler = samplerH(textureSampler);
-                        imageInfo.imageView = imageViewH(textureView);
+                        imageInfo.sampler = samplerH(texture.sampler);
+                        imageInfo.imageView = imageViewH(texture.view);
                         imageInfo.imageLayout = imageLayoutH(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                         VkWriteDescriptorSet write{};
                         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1307,23 +1329,31 @@ bool WrvkRecorder::recordFrame(const wrx::FrameHeader& header, const uint8_t* ex
                         }
                         push[c] = static_cast<float>(v) * (1.0F / 255.0F);
                 }
-                float mv[16];
-                mat4Mul(header.view, item->pose, mv);
-                float normal[12];
-                normalMatrixFromMv(mv, normal);
-                std::memcpy(reinterpret_cast<uint8_t*>(push) + PUSH_MV_OFF, mv, sizeof(mv));
-                std::memcpy(reinterpret_cast<uint8_t*>(push) + PUSH_N_OFF, normal, sizeof(normal));
+                // Adjacent materials of one model use the same pose. Reuse
+                // its MV and inverse-transpose instead of repeating the same
+                // matrix arithmetic for each material.
+                if (!haveTransform || std::memcmp(lastPose, item->pose, sizeof(lastPose)) != 0) {
+                        std::memcpy(lastPose, item->pose, sizeof(lastPose));
+                        mat4Mul(header.view, item->pose, lastMv);
+                        normalMatrixFromMv(lastMv, lastNormal);
+                        haveTransform = true;
+                }
+                std::memcpy(reinterpret_cast<uint8_t*>(push) + PUSH_MV_OFF, lastMv, sizeof(lastMv));
+                std::memcpy(reinterpret_cast<uint8_t*>(push) + PUSH_N_OFF, lastNormal, sizeof(lastNormal));
                 d.cmdPushConstants(cmd, impl_->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, PUSH_BYTES, push);
 
                 const uint64_t buffer = gpu.buffer;
                 const uint64_t offset = 0;
-                d.cmdBindVertexBuffers(cmd, 0, 1, &buffer, &offset);
-                d.cmdBindIndexBuffer(cmd, buffer, gpu.indexOffset, VK_INDEX_TYPE_UINT32);
+                if (buffer != lastVertexBuffer || gpu.indexOffset != lastIndexOffset) {
+                        d.cmdBindVertexBuffers(cmd, 0, 1, &buffer, &offset);
+                        d.cmdBindIndexBuffer(cmd, buffer, gpu.indexOffset, VK_INDEX_TYPE_UINT32);
+                        lastVertexBuffer = buffer;
+                        lastIndexOffset = gpu.indexOffset;
+                }
                 d.cmdDrawIndexed(cmd, gpu.indexCount, 1, 0, 0, 0);
                 anyDrawn = true;
         }
 
-        impl_->frameCounter++;
         return anyDrawn || header.itemCount == 0;
 }
 

@@ -36,6 +36,7 @@ public:
         virtual ~IVkDispatch() = default;
 
         // memory / buffers
+        virtual void getPhysicalDeviceProperties(uint64_t physicalDevice, void* outProps) = 0;
         virtual uint32_t getPhysicalDeviceMemoryProperties(uint64_t physicalDevice, void* outProps) = 0;
         virtual uint32_t createBuffer(uint64_t device, const void* createInfo, uint64_t* outBuffer) = 0;
         virtual void getBufferMemoryRequirements(uint64_t device, uint64_t buffer, void* outRequirements) = 0;
@@ -171,6 +172,9 @@ public:
         std::vector<Entry> log;
         // failure injection for negative tests
         bool failAllocation{false};
+        uint32_t bufferMemoryTypeBits{1};
+        uint64_t uniformBufferAlignment{256};
+        uint64_t lastDevice{0};
 
         // live object tables so the tests can assert clean teardown
         struct BufferRecord {
@@ -225,6 +229,12 @@ public:
                 uint64_t sampler{0};
         };
         std::vector<DescriptorImageRecord> descriptorImageInfos;
+        struct DescriptorBufferRecord {
+                uint64_t buffer{0};
+                uint64_t offset{0};
+                uint64_t range{0};
+        };
+        std::vector<DescriptorBufferRecord> descriptorBufferInfos;
         std::vector<uint64_t> mmapScratchUnused;
         std::array<uint8_t, 1 << 16> mmapScratch{};
         float lastViewport[4]{};
@@ -258,6 +268,7 @@ public:
         std::vector<std::array<float, 32>> pushConstants; // every cmdPushConstants payload (128 B)
 
         // IVkDispatch
+        void getPhysicalDeviceProperties(uint64_t physicalDevice, void* outProps) override;
         uint32_t getPhysicalDeviceMemoryProperties(uint64_t physicalDevice, void* outProps) override;
         uint32_t createBuffer(uint64_t device, const void* createInfo, uint64_t* outBuffer) override;
         void getBufferMemoryRequirements(uint64_t device, uint64_t buffer, void* outRequirements) override;

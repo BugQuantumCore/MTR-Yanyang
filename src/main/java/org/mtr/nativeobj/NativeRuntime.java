@@ -7,7 +7,7 @@ import org.mtr.config.Config;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -104,8 +104,6 @@ public final class NativeRuntime {
         private boolean ackBroken;
 
         private static final long BUILD_ACK_MILLIS = 10_000;
-        private static final long FRAME_ACK_MILLIS = 50;
-        private static final long FRAME_ACK_GRACE_MILLIS = 200;
 
         private NativeRuntime(WrxRegion region, VulkanHostAccess host, boolean sharedMemoryTransport, @Nullable MethodHandle submitBuilds, @Nullable MethodHandle submitFrame, @Nullable MethodHandle nativeShutdown, Path nativesDirectory) {
                 this.region = region;
@@ -210,10 +208,14 @@ public final class NativeRuntime {
                         }
 
                         // 2. transport from the setting, with the JDK-22 rule applied
+                        // Command buffers are externally synchronized Vulkan objects. A
+                        // timed poller acknowledgement cannot prove recording has stopped,
+                        // so every frame executes synchronously on the render thread:
+                        // JNI on JDK 21/shared memory, FFM when selected on JDK 22+.
                         final boolean wantsFfm = Config.getClient().getNativeCommMethod() == org.mtr.config.NativeCommMethod.PANAMA_FFM;
                         final boolean useFfm = wantsFfm && isJdk22();
                         if (wantsFfm && !isJdk22()) {
-                                MTR.LOGGER.warn("[wrvk] Panama FFM needs JDK 22+ (this client runs JDK {}); falling back to shared memory", Runtime.version().feature());
+                                MTR.LOGGER.info("[wrvk] Panama FFM needs JDK 22+; using shared-memory builds and render-thread JNI submission");
                         }
 
                         // 3. extract the library, create the region files and the
@@ -232,17 +234,15 @@ public final class NativeRuntime {
                         @Nullable MethodHandle nativeShutdown = null;
                         if (useFfm) {
                                 sharedFfmArena(); // created once; closes at teardown
-                                final MethodHandles.Lookup lookup = MethodHandles.lookup();
-                                final MethodHandle boot = downcall(lookup, nativesDirectory, "wr_boot", int.class, Class.forName("java.lang.foreign.MemorySegment"));
+                                submitFrame = downcall(nativesDirectory, "wr_submit_frame", int.class);
+                                nativeShutdown = downcall(nativesDirectory, "wr_shutdown", int.class);
+                                final MethodHandle boot = downcall(nativesDirectory, "wr_boot", int.class, Class.forName("java.lang.foreign.MemorySegment"));
                                 final Object configSegment = utf8Segment(ffmArena, nativesDirectory.resolve("wrx.conf").toAbsolutePath().toString());
                                 final int bootResult = (Integer) boot.invoke(configSegment);
                                 if (bootResult != 0) {
-                                        MTR.LOGGER.error("[wrvk] wr_boot failed with {}; the Java renderer stays active", bootResult);
-                                        region.close();
-                                        return;
+                                        throw new IllegalStateException("wr_boot failed with " + bootResult);
                                 }
-                                submitBuilds = downcall(lookup, nativesDirectory, "wr_submit_builds", int.class);
-                                submitFrame = downcall(lookup, nativesDirectory, "wr_submit_frame", int.class);
+                                submitBuilds = downcall(nativesDirectory, "wr_submit_builds", int.class);
                         } else {
                                 // the POSIX constructor boot / DllMain boot found
                                 // wrx.conf next to the library and started the poller
@@ -251,29 +251,9 @@ public final class NativeRuntime {
                                         Thread.sleep(10);
                                 }
                                 if (region.nativeHeartbeat() == 0) {
-                                        MTR.LOGGER.error("[wrvk] the native poller did not start within 3s; the Java renderer stays active");
-                                        region.close();
-                                        return;
+                                        throw new IllegalStateException("The native build poller did not start within 3s");
                                 }
                         }
-                        // The shutdown downcall exists on every JDK >= 22
-                        // (independent of the transport); the queue-based
-                        // MSG_SHUTDOWN below covers the older JDKs. The shared
-                        // arena must exist for the library lookup even when the
-                        // transport is shared memory (it is only created inside
-                        // the FFM branch above) — without it the reflective
-                        // SymbolLookup.libraryLookup receives a null Arena and
-                        // the downcall is spurned with an NPE in the log on every
-                        // shared-memory boot (the arena closes again at teardown).
-                        if (isJdk22()) {
-                                try {
-                                        sharedFfmArena();
-                                        nativeShutdown = downcall(MethodHandles.lookup(), nativesDirectory, "wr_shutdown", int.class);
-                                } catch (Throwable throwable) {
-                                        MTR.LOGGER.warn("[wrvk] wr_shutdown downcall unavailable; the queue shutdown path will be used", throwable);
-                                }
-                        }
-
                         final NativeRuntime runtime = new NativeRuntime(region, host, !useFfm, submitBuilds, submitFrame, nativeShutdown, nativesDirectory);
 
                         // 5. shaders, then the Vulkan handles; both travel as
@@ -310,42 +290,56 @@ public final class NativeRuntime {
                         // mask the original exception above.
                         if (region != null) {
                                 try {
-                                        region.publishBuildMessage(WrxRegion.MSG_SHUTDOWN, new byte[0]);
-                                        final long seq = region.buildSeq();
-                                        final long deadline = System.currentTimeMillis() + 2000;
-                                        while (region.buildAck() < seq && System.currentTimeMillis() < deadline) {
-                                                NativeFrameRecorder.spin(50);
-                                        }
+                                        // The bridge joins the poller even if boot failed after
+                                        // mapping. A queue ack alone does not mean it exited.
+                                        shutdownNative();
                                 } catch (Throwable ignored) {
-                                        // best effort — the poller may never have started
+                                        // A library-load failure never started native work.
                                 }
                                 try {
                                         region.close();
                                 } catch (Throwable ignored) {
                                 }
                         }
+                        closeFfmArena();
                 }
         }
 
-        private static MethodHandle downcall(MethodHandles.Lookup lookup, Path nativesDirectory, String name, Class<?> returnType, Class<?>... parameterTypes) throws Throwable {
-                // JDK 22+ FFM, resolved reflectively because the mod targets JDK 21 bytecode.
-                // The address segments the returned handles carry are bound to the
-                // shared arena above, so it must outlive every call.
+        private static MethodHandle downcall(Path nativesDirectory, String name, Class<?> returnType, Class<?>... parameterTypes) throws Throwable {
                 final Class<?> symbolLookupClass = Class.forName("java.lang.foreign.SymbolLookup");
-                final Class<?> arenaClass = Class.forName("java.lang.foreign.Arena");
-                final Class<?> linkerClass = Class.forName("java.lang.foreign.Linker");
-                final Class<?> methodTypeClass = Class.forName("java.lang.invoke.MethodType");
-
-                final Object libraryLookup = symbolLookupClass.getMethod("libraryLookup", String.class, arenaClass)
+                final Object libraryLookup = symbolLookupClass.getMethod("libraryLookup", String.class, Class.forName("java.lang.foreign.Arena"))
                                 .invoke(null, nativesDirectory.resolve(libraryName()).toAbsolutePath().toString(), ffmArena);
-                final Object optional = symbolLookupClass.getMethod("find", String.class).invoke(libraryLookup, name);
-                if (optional == null || !(boolean) optional.getClass().getMethod("isPresent").invoke(optional)) {
-                        throw new IllegalStateException("symbol " + name + " not found in " + libraryName());
+                final java.util.Optional<?> symbol = (java.util.Optional<?>) symbolLookupClass.getMethod("find", String.class).invoke(libraryLookup, name);
+                final Object address = symbol.orElseThrow(() -> new IllegalStateException("symbol " + name + " not found in " + libraryName()));
+                return downcallAtAddress(address, returnType, parameterTypes);
+        }
+
+        static MethodHandle downcallAtAddress(Object address, Class<?> returnType, Class<?>... parameterTypes) throws ReflectiveOperationException {
+                // Reflect the final JDK 22 FFM API while keeping JDK 21 bytecode.
+                // Linker requires a FunctionDescriptor and the Option[] varargs array.
+                final Class<?> segmentClass = Class.forName("java.lang.foreign.MemorySegment");
+                final Class<?> layoutClass = Class.forName("java.lang.foreign.MemoryLayout");
+                final Class<?> valueLayoutClass = Class.forName("java.lang.foreign.ValueLayout");
+                final Class<?> descriptorClass = Class.forName("java.lang.foreign.FunctionDescriptor");
+                final Class<?> linkerClass = Class.forName("java.lang.foreign.Linker");
+                final Class<?> optionClass = Class.forName("java.lang.foreign.Linker$Option");
+                if (returnType != int.class) {
+                        throw new IllegalArgumentException("Unsupported native return type: " + returnType);
                 }
-                final Object address = optional.getClass().getMethod("get").invoke(optional);
+                final Object argumentLayouts = Array.newInstance(layoutClass, parameterTypes.length);
+                for (int i = 0; i < parameterTypes.length; i++) {
+                        final String layoutName = parameterTypes[i] == segmentClass ? "ADDRESS" : parameterTypes[i] == int.class ? "JAVA_INT" : null;
+                        if (layoutName == null) {
+                                throw new IllegalArgumentException("Unsupported native parameter type: " + parameterTypes[i]);
+                        }
+                        Array.set(argumentLayouts, i, valueLayoutClass.getField(layoutName).get(null));
+                }
+                final Object descriptor = descriptorClass.getMethod("of", layoutClass, argumentLayouts.getClass())
+                                .invoke(null, valueLayoutClass.getField("JAVA_INT").get(null), argumentLayouts);
+                final Object options = Array.newInstance(optionClass, 0);
                 final Object linker = linkerClass.getMethod("nativeLinker").invoke(null);
-                final Object methodType = methodTypeClass.getMethod("methodType", Class.class, Class[].class).invoke(null, returnType, parameterTypes);
-                return (MethodHandle) linkerClass.getMethod("downcallHandle", Class.forName("java.lang.foreign.MemorySegment"), methodTypeClass).invoke(linker, address, methodType);
+                return (MethodHandle) linkerClass.getMethod("downcallHandle", segmentClass, descriptorClass, options.getClass())
+                                .invoke(linker, address, descriptor, options);
         }
 
         /** The shared FFM arena, created once per session on JDK 22+. */
@@ -364,7 +358,7 @@ public final class NativeRuntime {
                 ffmArena = null;
                 if (arena != null) {
                         try {
-                                arena.getClass().getMethod("close").invoke(arena);
+                                Class.forName("java.lang.foreign.Arena").getMethod("close").invoke(arena);
                         } catch (Throwable ignored) {
                         }
                 }
@@ -376,7 +370,7 @@ public final class NativeRuntime {
          * ({@code SegmentAllocator.allocateFrom}).
          */
         private static Object utf8Segment(Object arena, String value) throws Throwable {
-                return arena.getClass().getMethod("allocateFrom", String.class).invoke(arena, value);
+                return Class.forName("java.lang.foreign.SegmentAllocator").getMethod("allocateFrom", String.class).invoke(arena, value);
         }
 
         private static boolean isVulkanModLoaded() {
@@ -705,36 +699,20 @@ public final class NativeRuntime {
                 if (seq < 0) {
                         return; // closed between disable() and teardown
                 }
-                frame.writeTo(region.frameBuffer());
-                region.endFrameWrite(seq);
-                if (sharedMemoryTransport) {
-                        final long published = region.frameSeq();
-                        final long deadline = System.currentTimeMillis() + FRAME_ACK_MILLIS;
-                        while (region.frameAck() < published && System.currentTimeMillis() < deadline) {
-                                NativeFrameRecorder.spin(25);
-                        }
-                        if (region.frameAck() < published) {
-                                // The poller is either wedged or gone. Recording
-                                // into VulkanMod's command buffer from the native
-                                // thread while this thread resumes MC's own GL
-                                // recording would race the buffer, so: stop the
-                                // pipeline, then wait the grace period for the
-                                // ack processFrame always writes (success or
-                                // failure) before returning to MC rendering.
-                                MTR.LOGGER.error("[wrvk] frame ack missed; disabling the native pipeline for this session");
-                                disable();
-                                final long graceDeadline = System.currentTimeMillis() + FRAME_ACK_GRACE_MILLIS;
-                                while (region.frameAck() < published && System.currentTimeMillis() < graceDeadline) {
-                                        NativeFrameRecorder.spin(50);
-                                }
-                        }
-                } else if (submitFrame != null) {
-                        try {
-                                submitFrame.invoke();
-                        } catch (Throwable throwable) {
-                                MTR.LOGGER.error("[wrvk] FFM submit_frame failed", throwable);
+                try {
+                        frame.writeTo(region.frameBuffer());
+                        region.endFrameWrite(seq);
+                        // The poller is forbidden from reading frames by
+                        // FLAG_RENDER_THREAD_FRAMES. This call must complete before
+                        // Minecraft records another command into the same buffer.
+                        final int result = submitFrame == null ? submitFrameNative() : (Integer) submitFrame.invoke();
+                        if (result != 1) {
+                                MTR.LOGGER.error("[wrvk] render-thread frame submission failed with {}", result);
                                 disable();
                         }
+                } catch (Throwable throwable) {
+                        MTR.LOGGER.error("[wrvk] FFM submit_frame failed", throwable);
+                        disable();
                 }
         }
 
@@ -850,19 +828,12 @@ public final class NativeRuntime {
                         MTR.LOGGER.error("[wrvk] model free failed during teardown", throwable);
                 }
                 pendingReplies.clear();
+                NativeTextureManager.INSTANCE.freePool();
                 try {
                         if (nativeShutdown != null) {
                                 nativeShutdown.invoke();
                         } else {
-                                // JDK < 22: shutdown through the build queue — the
-                                // poller acks the message, leaves its loop, and
-                                // tears the server down outside every lock
-                                region.publishBuildMessage(WrxRegion.MSG_SHUTDOWN, new byte[0]);
-                                final long seq = region.buildSeq();
-                                final long deadline = System.currentTimeMillis() + 2000;
-                                while (region.buildAck() < seq && System.currentTimeMillis() < deadline) {
-                                        NativeFrameRecorder.spin(50);
-                                }
+                                shutdownNative();
                         }
                 } catch (Throwable throwable) {
                         MTR.LOGGER.error("[wrvk] native shutdown signalling failed", throwable);
@@ -875,6 +846,12 @@ public final class NativeRuntime {
                 closeFfmArena();
                 deleteRecursively(nativesDirectory);
         }
+
+        /** Minimal synchronous bridge; keeps the native renderer available on JDK 21. */
+        private static native int submitFrameNative();
+
+        /** Joins the build poller before Java unmaps the exchange region. */
+        private static native int shutdownNative();
 
         private static void deleteRecursively(Path directory) {
                 // best effort only — on Windows the loaded library keeps its

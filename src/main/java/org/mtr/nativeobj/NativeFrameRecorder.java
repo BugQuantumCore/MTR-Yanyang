@@ -8,6 +8,8 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * The per-frame native draw list writer — protocol v2, a thin appender.
@@ -57,6 +59,7 @@ public final class NativeFrameRecorder {
          * on every submit.
          */
         private static final ObjectArrayList<ResourceLocation> frameExternals = new ObjectArrayList<>();
+        private static final Set<ResourceLocation> externalSet = new HashSet<>();
 
         private static int itemCount;
         private static boolean capacityWarned;
@@ -104,14 +107,15 @@ public final class NativeFrameRecorder {
                 // animated (mcmeta) textures stay external: VulkanMod owns
                 // their images, so they travel as per-frame handle overrides
                 final ResourceLocation texture = model.texture;
-                if (texture != null && NativeTextureManager.INSTANCE.isExternal(texture) && !frameExternals.contains(texture)) {
+                if (texture != null && NativeTextureManager.INSTANCE.isExternal(texture) && !externalSet.contains(texture)) {
                         if (frameExternals.size() >= WrxRegion.FRAME_MAX_EXTERNAL) {
                                 if (!externalCapacityWarned) {
                                         externalCapacityWarned = true;
-                                        org.mtr.MTR.LOGGER.warn("[wrvk] frame external texture budget ({} textures) reached; extra animated textures this frame were dropped", WrxRegion.FRAME_MAX_EXTERNAL);
+                                        org.mtr.MTR.LOGGER.warn("[wrvk] frame external texture budget ({} textures) reached; extra textures this frame were dropped", WrxRegion.FRAME_MAX_EXTERNAL);
                                 }
                         } else {
                                 frameExternals.add(texture);
+                                externalSet.add(texture);
                         }
                 }
         }
@@ -129,6 +133,7 @@ public final class NativeFrameRecorder {
         private static void reset() {
                 itemCount = 0;
                 frameExternals.clear();
+                externalSet.clear();
         }
 
         /** The payload written into the frame slot: header + externals + items. */
@@ -228,10 +233,13 @@ public final class NativeFrameRecorder {
          * the end of {@code MainRenderer.renderModel(matrixStack, modelRenders, offset)}.
          */
         public void submitAndClear() {
-                if (itemCount > 0) {
-                        runtime.submitFrame(new FrameData(this));
+                try {
+                        if (itemCount > 0) {
+                                runtime.submitFrame(new FrameData(this));
+                        }
+                } finally {
+                        reset();
                 }
-                reset();
         }
 
         /** Bounded micro-wait used by the shared-memory transport's ack polls. */

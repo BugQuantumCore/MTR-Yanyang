@@ -7,6 +7,7 @@ on:
       - 'native/**'
       - 'buildSrc/**'
       - 'src/main/java/**'
+      - 'src/test/**'
       - 'src/main/resources/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
@@ -17,6 +18,7 @@ on:
       - 'native/**'
       - 'buildSrc/**'
       - 'src/main/java/**'
+      - 'src/test/**'
       - 'src/main/resources/**'
       - 'build-fabric.gradle.kts'
       - 'build-neoforge.gradle.kts'
@@ -315,7 +317,7 @@ jobs:
           cp artifacts/wrvk-lib-android-arm64/libwrvk.so natives/android-arm64/libwrvk.so
           cp artifacts/wrvk-lib-ios-arm64/libwrvk.dylib natives/ios-arm64/libwrvk.dylib
           cp natives/ios-arm64/libwrvk.dylib natives/ipados-arm64/libwrvk.dylib
-          cp spirv/*.spv native/shaders/spirv/ || true
+          cp spirv/*.spv native/shaders/spirv/
           # every file must be present and non-empty
           find natives -type f -size +0c | wc -l | grep -qx 8 || { find natives -type f -ls; exit 1; }
           ls -lR natives
@@ -346,7 +348,8 @@ jobs:
           # repository as tsc-1.21.x — every TSC change is a real commit on
           # that branch, so there is no patch to apply at build time.
           repository: BugQuantumCore/MTR-Yanyang
-          ref: 'tsc-1.21.x'
+          # Audited passenger lifecycle fixes; immutable for reproducible builds.
+          ref: '8cca71313300fcccd4ae1131ce05e747af414dac'
           path: Transport-Simulation-Core
 
       - name: Download natives
@@ -383,7 +386,7 @@ jobs:
       - name: Publish Transport-Simulation-Core to mavenLocal
         run: |
           ./gradlew -p buildSrc publishToMavenLocal --console=plain
-          ./gradlew publishToMavenLocal --console=plain
+          ./gradlew test publishToMavenLocal --console=plain
         working-directory: ./Transport-Simulation-Core
 
       - name: Grant execute permission for gradlew

@@ -3,6 +3,7 @@ package org.mtr.nativeobj;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.lang.invoke.VarHandle;
+import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -39,6 +40,9 @@ import java.util.List;
  */
 public final class WrxRegion implements AutoCloseable {
 
+        private static final VarHandle LONGS = MethodHandles.byteBufferViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+        private static final VarHandle INTS = MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.LITTLE_ENDIAN);
+
         public static final int CONTROL_MAGIC = 0x57525831; // "WRX1"
         public static final int PROTOCOL_VERSION = 2;
         public static final int CONTROL_SIZE = 4096;
@@ -48,6 +52,7 @@ public final class WrxRegion implements AutoCloseable {
         public static final int FLAG_VULKAN_READY = 1 << 2;
         public static final int FLAG_ERROR = 1 << 3;
         public static final int FLAG_SHUTDOWN = 1 << 4;
+        public static final int FLAG_RENDER_THREAD_FRAMES = 1 << 5;
 
         // control.bin offsets
         public static final int OFF_MAGIC = 0;
@@ -110,7 +115,7 @@ public final class WrxRegion implements AutoCloseable {
         public static final int FRAME_HEADER_BYTES = 240;
         public static final int FRAME_ITEM_BYTES = 80;
         public static final int FRAME_EXTERNAL_BYTES = 32;
-        public static final int FRAME_MAX_EXTERNAL = 64;
+        public static final int FRAME_MAX_EXTERNAL = 4096;
         public static final int FRAME_EXTERNALS_OFFSET = FRAME_HEADER_BYTES;
         public static final int FRAME_ITEMS_OFFSET = FRAME_HEADER_BYTES + FRAME_MAX_EXTERNAL * FRAME_EXTERNAL_BYTES;
 
@@ -148,7 +153,7 @@ public final class WrxRegion implements AutoCloseable {
                         file.seek(0);
                         writeIntLittleEndian(file, CONTROL_MAGIC);
                         writeIntLittleEndian(file, PROTOCOL_VERSION);
-                        writeIntLittleEndian(file, transportFfm ? FLAG_TRANSPORT_FFM : 0);
+                        writeIntLittleEndian(file, (transportFfm ? FLAG_TRANSPORT_FFM : 0) | FLAG_RENDER_THREAD_FRAMES);
                 }
 
                 // The sidecar contract of wrx_region.cpp:parseConfig — the
@@ -197,7 +202,7 @@ public final class WrxRegion implements AutoCloseable {
         // ---------------------------------------------------------------------------
 
         public synchronized int flags() {
-                return closed ? 0 : control.getInt(OFF_FLAGS);
+                return closed ? 0 : (int) INTS.getAcquire(control, OFF_FLAGS);
         }
 
         public boolean flagSet(int flag) {
@@ -205,31 +210,31 @@ public final class WrxRegion implements AutoCloseable {
         }
 
         public synchronized int errorCode() {
-                return closed ? 0 : control.getInt(OFF_ERROR);
+                return closed ? 0 : (int) INTS.getAcquire(control, OFF_ERROR);
         }
 
         public synchronized long nativeHeartbeat() {
-                return closed ? 0 : control.getLong(OFF_NATIVE_HEARTBEAT);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_NATIVE_HEARTBEAT);
         }
 
         public synchronized long buildSeq() {
-                return closed ? 0 : control.getLong(OFF_BUILD_SEQ);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_BUILD_SEQ);
         }
 
         public synchronized long buildAck() {
-                return closed ? 0 : control.getLong(OFF_BUILD_ACK);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_BUILD_ACK);
         }
 
         public synchronized long frameSeq() {
-                return closed ? 0 : control.getLong(OFF_FRAME_SEQ);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_FRAME_SEQ);
         }
 
         public synchronized long frameAck() {
-                return closed ? 0 : control.getLong(OFF_FRAME_ACK);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_FRAME_ACK);
         }
 
         public synchronized long frameErrors() {
-                return closed ? 0 : control.getLong(OFF_FRAME_ERRORS);
+                return closed ? 0 : (long) LONGS.getAcquire(control, OFF_FRAME_ERRORS);
         }
 
         // ---------------------------------------------------------------------------
@@ -242,9 +247,13 @@ public final class WrxRegion implements AutoCloseable {
                 if (closed) {
                         return;
                 }
-                final int total = MESSAGE_HEADER_BYTES + (payload.length + 7 & ~7);
-                final long readPos = build.getLong(8);
-                long writePos = build.getLong(0);
+                final long paddedSize = ((long) payload.length + 7) & ~7L;
+                if (paddedSize > buildCapacity - MESSAGE_HEADER_BYTES) {
+                        throw new IllegalArgumentException("Build message exceeds queue capacity: " + payload.length);
+                }
+                final int total = MESSAGE_HEADER_BYTES + (int) paddedSize;
+                final long readPos = (long) LONGS.getAcquire(build, 8);
+                long writePos = (long) LONGS.getAcquire(build, 0);
                 if (writePos + total > buildCapacity) {
                         if (readPos != writePos) {
                                 throw new IllegalStateException("Build queue overflow at " + writePos + " (reader at " + readPos + ")");
@@ -259,12 +268,11 @@ public final class WrxRegion implements AutoCloseable {
                 for (int i = payload.length; i < total - MESSAGE_HEADER_BYTES; i++) {
                         build.put((byte) 0);
                 }
-                VarHandle.storeStoreFence();
-                build.putLong(0, writePos + total);
+                LONGS.setRelease(build, 0, writePos + total);
                 // The sequence counter lives in control.bin — reading it from
                 // the build queue's own payload bytes (offset 32 of the mapped
                 // build file) produced garbage every call.
-                control.putLong(OFF_BUILD_SEQ, control.getLong(OFF_BUILD_SEQ) + 1);
+                LONGS.setRelease(control, OFF_BUILD_SEQ, (long) LONGS.getAcquire(control, OFF_BUILD_SEQ) + 1);
         }
 
         public synchronized List<ResultMessage> consumeResults() {
@@ -272,23 +280,29 @@ public final class WrxRegion implements AutoCloseable {
                         return List.of();
                 }
                 final List<ResultMessage> messages = new ArrayList<>();
-                long readPos = results.getLong(8);
-                final long writePos = results.getLong(0);
+                long readPos = (long) LONGS.getAcquire(results, 8);
+                final long writePos = (long) LONGS.getAcquire(results, 0);
+                final long capacity = results.capacity() - QUEUE_HEADER_BYTES;
+                if (readPos < 0 || readPos > capacity || writePos < 0 || writePos > capacity || (readPos & 7) != 0 || (writePos & 7) != 0) {
+                        throw new IllegalStateException("Invalid native result queue cursors");
+                }
                 if (readPos > writePos) {
                         readPos = 0;
-                        results.putLong(8, 0);
+                        LONGS.setRelease(results, 8, 0L);
                 }
                 while (readPos + MESSAGE_HEADER_BYTES <= writePos) {
                         final int position = QUEUE_HEADER_BYTES + (int) readPos;
                         final int type = results.getInt(position);
                         final int size = results.getInt(position + 4);
-                        final byte[] payload = new byte[size];
-                        for (int i = 0; i < size; i++) {
-                                payload[i] = results.get(position + MESSAGE_HEADER_BYTES + i);
+                        final long paddedSize = ((long) size + 7) & ~7L;
+                        if (size < 0 || paddedSize > writePos - readPos - MESSAGE_HEADER_BYTES) {
+                                throw new IllegalStateException("Invalid native result message length: " + size);
                         }
-                        readPos += MESSAGE_HEADER_BYTES + (size + 7 & ~7);
-                        results.putLong(8, readPos);
-                        control.putLong(OFF_BUILD_RESULT_ACK, control.getLong(OFF_BUILD_RESULT_ACK) + 1);
+                        final byte[] payload = new byte[size];
+                        results.get(position + MESSAGE_HEADER_BYTES, payload);
+                        readPos += MESSAGE_HEADER_BYTES + paddedSize;
+                        LONGS.setRelease(results, 8, readPos);
+                        LONGS.setRelease(control, OFF_BUILD_RESULT_ACK, (long) LONGS.getAcquire(control, OFF_BUILD_RESULT_ACK) + 1);
                         messages.add(new ResultMessage(type, payload));
                 }
                 return messages;
@@ -306,8 +320,9 @@ public final class WrxRegion implements AutoCloseable {
                 if (closed) {
                         return -1;
                 }
-                final long seq = frame.getLong(0) & ~1L;
-                frame.putLong(0, seq | 1);
+                final long seq = (long) LONGS.getAcquire(frame, 0) & ~1L;
+                LONGS.setVolatile(frame, 0, seq | 1);
+                VarHandle.storeStoreFence();
                 return seq;
         }
 
@@ -315,10 +330,9 @@ public final class WrxRegion implements AutoCloseable {
                 if (closed) {
                         return;
                 }
-                VarHandle.storeStoreFence();
-                frame.putLong(0, seq + 2);
-                control.putLong(OFF_FRAME_SEQ, seq + 2);
-                control.putLong(OFF_JAVA_HEARTBEAT, seq + 2);
+                LONGS.setRelease(frame, 0, seq + 2);
+                LONGS.setRelease(control, OFF_FRAME_SEQ, seq + 2);
+                LONGS.setRelease(control, OFF_JAVA_HEARTBEAT, seq + 2);
         }
 
         /**

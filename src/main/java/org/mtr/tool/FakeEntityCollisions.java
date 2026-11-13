@@ -112,8 +112,10 @@ public final class FakeEntityCollisions {
                 }
 
                 final AABB boundingBox = entity.getBoundingBox();
-                final List<AABB> boxes = PassengerCollisions.collectBoxes(level, boundingBox);
-                boxes.addAll(VehicleCollisions.collectBoxes(level, boundingBox));
+                // Include neighbours a correction can reach, not only the original overlap.
+                final AABB queryBox = boundingBox.inflate(MAX_CORRECTION);
+                final List<AABB> boxes = PassengerCollisions.collectBoxes(level, queryBox);
+                boxes.addAll(VehicleCollisions.collectBoxes(level, queryBox));
                 if (boxes.isEmpty()) {
                         return;
                 }
@@ -125,6 +127,7 @@ public final class FakeEntityCollisions {
                 double moveZ = 0;
                 AABB current = boundingBox;
                 boolean landed = false;
+                double remainingCorrection = MAX_CORRECTION;
 
                 // Up to four eviction passes — a landing can consume one, and resolving one
                 // overlap can slide the player into a neighbouring box (a crowd, a two-track
@@ -135,7 +138,7 @@ public final class FakeEntityCollisions {
                         AABB hit = null;
                         int axis = -1;
                         int direction = 0;
-                        double depth = MAX_CORRECTION;
+                        double depth = Double.POSITIVE_INFINITY;
 
                         for (final AABB box : boxes) {
                                 if (!current.intersects(box)) {
@@ -162,28 +165,27 @@ public final class FakeEntityCollisions {
                                         continue;
                                 }
 
-                                // Push out along the shallowest axis, toward whichever side of the
-                                // box the player's centre already favours. The down direction is
-                                // excluded: shoving the player into the ground under a train is
-                                // never the intent — such overlaps resolve sideways instead.
-                                if (overlapX < depth) {
-                                        final boolean left = (current.minX + current.maxX) < (box.minX + box.maxX);
+                                // Use the distance to the exterior face. Intersection width is
+                                // not that distance when a player is wholly inside a train box.
+                                final double escapeX = horizontalSeparation(current.minX, current.maxX, box.minX, box.maxX);
+                                final double escapeZ = horizontalSeparation(current.minZ, current.maxZ, box.minZ, box.maxZ);
+                                final double escapeUp = box.maxY - current.minY;
+                                if (Math.abs(escapeX) < depth) {
                                         axis = 0;
-                                        direction = left ? -1 : 1;
-                                        depth = overlapX;
+                                        direction = escapeX < 0 ? -1 : 1;
+                                        depth = Math.abs(escapeX);
                                         hit = box;
                                 }
-                                if (overlapY < depth && (current.minY + current.maxY) >= (box.minY + box.maxY)) {
+                                if (escapeUp < depth && (current.minY + current.maxY) >= (box.minY + box.maxY)) {
                                         axis = 1;
                                         direction = 1;
-                                        depth = overlapY;
+                                        depth = escapeUp;
                                         hit = box;
                                 }
-                                if (overlapZ < depth) {
-                                        final boolean towardNegativeZ = (current.minZ + current.maxZ) < (box.minZ + box.maxZ);
+                                if (Math.abs(escapeZ) < depth) {
                                         axis = 2;
-                                        direction = towardNegativeZ ? -1 : 1;
-                                        depth = overlapZ;
+                                        direction = escapeZ < 0 ? -1 : 1;
+                                        depth = Math.abs(escapeZ);
                                         hit = box;
                                 }
                         }
@@ -200,9 +202,11 @@ public final class FakeEntityCollisions {
                                 continue;
                         }
 
-                        if (hit == null) {
+                        if (hit == null || remainingCorrection <= MIN_OVERLAP) {
                                 break;
                         }
+                        depth = Math.min(depth, remainingCorrection);
+                        remainingCorrection -= depth;
 
                         switch (axis) {
                                 case 0 -> {
@@ -236,5 +240,12 @@ public final class FakeEntityCollisions {
                         entity.fallDistance = 0;
                         entity.setOnGround(true);
                 }
+        }
+
+        /** Signed shortest translation out of an overlapping one-dimensional interval. */
+        static double horizontalSeparation(double min, double max, double obstacleMin, double obstacleMax) {
+                final double negative = obstacleMin - max;
+                final double positive = obstacleMax - min;
+                return -negative < positive ? negative : positive;
         }
 }

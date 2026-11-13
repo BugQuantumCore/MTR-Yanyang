@@ -67,6 +67,8 @@ public abstract class ArrivalsCache {
 				selectionCache.removeLast();
 			}
 			selectionCache.putAndMoveToFirst(selection, arrivals);
+			// Callers may filter or sort their result; do not expose the memoised list.
+			return new ObjectArrayList<>(arrivals);
 		}
 		return arrivals;
 	}

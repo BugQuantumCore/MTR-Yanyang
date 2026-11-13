@@ -88,10 +88,6 @@ public final class PassengerRenderCache {
 		}
 
 		final VehiclePosition position = computer.compute(new Random(passengerId));
-		if (position == null) {
-			return null;
-		}
-
 		vehiclePositionCache.putAndMoveToFirst(passengerId, new CachedVehiclePosition(floorsKey, position));
 		while (vehiclePositionCache.size() > POSITION_CACHE_LIMIT) {
 			vehiclePositionCache.removeLast();
@@ -120,6 +116,6 @@ public final class PassengerRenderCache {
 	private record CachedEntity(RemotePlayer player, String name) {
 	}
 
-	private record CachedVehiclePosition(Object floorsKey, VehiclePosition position) {
+	private record CachedVehiclePosition(Object floorsKey, @Nullable VehiclePosition position) {
 	}
 }

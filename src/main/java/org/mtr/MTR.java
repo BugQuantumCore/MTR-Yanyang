@@ -246,6 +246,7 @@ public final class MTR {
                 });
 
                 EventRegistryServer.registerServerStopping(minecraftServer -> {
+                        ArrivalsCacheServer.clearAll();
                         ServerRailPaths.stop();
                         if (main != null) {
                                 main.stop();

@@ -44,7 +44,7 @@
 // defined in wrcore_domain.cpp — attaches the freshly created recorder so
 // wrcore_init_vulkan can wire it up (C++-only wiring, not part of the ABI)
 namespace wrcore {
-void attachRecorder(wrvk::WrvkRecorder* recorder);
+void attachRecorderDuringInit(wrvk::WrvkRecorder* recorder);
 }
 
 namespace {
@@ -60,7 +60,7 @@ extern "C" void wrmainHostInitTrampoline(const void* hostHandles, void*) {
 	auto dispatch = wrvk::createRealDispatch("", host->instance);
 	if (dispatch != nullptr) {
 		g_recorder = std::make_unique<wrvk::WrvkRecorder>(*dispatch);
-		wrcore::attachRecorder(g_recorder.get());
+		wrcore::attachRecorderDuringInit(g_recorder.get());
 		g_dispatchKeepAlive = std::move(dispatch);
 	}
 }
@@ -104,6 +104,32 @@ int32_t wr_abi_version();
 const char* wr_version_string();
 int32_t wrxr_ctor_boot(const char* configPathUtf8);
 }
+
+// The JDK 21 path needs two synchronous, zero-payload JNI entry points.
+// Their ABI uses only jint and the two opaque pointer-sized JNI arguments;
+// neither function dereferences JNIEnv/jclass or calls a JNI table. Keeping
+// these parameters opaque avoids requiring host JDK headers when targeting
+// Android/iOS and leaves every data byte in the existing shared-memory ABI.
+#if defined(_WIN32)
+#define WR_JNI_EXPORT __declspec(dllexport)
+#define WR_JNI_CALL __stdcall
+#else
+#define WR_JNI_EXPORT __attribute__((visibility("default")))
+#define WR_JNI_CALL
+#endif
+
+extern "C" WR_JNI_EXPORT int32_t WR_JNI_CALL
+Java_org_mtr_nativeobj_NativeRuntime_submitFrameNative(void*, void*) {
+        return wr_submit_frame();
+}
+
+extern "C" WR_JNI_EXPORT int32_t WR_JNI_CALL
+Java_org_mtr_nativeobj_NativeRuntime_shutdownNative(void*, void*) {
+        return wr_shutdown();
+}
+
+#undef WR_JNI_EXPORT
+#undef WR_JNI_CALL
 
 extern "C" const void* const wrKeepalive[] = {
 	reinterpret_cast<const void*>(&wr_boot),

@@ -4,11 +4,10 @@ import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
 import org.mtr.libraries.it.unimi.dsi.fastutil.bytes.ByteArrayList;
 
-import java.awt.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
 
 /**
@@ -107,7 +106,7 @@ public abstract class CachedFileResource {
 	 * @return the converted {@code int} value
 	 */
 	public static int getInt(byte[] data, int index) {
-		return new Color(data[index + 1] & 0xFF, data[index + 2] & 0xFF, data[index + 3] & 0xFF, data[index] & 0xFF).getRGB();
+		return (data[index] & 0xFF) << 24 | (data[index + 1] & 0xFF) << 16 | (data[index + 2] & 0xFF) << 8 | data[index + 3] & 0xFF;
 	}
 
 	/**
@@ -117,11 +116,10 @@ public abstract class CachedFileResource {
 	 * @param value         the {@code int} value
 	 */
 	protected static void writeInt(ByteArrayList byteArrayList, int value) {
-		final Color color = new Color(value, true);
-		byteArrayList.add((byte) color.getAlpha());
-		byteArrayList.add((byte) color.getRed());
-		byteArrayList.add((byte) color.getGreen());
-		byteArrayList.add((byte) color.getBlue());
+		byteArrayList.add((byte) (value >>> 24));
+		byteArrayList.add((byte) (value >>> 16));
+		byteArrayList.add((byte) (value >>> 8));
+		byteArrayList.add((byte) value);
 	}
 
 	/**
@@ -145,6 +143,6 @@ public abstract class CachedFileResource {
 	}
 
 	private static int getRandomTimeoutOffset() {
-		return new Random().nextInt(500);
+		return ThreadLocalRandom.current().nextInt(500);
 	}
 }

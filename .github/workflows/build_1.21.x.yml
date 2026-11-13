@@ -23,7 +23,8 @@ jobs:
       - name: Checkout MTR-Yanyang
         uses: actions/checkout@v4
         with:
-          ref: '1.21.x'
+          # Use the triggering revision, including the pull request merge commit.
+          # Pinning this checkout to 1.21.x silently tested the base branch instead.
           path: Minecraft-Transit-Railway
 
       - name: Checkout Transport-Simulation-Core (in-repo fork branch)
@@ -34,7 +35,8 @@ jobs:
           # the easement-curve work) is a real commit on that branch, so
           # there is no patch to apply at build time any more.
           repository: BugQuantumCore/MTR-Yanyang
-          ref: 'tsc-1.21.x'
+          # Audited passenger lifecycle fixes; immutable for reproducible builds.
+          ref: '8cca71313300fcccd4ae1131ce05e747af414dac'
           path: Transport-Simulation-Core
 
       - name: Set up JDK 21 (TSC toolchain)
@@ -62,7 +64,7 @@ jobs:
         # mavenLocal() entries in buildSrc, build-fabric and build-neoforge).
         run: |
           ./gradlew -p buildSrc publishToMavenLocal --console=plain
-          ./gradlew publishToMavenLocal --console=plain
+          ./gradlew test publishToMavenLocal --console=plain
         working-directory: ./Transport-Simulation-Core
 
       - name: Grant execute permission for gradlew

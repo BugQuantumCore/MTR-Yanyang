@@ -116,64 +116,67 @@ public final class NativeModelLoader {
         }
 
         /**
-         * Publish MSG_INSTANCE for a placement merge and await the reply. Mirrors
-         * {@code NewOptimizedModelGroup.merge}: translate + optional flip; identity
-         * placements alias the source GPU data (no copy).
-         *
-         * <p>The reply carries one mesh per source material — a placed
-         * multi-material model owns several mesh ids, and every one of them is
-         * returned (the first revision kept only mesh zero and silently dropped
-         * every other material).</p>
-         *
-         * @param resolvedStage the stage the placement resolves to (the merge
-         *                      default when the source entry has none)
+         * Place a complete native model once. The reply preserves its mesh order;
+         * callers select the source material by meshIndex instead of duplicating
+         * every material for each source entry.
          */
-        public List<NativeModel> place(NativeModel source, RenderStage resolvedStage, double translateX, double translateY, double translateZ, boolean flip) {
+        public Placement place(int modelId, double translateX, double translateY, double translateZ, boolean flip) {
                 final NativeRuntime runtime = NativeRuntime.getInstance();
                 if (runtime == null) {
-                        return List.of();
+                        return Placement.EMPTY;
                 }
                 try {
                         final int requestId = requestIds.incrementAndGet();
-                        final ByteBuffer body = ByteBuffer.allocate(32).order(ByteOrder.LITTLE_ENDIAN);
-                        body.putInt(requestId);
-                        body.putInt(source.modelId);
-                        body.putInt(flip ? 1 : 0);
-                        body.putFloat((float) translateX);
-                        body.putFloat((float) translateY);
-                        body.putFloat((float) translateZ);
-                        final byte[] bodyBytes = new byte[body.position()];
-                        body.flip();
-                        body.get(bodyBytes);
-                        runtime.publish(ByteBuffer.allocate(4 + bodyBytes.length).order(ByteOrder.LITTLE_ENDIAN)
-                                        .putInt(WrxRegion.MSG_INSTANCE).put(bodyBytes).array());
+                        final ByteBuffer message = ByteBuffer.allocate(28).order(ByteOrder.LITTLE_ENDIAN);
+                        message.putInt(WrxRegion.MSG_INSTANCE);
+                        message.putInt(requestId);
+                        message.putInt(modelId);
+                        message.putInt(flip ? 1 : 0);
+                        message.putFloat((float) translateX);
+                        message.putFloat((float) translateY);
+                        message.putFloat((float) translateZ);
+                        runtime.publish(message.array());
 
                         final ByteBuffer reply = runtime.awaitResult(requestId, 60_000);
                         if (reply == null) {
-                                return List.of();
+                                return Placement.EMPTY;
                         }
                         final int instanceModelId = reply.getInt();
                         final int meshCount = reply.getInt();
-                        if (meshCount == 0 || instanceModelId == 0) {
-                                return List.of();
+                        if (instanceModelId == 0 || meshCount <= 0 || meshCount > reply.remaining() / 28) {
+                                return Placement.EMPTY;
                         }
-                        // Every placed model gets a fresh native model id (even
-                        // identity aliases) — track it so resource reloads free it
                         runtime.trackModel(instanceModelId);
-                        final List<NativeModel> placed = new ArrayList<>(meshCount);
+                        final List<PlacedMesh> meshes = new ArrayList<>(meshCount);
                         for (int i = 0; i < meshCount; i++) {
-                                final int instanceMeshId = reply.getInt();
+                                final int meshId = reply.getInt();
                                 final float[] aabb = new float[6];
-                                for (int j = 0; j < 6; j++) {
+                                for (int j = 0; j < aabb.length; j++) {
                                         aabb[j] = reply.getFloat();
                                 }
-                                // same texture/stage/colour/pool key as the source; the mesh id is the instance's
-                                placed.add(new NativeModel(instanceModelId, instanceMeshId, source.texture, resolvedStage, source.colorPacked, aabb, source.textureKey));
+                                meshes.add(new PlacedMesh(meshId, aabb));
                         }
-                        return placed;
+                        return new Placement(instanceModelId, meshes);
                 } catch (Throwable throwable) {
                         MTR.LOGGER.error("[wrvk] native INSTANCE failed", throwable);
-                        return List.of();
+                        return Placement.EMPTY;
+                }
+        }
+
+        public record PlacedMesh(int meshId, float[] aabb) {
+        }
+
+        public record Placement(int modelId, List<PlacedMesh> meshes) {
+                private static final Placement EMPTY = new Placement(0, List.of());
+
+                @Nullable
+                public NativeModel forSource(NativeModel source, RenderStage stage) {
+                        if (source.meshIndex < 0 || source.meshIndex >= meshes.size()) {
+                                return null;
+                        }
+                        final PlacedMesh mesh = meshes.get(source.meshIndex);
+                        return new NativeModel(modelId, mesh.meshId(), source.meshIndex,
+                                        source.texture, stage, source.colorPacked, mesh.aabb(), source.textureKey);
                 }
         }
 

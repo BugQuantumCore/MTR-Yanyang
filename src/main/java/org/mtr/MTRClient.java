@@ -301,6 +301,7 @@ public final class MTRClient {
 
                 EventRegistryClient.registerClientJoin(() -> {
                         MinecraftClientData.reset();
+                        DynamicTextureCache.instance.close();
                         DynamicTextureCache.instance = new DynamicTextureCache();
                         lastMillis = System.currentTimeMillis();
                         gameMillis = 0;
@@ -327,6 +328,7 @@ public final class MTRClient {
                 });
 
                 EventRegistryClient.registerClientDisconnect(() -> {
+                        DynamicTextureCache.instance.close();
                         if (webserver != null) {
                                 webserver.stop();
                                 webserver = null;

@@ -52,4 +52,9 @@ public final class ArrivalsCacheServer extends ArrivalsCache {
 	public static void tickAll() {
 		INSTANCES.forEach((worldId, arrivalsCacheServer) -> arrivalsCacheServer.tick());
 	}
+
+	/** Drop world references before another integrated-server session reuses the dimension IDs. */
+	public static void clearAll() {
+		INSTANCES.clear();
+	}
 }

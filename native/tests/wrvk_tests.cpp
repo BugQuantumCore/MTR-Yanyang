@@ -11,6 +11,7 @@
 
 #include "wrx/wrx.hpp"
 #include "wrvk/wrvk.hpp"
+#include "wrcore/wrcore.h"
 
 #include <array>
 #include <cmath>
@@ -31,7 +32,21 @@ int32_t wr_shutdown();
 const char* wr_version_string();
 }
 
+namespace wrcore {
+void attachRecorderDuringInit(wrvk::WrvkRecorder* recorder);
+}
+
 namespace {
+
+template <typename T>
+void appendValue(std::vector<uint8_t>& bytes, T value) {
+        const auto* data = reinterpret_cast<const uint8_t*>(&value);
+        bytes.insert(bytes.end(), data, data + sizeof(T));
+}
+
+void attachTestRecorder(const void*, void* user) {
+        wrcore::attachRecorderDuringInit(static_cast<wrvk::WrvkRecorder*>(user));
+}
 
 int g_failures = 0;
 int g_checks = 0;
@@ -68,7 +83,7 @@ wrx::HostHandles fakeHost() {
         wrx::HostHandles host{};
         host.instance = 0x1111;
         host.physicalDevice = 0x2222;
-        host.device = 0x3333;
+        host.device = 0x1234567800003333ULL;
         host.queue = 0x4444;
         host.queueFamily = 0;
         host.renderPass = 0x5555;
@@ -156,6 +171,12 @@ int main() {
                 check(!recorder.recordFrame(wrx::FrameHeader{}, nullptr, nullptr), "record rejected before attach");
                 recorder.attachHost(fakeHost());
                 check(recorder.hasHost(), "host attached");
+                check(dispatch.lastDevice == fakeHost().device, "64-bit device handle is preserved");
+                check(dispatch.descriptorBufferInfos.size() == 64, "all UBO slots have descriptors");
+                for (const auto& info : dispatch.descriptorBufferInfos) {
+                        check(info.offset % dispatch.uniformBufferAlignment == 0, "UBO descriptor offset respects the device alignment");
+                        check(info.range == 128, "UBO descriptor covers the std140 block");
+                }
                 check(dispatch.liveBuffers == 1, "UBO buffer created"); // one buffer for the UBO ring
                 check(dispatch.liveDescriptorPools >= 1 + 6, "ubo pool + frame pools created");
                 check(dispatch.liveDescriptorSetLayouts == 2, "two set layouts");
@@ -171,6 +192,12 @@ int main() {
 
                 wrx::FrameHeader header = basicHeader();
                 header.itemCount = 2;
+                header.lightDir0[0] = 0.25F;
+                header.lightDir0[1] = 0.5F;
+                header.lightDir0[2] = 0.75F;
+                header.lightDir1[0] = -0.25F;
+                header.lightDir1[1] = -0.5F;
+                header.lightDir1[2] = -0.75F;
                 for (float& v : header.projection) {
                         v = 1.0F;
                 }
@@ -203,6 +230,19 @@ int main() {
                         nullptr,
                         reinterpret_cast<const uint8_t*>(items));
                 check(recorded, "frame recorded");
+                if (!dispatch.descriptorBufferInfos.empty()) {
+                        const auto& info = dispatch.descriptorBufferInfos[0];
+                        const uint8_t* ubo = dispatch.mappedData(info.buffer);
+                        float light0[3]{}, light1[3]{};
+                        if (ubo != nullptr) {
+                                std::memcpy(light0, ubo + 96, sizeof(light0));
+                                std::memcpy(light1, ubo + 112, sizeof(light1));
+                        }
+                        check(ubo != nullptr && std::memcmp(light0, header.lightDir0, sizeof(light0)) == 0,
+                                "Light0 occupies the std140-aligned offset 96");
+                        check(ubo != nullptr && std::memcmp(light1, header.lightDir1, sizeof(light1)) == 0,
+                                "Light1 occupies the std140-aligned offset 112");
+                }
                 check(dispatch.livePipelines == 5, "five pipelines for the five stages");
                 check(dispatch.drawCalls == 2, "two draws recorded");
                 check(dispatch.pushConstants.size() == 2, "two push constant writes");
@@ -686,6 +726,10 @@ int main() {
                         }
                 }
                 check(frameAllocations == 1, "one descriptor set allocated for the shared texture");
+                check(countOps(env.dispatch, wrvk::RecordingDispatch::Op::CmdBindVertexBuffers) == 1,
+                        "repeated mesh draws reuse the bound vertex buffer");
+                check(countOps(env.dispatch, wrvk::RecordingDispatch::Op::CmdBindIndexBuffer) == 1,
+                        "repeated mesh draws reuse the bound index buffer");
         }
 
         std::printf("wrvk: external view change rewrites the cached set\n");
@@ -725,6 +769,98 @@ int main() {
                 check(env.dispatch.descriptorImageInfos.size() == 2
                                 && env.dispatch.descriptorImageInfos[1].view == 0xBBBB0001,
                         "frame two binds the new external view");
+        }
+
+        std::printf("wrvk: domain initialization and multi-material index rebasing\n");
+        {
+                TestEnv env;
+                wrcore_set_host_init_callback(attachTestRecorder, env.recorder.get());
+                const auto host = fakeHost();
+                std::vector<uint8_t> init;
+                for (uint64_t value : {host.instance, host.physicalDevice, host.device, host.queue, host.renderPass}) {
+                        appendValue(init, value);
+                }
+                for (uint32_t value : {host.queueFamily, host.colorFormat, host.depthFormat, host.sampleCount, host.maxPushConstants}) {
+                        appendValue(init, value);
+                }
+                const auto initialized = wrcore_init_vulkan(init.data(), static_cast<uint32_t>(init.size()));
+                check(initialized.vulkanReady == 1, "host callback attaches without recursively locking the domain");
+                const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nusemtl first\nf 1 2 3\nusemtl second\nf 1 3 4\n";
+                std::vector<uint8_t> request;
+                appendValue<uint32_t>(request, 1); // request ID
+                appendValue<uint32_t>(request, 0); // one non-split model
+                appendValue<uint32_t>(request, static_cast<uint32_t>(obj.size()));
+                request.insert(request.end(), obj.begin(), obj.end());
+                appendValue<uint32_t>(request, 0); // no MTL files
+                const auto reply = wrcore_load_obj(request.data(), static_cast<uint32_t>(request.size()));
+                check(reply.resultType == wrx::RES_MODELS, "multi-material model loads");
+                size_t cursor = 0;
+                const auto read = [&]() {
+                        uint32_t value = 0;
+                        if (cursor + 4 <= reply.resultLen) {
+                                std::memcpy(&value, reply.resultPtr + cursor, 4);
+                        }
+                        cursor += 4;
+                        return value;
+                };
+                read(); // request ID
+                check(read() == 1, "one model group returned");
+                const uint32_t groupNameLength = read();
+                cursor += groupNameLength;
+                read(); // model ID
+                const uint32_t meshCount = read();
+                check(meshCount == 2, "two material meshes returned");
+                std::vector<uint32_t> meshes;
+                for (uint32_t i = 0; i < meshCount && cursor + 56 <= reply.resultLen; i++) {
+                        meshes.push_back(read());
+                        read(); // vertex count
+                        read(); // index count
+                        cursor += 24 + 16; // bounds + diffuse colour
+                        const uint32_t nameLength = read();
+                        cursor += nameLength;
+                }
+                wrx::FrameExternal external{};
+                external.key = 1;
+                external.view = 0x10001;
+                external.sampler = 0x10002;
+                auto header = basicHeader();
+                header.itemCount = 1;
+                header.externalTextureCount = 1;
+                for (const uint32_t meshId : meshes) {
+                        const auto item = makeItem(meshId, 1, 2, 15);
+                        check(env.recorder->recordFrame(header, reinterpret_cast<const uint8_t*>(&external),
+                                        reinterpret_cast<const uint8_t*>(&item)), "material mesh records");
+                        const uint8_t* bytes = env.dispatch.mappedData(env.dispatch.lastIndexBuffer);
+                        uint32_t indices[3]{};
+                        if (bytes != nullptr) {
+                                std::memcpy(indices, bytes + 3 * wrx::VERTEX_BYTES, sizeof(indices));
+                        }
+                        check(bytes != nullptr && indices[0] < 3 && indices[1] < 3 && indices[2] < 3,
+                                "each material's indices address its own vertex slice");
+                }
+                wrcore_shutdown_domain();
+                wrcore_set_host_init_callback(nullptr, nullptr);
+        }
+
+        std::printf("wrvk: partial initialization and memory type rejection\n");
+        {
+                wrvk::RecordingDispatch dispatch;
+                wrvk::WrvkRecorder recorder(dispatch);
+                dispatch.failAllocation = true;
+                recorder.attachHost(fakeHost());
+                check(!recorder.hasHost(), "failed UBO allocation does not advertise a host");
+                check(!recorder.recordFrame(basicHeader(), nullptr, nullptr), "failed initialization cannot dereference a null UBO");
+                check(dispatch.liveBuffers == 0 && dispatch.liveMemory == 0 && dispatch.liveDescriptorSetLayouts == 0
+                                && dispatch.livePipelineLayouts == 0 && dispatch.liveDescriptorPools == 0,
+                        "partial initialization releases every object");
+                dispatch.failAllocation = false;
+                dispatch.bufferMemoryTypeBits = 2; // only type zero exists in the fake device
+                recorder.attachHost(fakeHost());
+                check(!recorder.hasHost(), "unsupported buffer memory types are rejected");
+                check(dispatch.liveBuffers == 0 && dispatch.liveMemory == 0, "memory type failure leaks no storage");
+                dispatch.bufferMemoryTypeBits = 1;
+                recorder.attachHost(fakeHost());
+                check(recorder.hasHost(), "initialization can retry after a transient allocation failure");
         }
 
         std::printf("wrvk: allocation failure paths never corrupt state\n");

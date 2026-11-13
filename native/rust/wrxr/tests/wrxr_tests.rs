@@ -29,7 +29,7 @@ fn check(condition: bool, what: &str) {
         CHECKS.fetch_add(1, Ordering::Relaxed);
         if !condition {
                 FAILURES.fetch_add(1, Ordering::Relaxed);
-                eprintln!("  FAIL {what}");
+                panic!("FAIL {what}");
         }
 }
 
@@ -209,7 +209,7 @@ fn boot_load_instance_free_roundtrip() {
         check(kd[0] == 128 || kd[0] == 127, "Kd red quantised"); // 0.5 * 255 ≈ 127/128
         check(!reader.overflow, "payload fully consumed");
 
-        // INSTANCE with a flip: winding swap + mirrored x/z
+        // INSTANCE with a flip: 180-degree Y rotation, winding preserved
         let mut instance = MessageWriter::default();
         instance.u32(request_id + 1);
         instance.u32(model_id);
@@ -245,12 +245,36 @@ fn boot_load_instance_free_roundtrip() {
         check(instance_model_id != model_id && instance_model_id != 0, "instance model allocated");
         check(instance_aabb[0] >= 0.0 && instance_aabb[3] <= 1.0 + 1e-2, "flipped aabb mirrored around dx");
 
-        // FREE both models
+        // Re-instance an already placed model. Its CPU mesh references must
+        // be retained: otherwise this used to return the old mesh IDs without
+        // creating any meshes, despite advertising success.
+        let mesh_count_before = unsafe { wrcore_live_meshes() };
+        let mut nested = MessageWriter::default();
+        nested.u32(request_id + 2);
+        nested.u32(instance_model_id);
+        nested.u32(0);
+        nested.f32(4.0);
+        nested.f32(0.0);
+        nested.f32(0.0);
+        check(publish_build(&region, MSG_INSTANCE, &nested.bytes), "nested INSTANCE published");
+        check(server.process_builds() == 1, "nested INSTANCE processed");
+        let nested_results = consume_results(&region).unwrap();
+        check(nested_results.len() == 1 && nested_results[0].0 == RES_INSTANCE, "nested instance reply present");
+        let mut nested_reader = ResultReader { data: &nested_results[0].1, pos: 0, overflow: false };
+        nested_reader.u32();
+        let nested_model_id = nested_reader.u32();
+        check(nested_reader.u32() == mesh_count, "nested instance keeps every source mesh");
+        check(unsafe { wrcore_live_meshes() } == mesh_count_before + mesh_count, "nested instance owns new mesh IDs");
+        nested_reader.u32();
+        check((nested_reader.f32() - instance_aabb[0] - 4.0).abs() < 1e-5, "nested instance applies translation");
+
+        // FREE all three models
         let mut free_message = MessageWriter::default();
-        free_message.u32(request_id + 2);
-        free_message.u32(2);
+        free_message.u32(request_id + 3);
+        free_message.u32(3);
         free_message.u32(model_id);
         free_message.u32(instance_model_id);
+        free_message.u32(nested_model_id);
         check(publish_build(&region, MSG_FREE_MODELS, &free_message.bytes), "FREE published");
         check(server.process_builds() == 1, "FREE processed");
         check(unsafe { wrcore_live_models() } == 0, "models freed");
@@ -886,7 +910,7 @@ fn v2_frame_submission() {
         // Malformed variants are rejected by the header checks, with the
         // same never-wedge semantics: the OLD v1 magic ("FRM1", which a v1
         // writer would still emit), an over-budget external count
-        // (65 > FRAME_MAX_EXTERNAL) and an over-budget item count
+        // (FRAME_MAX_EXTERNAL + 1) and an over-budget item count
         // (65537 > FRAME_MAX_ITEMS).
         let errors_before = control_u64(&region, OFF_CONTROL_FRAME_ERROR_COUNT);
         const FRAME_MAGIC_V1: u32 = 0x4652_4D31; // "FRM1" — must be rejected by the v2 reader
@@ -917,7 +941,7 @@ fn v2_frame_submission() {
                 "every rejected frame counted an error",
         );
 
-        // A maximal frame (64 externals + 65536 items) fits the region
+        // A maximal frame (FRAME_MAX_EXTERNAL externals + 65536 items) fits the region
         // budget exactly — the bounds check must not add slack.
         unsafe {
                 write_u32(frame.add(FRAME_HEADER_OFF + 4), FRAME_MAX_ITEMS as u32);
@@ -928,4 +952,67 @@ fn v2_frame_submission() {
         check(control_u64(&region, OFF_CONTROL_FRAME_ACK) == 5, "maximal v2 frame acked");
 
         server.shutdown();
+}
+
+#[test]
+fn queue_bounds_use_the_actual_mapping() {
+        let _guard = serial();
+        let region = create_region("queue-bounds").unwrap();
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        assert!(server.boot_with_config(config.to_str().unwrap()));
+        unsafe {
+                atomic64(region.build.base(), OFF_BUMP_CAPACITY).store(u64::MAX, Ordering::Relaxed);
+                atomic64(region.build.base(), OFF_BUMP_WRITE_POS).store(u64::MAX - 7, Ordering::Release);
+        }
+        assert_eq!(server.process_builds(), -1);
+        assert_eq!(unsafe { atomic32(region.control.base(), OFF_CONTROL_ERROR_CODE).load(Ordering::Acquire) }, ERR_INCONSISTENT);
+        server.shutdown();
+}
+
+#[test]
+fn oversized_reply_never_overruns_the_results_mapping() {
+        let _guard = serial();
+        let region = create_region("results-bounds").unwrap();
+        let config = write_config(&region, false);
+        let server = wrxr::WrxServer::new();
+        assert!(server.boot_with_config(config.to_str().unwrap()));
+        unsafe { atomic64(region.results.base(), OFF_BUMP_CAPACITY).store(8, Ordering::Relaxed); }
+        let mut request = MessageWriter::default();
+        request.u32(1);
+        request.u32(u32::MAX); // unknown model yields a RES_ERROR payload
+        request.u32(0);
+        request.f32(0.0);
+        request.f32(0.0);
+        request.f32(0.0);
+        assert!(publish_build(&region, MSG_INSTANCE, &request.bytes));
+        assert_eq!(server.process_builds(), 1);
+        assert_eq!(unsafe { atomic64(region.results.base(), OFF_BUMP_WRITE_POS).load(Ordering::Acquire) }, 0);
+        assert_eq!(unsafe { atomic32(region.control.base(), OFF_CONTROL_ERROR_CODE).load(Ordering::Acquire) }, ERR_OVERFLOW);
+        server.shutdown();
+}
+
+#[test]
+fn render_thread_flag_keeps_poller_off_host_command_buffers() {
+        let _guard = serial();
+        let region = create_region("render-thread-frames").unwrap();
+        let config = write_config(&region, false);
+        unsafe {
+                atomic32(region.control.base(), OFF_CONTROL_FLAGS).fetch_or(FLAG_RENDER_THREAD_FRAMES, Ordering::Release);
+        }
+        let config_c = std::ffi::CString::new(config.to_str().unwrap()).unwrap();
+        assert_eq!(wr_boot(config_c.as_ptr()), 0);
+        let frame = region.frame.base();
+        unsafe { write_u32(frame.add(FRAME_HEADER_OFF), FRAME_MAGIC); }
+        publish_frame(&region, 0);
+        wrxr::server::start_poller(&wrxr::server::SERVER);
+        for _ in 0..100 {
+                if control_u64(&region, OFF_CONTROL_NATIVE_HEARTBEAT) > 0 { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(control_u64(&region, OFF_CONTROL_NATIVE_HEARTBEAT) > 0);
+        assert_eq!(control_u64(&region, OFF_CONTROL_FRAME_ACK), 0);
+        assert_eq!(wr_submit_frame(), 0); // no Vulkan recorder, but the frame is acknowledged synchronously
+        assert_eq!(control_u64(&region, OFF_CONTROL_FRAME_ACK), 1);
+        assert_eq!(wr_shutdown(), 0);
 }
