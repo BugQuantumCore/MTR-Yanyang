@@ -1,6 +1,9 @@
 name: Build
 on:
   push:
+    branches: [ 'tsc-1.21.x' ]
+  pull_request:
+    branches: [ 'tsc-1.21.x' ]
   workflow_dispatch:
   schedule:
     - cron: "0 0 * * *"
