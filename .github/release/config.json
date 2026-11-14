@@ -1,6 +1,8 @@
 {
-  "run_id": "41634052128",
-  "tag": "4.1.0-beta-2.yanyang.17",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.17 (1.21.1 & 1.21.4, Fabric & NeoForge) — every Radiance release is now safe to run with the mod: all 9 shipped versions audited (probes, mixin targets, GL context), and pre-0.1.6 builds no longer crash the JVM when an MTR screen opens 全部 Radiance 版本兼容性审计与旧版界面崩溃修复",
-  "notes_file": "notes.md"
+  "run_id": "43532827781",
+  "source_sha": "9c2ccf62d8d0b24aecc01b12153d7408dba88f6a",
+  "tag": "4.1.0-beta-2.yanyang.18",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.18 — 渲染、Vulkan 与乘客性能优化",
+  "notes_file": "notes.md",
+  "prerelease": false
 }
