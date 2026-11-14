@@ -117,6 +117,7 @@ public:
         if ((dispatch->name##_ = reinterpret_cast<decltype(dispatch->name##_)>((getProc)(vkInstance, #name))) == nullptr) { \
                 return nullptr; \
         }
+                WR_RESOLVE(vkGetPhysicalDeviceProperties)
                 WR_RESOLVE(vkGetPhysicalDeviceMemoryProperties)
                 WR_RESOLVE(vkCreateBuffer)
                 WR_RESOLVE(vkGetBufferMemoryRequirements)
@@ -164,6 +165,11 @@ public:
 
         VkDevice dev(uint64_t device) const { return static_cast<VkDevice>(handleToPtr(device)); }
         VkCommandBuffer cmd(uint64_t commandBuffer) const { return static_cast<VkCommandBuffer>(handleToPtr(commandBuffer)); }
+
+        void getPhysicalDeviceProperties(uint64_t physicalDevice, void* outProps) override {
+                vkGetPhysicalDeviceProperties_(static_cast<VkPhysicalDevice>(handleToPtr(physicalDevice)),
+                        static_cast<VkPhysicalDeviceProperties*>(outProps));
+        }
 
         uint32_t getPhysicalDeviceMemoryProperties(uint64_t physicalDevice, void* outProps) override {
                 vkGetPhysicalDeviceMemoryProperties_(static_cast<VkPhysicalDevice>(handleToPtr(physicalDevice)),
@@ -405,6 +411,7 @@ private:
         VkInstance instance_{VK_NULL_HANDLE};
 
 #define WR_DECLARE(name) decltype(&name) name##_ = nullptr;
+        WR_DECLARE(vkGetPhysicalDeviceProperties)
         WR_DECLARE(vkGetPhysicalDeviceMemoryProperties)
         WR_DECLARE(vkCreateBuffer)
         WR_DECLARE(vkGetBufferMemoryRequirements)

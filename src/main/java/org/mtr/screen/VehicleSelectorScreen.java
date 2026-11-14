@@ -28,6 +28,8 @@ import org.mtr.widget.ScrollableListWidget;
 import java.awt.*;
 import java.util.Comparator;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 // TODO this class should be migrated to use Elementa
@@ -48,7 +50,7 @@ public final class VehicleSelectorScreen extends ScreenBase {
 	private static final String FILTERS_TEXT = TranslationProvider.GUI_MTR_FILTERS.getString();
 	private static final String AVAILABLE_TEXT = TranslationProvider.GUI_MTR_AVAILABLE.getString();
 	private static final String SELECTED_TEXT = TranslationProvider.GUI_MTR_SELECTED.getString();
-	private static final Object2ObjectAVLTreeMap<String, String> WIKIPEDIA_ARTICLES = new Object2ObjectAVLTreeMap<>();
+	private static final ConcurrentMap<String, String> WIKIPEDIA_ARTICLES = new ConcurrentHashMap<>();
 	private static final String FAMILY_TAG = "family";
 
 	public VehicleSelectorScreen(Siding siding, WindowBase previousScreen) {
@@ -346,16 +348,13 @@ public final class VehicleSelectorScreen extends ScreenBase {
 
 	private static String fetchWikipediaArticle(String wikipediaArticle) {
 		final String result = WIKIPEDIA_ARTICLES.get(wikipediaArticle);
-		if (result == null) {
+		if (result == null && WIKIPEDIA_ARTICLES.putIfAbsent(wikipediaArticle, "") == null) {
 			CompletableFuture.runAsync(() -> MTR.openConnectionSafeJson("https://en.wikipedia.org/w/api.php?format=json&action=query&prop=extracts&explaintext&exintro&titles=" + wikipediaArticle, jsonElement -> {
 				final JsonObject pagesObject = jsonElement.getAsJsonObject().getAsJsonObject("query").getAsJsonObject("pages");
 				pagesObject.entrySet().stream().findFirst().ifPresent(entry -> WIKIPEDIA_ARTICLES.put(wikipediaArticle, pagesObject.getAsJsonObject(entry.getKey()).get("extract").getAsString()));
 			}));
-			WIKIPEDIA_ARTICLES.put(wikipediaArticle, "");
-			return "";
-		} else {
-			return result;
 		}
+		return result == null ? "" : result;
 	}
 
 	private record Filter(String tagName, String tag, ObjectArrayList<String> vehicleIds, boolean selected) {

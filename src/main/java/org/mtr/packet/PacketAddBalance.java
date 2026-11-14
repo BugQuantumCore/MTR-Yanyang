@@ -14,6 +14,7 @@ public final class PacketAddBalance extends PacketHandler {
 	private final int index;
 
 	private static final int EMERALD_TO_DOLLAR = 10;
+	public static final int PURCHASE_OPTION_COUNT = 10;
 
 	public PacketAddBalance(PacketBufferReceiver packetBufferReceiver) {
 		index = packetBufferReceiver.readInt();
@@ -30,17 +31,22 @@ public final class PacketAddBalance extends PacketHandler {
 
 	@Override
 	public void runServer(MinecraftServer minecraftServer, ServerPlayer serverPlayerEntity) {
+		final int emeralds = getEmeraldAmount(index);
+		if (emeralds == 0 || serverPlayerEntity.getInventory().countItem(Items.EMERALD) < emeralds) {
+			return;
+		}
 		final ServerLevel serverWorld = serverPlayerEntity.serverLevel();
+		// The server thread owns both inventory and balance; charge before granting credit.
+		ContainerHelper.clearOrCountMatchingItems(serverPlayerEntity.getInventory(), itemStack -> itemStack.getItem().equals(Items.EMERALD), emeralds, false);
 		TicketSystem.addBalance(serverWorld, serverPlayerEntity, getAddBalanceAmount(index));
-		ContainerHelper.clearOrCountMatchingItems(serverPlayerEntity.getInventory(), itemStack -> itemStack.getItem().equals(Items.EMERALD), getEmeraldAmount(index), false);
 		serverWorld.playSound(null, serverPlayerEntity.blockPosition(), SoundEvents.EXPERIENCE_ORB_PICKUP, SoundSource.BLOCKS, 1, 1);
 	}
 
 	public static int getAddBalanceAmount(int index) {
-		return (int) Math.ceil(Math.pow(2, index) * (EMERALD_TO_DOLLAR + index));
+		return getEmeraldAmount(index) * (EMERALD_TO_DOLLAR + (index >= 0 && index < PURCHASE_OPTION_COUNT ? index : 0));
 	}
 
 	public static int getEmeraldAmount(int index) {
-		return (int) Math.pow(2, index);
+		return index >= 0 && index < PURCHASE_OPTION_COUNT ? 1 << index : 0;
 	}
 }

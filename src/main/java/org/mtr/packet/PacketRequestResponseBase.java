@@ -44,7 +44,11 @@ public abstract class PacketRequestResponseBase extends PacketHandler {
 	}
 
 	protected void runServerOutbound(ServerLevel serverWorld, @Nullable ServerPlayer serverPlayerEntity) {
-		MTR.sendMessageC2S(getKey(), serverWorld.getServer(), serverWorld, getDataInstance(new JsonReader(Utilities.parseJson(content))), responseType() == ResponseType.NONE ? null : responseData -> {
+		final JsonObject requestJson = Utilities.parseJson(content);
+		if (!isValidServerRequest(requestJson, serverPlayerEntity)) {
+			return;
+		}
+		MTR.sendMessageC2S(getKey(), serverWorld.getServer(), serverWorld, getDataInstance(new JsonReader(requestJson)), responseType() == ResponseType.NONE ? null : responseData -> {
 			final JsonObject responseJson = Utilities.getJsonObjectFromData(responseData);
 			if (responseType() == ResponseType.PLAYER) {
 				if (serverPlayerEntity != null) {
@@ -55,6 +59,16 @@ public abstract class PacketRequestResponseBase extends PacketHandler {
 			}
 			runServerInbound(serverWorld, responseJson);
 		}, SerializedDataBase.class);
+		onServerRequestForwarded(serverWorld, serverPlayerEntity);
+	}
+
+	/** Validates client-controlled data before deserialization and any server-side effects. */
+	protected boolean isValidServerRequest(JsonObject requestJson, @Nullable ServerPlayer serverPlayerEntity) {
+		return true;
+	}
+
+	/** Runs only after a valid request has been submitted to the simulation. */
+	protected void onServerRequestForwarded(ServerLevel serverWorld, @Nullable ServerPlayer serverPlayerEntity) {
 	}
 
 	protected void runServerInbound(ServerLevel serverWorld, JsonObject jsonObject) {

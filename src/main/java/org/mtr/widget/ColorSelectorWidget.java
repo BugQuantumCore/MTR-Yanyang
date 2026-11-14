@@ -75,51 +75,29 @@ public final class ColorSelectorWidget extends PopupWidgetBase {
 
 		// Draw hue bar
 		final int hueBarX = controlsX - GuiHelper.DEFAULT_PADDING - GuiHelper.DEFAULT_LINE_SIZE;
-		for (int drawHue = 0; drawHue < mainHeight; drawHue++) {
-			final float currentHue = (float) drawHue / (mainHeight - 1);
-
-			final int hueBarStartY = getY() + GuiHelper.DEFAULT_PADDING;
-			final int hueBarY = hueBarStartY + drawHue;
-
-			drawing.setVerticesWH(hueBarX, hueBarY, GuiHelper.DEFAULT_LINE_SIZE, 1).setColor(Color.HSBtoRGB(currentHue, 1, 1) | 0xFF000000).draw();
-
-			final boolean isDragging = draggingMouseZone == MouseZone.HUE && Math.clamp(mouseY, hueBarStartY, hueBarStartY + mainHeight - 1) == hueBarY;
-			final boolean isOver = mouseY == hueBarY && Utilities.isBetween(mouseX, hueBarX, hueBarX + GuiHelper.DEFAULT_LINE_SIZE - 1);
-			if (isDragging || isOver) {
-				if (isDragging) {
-					hue = currentHue;
-					updateTextFields();
-				}
-				hoverMouseZone = MouseZone.HUE;
+		final int startY = getY() + GuiHelper.DEFAULT_PADDING;
+		final int startX = getX() + GuiHelper.DEFAULT_PADDING;
+		final ColorPickerGeometry.QuadConsumer quads = (left, top, right, bottom, topLeft, bottomLeft, bottomRight, topRight) ->
+			drawing.setVertices(left, top, right, bottom).setColor(topLeft, bottomLeft, bottomRight, topRight).draw();
+		if (mainHeight > 0 && (draggingMouseZone == MouseZone.HUE || Utilities.isBetween(mouseX, hueBarX, hueBarX + GuiHelper.DEFAULT_LINE_SIZE - 1) && Utilities.isBetween(mouseY, startY, startY + mainHeight - 1))) {
+			if (draggingMouseZone == MouseZone.HUE) {
+				hue = mainHeight == 1 ? 0 : (float) Math.clamp(mouseY - startY, 0, mainHeight - 1) / (mainHeight - 1);
+				updateTextFields();
 			}
+			hoverMouseZone = MouseZone.HUE;
 		}
+		ColorPickerGeometry.hue(hueBarX, startY, hueBarX + GuiHelper.DEFAULT_LINE_SIZE, startY + mainHeight, quads);
 
 		// Draw saturation and brightness rectangle
-		for (int drawSaturation = 0; drawSaturation < mainWidth; drawSaturation++) {
-			for (int drawBrightness = 0; drawBrightness < mainHeight; drawBrightness++) {
-				final float currentSaturation = (float) drawSaturation / (mainWidth - 1);
-				final float currentBrightness = (float) drawBrightness / (mainHeight - 1);
-
-				final int saturationRectangleStartX = getX() + GuiHelper.DEFAULT_PADDING;
-				final int saturationRectangleX = saturationRectangleStartX + drawSaturation;
-
-				final int brightnessRectangleStartY = getY() + GuiHelper.DEFAULT_PADDING;
-				final int brightnessRectangleY = getY() + height - GuiHelper.DEFAULT_LINE_SIZE - GuiHelper.DEFAULT_PADDING - drawBrightness - 1;
-
-				drawing.setVerticesWH(saturationRectangleX, brightnessRectangleY, 1, 1).setColor(Color.HSBtoRGB(hue, currentSaturation, currentBrightness) | 0xFF000000).draw();
-
-				final boolean isDragging = draggingMouseZone == MouseZone.SATURATION_BRIGHTNESS && Math.clamp(mouseX, saturationRectangleStartX, saturationRectangleStartX + mainWidth - 1) == saturationRectangleX && Math.clamp(mouseY, brightnessRectangleStartY, brightnessRectangleStartY + mainHeight - 1) == brightnessRectangleY;
-				final boolean isOver = mouseX == saturationRectangleX && mouseY == brightnessRectangleY;
-				if (isDragging || isOver) {
-					if (isDragging) {
-						saturation = currentSaturation;
-						brightness = currentBrightness;
-						updateTextFields();
-					}
-					hoverMouseZone = MouseZone.SATURATION_BRIGHTNESS;
-				}
+		if (mainWidth > 0 && mainHeight > 0 && (draggingMouseZone == MouseZone.SATURATION_BRIGHTNESS || Utilities.isBetween(mouseX, startX, startX + mainWidth - 1) && Utilities.isBetween(mouseY, startY, startY + mainHeight - 1))) {
+			if (draggingMouseZone == MouseZone.SATURATION_BRIGHTNESS) {
+				saturation = mainWidth == 1 ? 0 : (float) Math.clamp(mouseX - startX, 0, mainWidth - 1) / (mainWidth - 1);
+				brightness = mainHeight == 1 ? 1 : 1 - (float) Math.clamp(mouseY - startY, 0, mainHeight - 1) / (mainHeight - 1);
+				updateTextFields();
 			}
+			hoverMouseZone = MouseZone.SATURATION_BRIGHTNESS;
 		}
+		ColorPickerGeometry.saturationBrightness(hue, startX, startY, startX + mainWidth, startY + mainHeight, true, quads);
 
 		final double selectedHuePosition = getY() + GuiHelper.DEFAULT_PADDING + hue * (mainHeight - 1);
 		final double selectedSaturationPosition = getX() + GuiHelper.DEFAULT_PADDING + saturation * (mainWidth - 1);

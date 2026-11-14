@@ -7,6 +7,7 @@ import org.mtr.libraries.com.google.gson.JsonParser;
 import org.mtr.resource.BlockbenchModelValidator;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.nio.file.*;
 
 public final class BlockbenchModelValidationTest {
@@ -18,12 +19,11 @@ public final class BlockbenchModelValidationTest {
 				final String id = path.getFileName().toString().split("\\.")[0];
 				System.out.println("Validating " + id);
 
-				try {
-					final JsonObject modelObject = JsonParser.parseReader(Files.newBufferedReader(path)).getAsJsonObject();
+				try (final Reader reader = Files.newBufferedReader(path)) {
+					final JsonObject modelObject = JsonParser.parseReader(reader).getAsJsonObject();
 					BlockbenchModelValidator.validate(modelObject, id, Assertions::assertTrue);
-					Files.writeString(path, modelObject.toString(), StandardOpenOption.TRUNCATE_EXISTING);
 				} catch (IOException e) {
-					System.err.println(e);
+					Assertions.fail("Unable to read model " + path, e);
 				}
 			});
 		}

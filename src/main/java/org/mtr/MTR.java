@@ -246,6 +246,7 @@ public final class MTR {
                 });
 
                 EventRegistryServer.registerServerStopping(minecraftServer -> {
+                        ArrivalsCacheServer.clearAll();
                         ServerRailPaths.stop();
                         if (main != null) {
                                 main.stop();
@@ -295,7 +296,10 @@ public final class MTR {
                 });
 
                 EventRegistryServer.registerPlayerJoin((minecraftServer, serverPlayerEntity) -> updatePlayer(serverPlayerEntity, false));
-                EventRegistryServer.registerPlayerDisconnect((minecraftServer, serverPlayerEntity) -> RIDING_PLAYERS.remove(serverPlayerEntity.getUUID()));
+                EventRegistryServer.registerPlayerDisconnect((minecraftServer, serverPlayerEntity) -> {
+                        RIDING_PLAYERS.remove(serverPlayerEntity.getUUID());
+                        PacketBufferReceiver.clear(serverPlayerEntity);
+                });
         }
 
         public static void getRailActionModule(ServerLevel serverWorld, Consumer<RailActionModule> consumer) {

@@ -18,10 +18,10 @@ public final class PacketUpdateRailwaySignConfig extends BlockEntityPacketHandle
 	public PacketUpdateRailwaySignConfig(PacketBufferReceiver packetBufferReceiver) {
 		blockPos = BlockPos.of(packetBufferReceiver.readLong());
 
-		final int selectedIdsLength = packetBufferReceiver.readInt();
+		final int selectedIdsLength = packetBufferReceiver.readCount(Integer.BYTES);
 		selectedIds = new LongAVLTreeSet[selectedIdsLength];
 		for (int i = 0; i < selectedIdsLength; i++) {
-			final int selectedIdsSetLength = packetBufferReceiver.readInt();
+			final int selectedIdsSetLength = packetBufferReceiver.readCount(Long.BYTES);
 			final LongAVLTreeSet selectedIdsSet = new LongAVLTreeSet();
 			for (int j = 0; j < selectedIdsSetLength; j++) {
 				selectedIdsSet.add(packetBufferReceiver.readLong());
@@ -29,7 +29,7 @@ public final class PacketUpdateRailwaySignConfig extends BlockEntityPacketHandle
 			selectedIds[i] = selectedIdsSet;
 		}
 
-		final int signIdsLength = packetBufferReceiver.readInt();
+		final int signIdsLength = packetBufferReceiver.readCount(Integer.BYTES);
 		signIds = new String[signIdsLength];
 		for (int i = 0; i < signIdsLength; i++) {
 			final String signId = packetBufferReceiver.readString();

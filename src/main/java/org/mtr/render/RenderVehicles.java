@@ -73,8 +73,8 @@ public final class RenderVehicles {
                 final boolean[] ridingAnyVehicle = {false};
 
                 if (clientWorld != cachedCollisionLevel) {
+                        clear();
                         cachedCollisionLevel = clientWorld;
-                        VehicleCollisions.clear();
                 }
 
                 // Iterate all vehicles that the client knows about
@@ -105,6 +105,7 @@ public final class RenderVehicles {
                         final IntObjectImmutablePair<ObjectObjectImmutablePair<@Nullable Vec3, @Nullable Double>> ridingVehicleCarNumberAndOffset = VehicleRidingMovement.getRidingVehicleCarNumberAndOffset(vehicle.getId());
                         if (ridingVehicleCarNumberAndOffset != null) {
                                 ridingAnyVehicle[0] = true;
+                                VehicleCollisions.removeVehicle(vehicle.getId());
                         }
                         final int ridingCarNumber;
                         final PositionAndRotation ridingCarPositionAndRotation;
@@ -390,6 +391,13 @@ public final class RenderVehicles {
                 }
         }
 
+        /** Releases session state when leaving a world, before rendering can stop. */
+        public static void clear() {
+                cachedCollisionLevel = null;
+                VehicleCollisions.clear();
+                RIDING_PLAYER_INTERPOLATIONS.clear();
+        }
+
         /**
          * Registers the world-space collision boxes of one car with {@link VehicleCollisions}.
          *
@@ -489,46 +497,52 @@ public final class RenderVehicles {
                 }
 
                 final ObjectArrayList<AABB> worldBoxes = new ObjectArrayList<>(localBoxes.size());
+                final CarBoxTransform transform = new CarBoxTransform(carPositionAndRotation.position, carPositionAndRotation.yaw, carPositionAndRotation.pitch, carPositionAndRotation.roll);
                 for (final AABB localBox : localBoxes) {
-                        worldBoxes.add(transformBoxToWorld(localBox, carPositionAndRotation));
+                        worldBoxes.add(transform.apply(localBox));
                 }
                 VehicleCollisions.updateCar(vehicleId, carNumber, clientWorld.dimension(), worldBoxes, floorY);
         }
 
-        /**
-         * Transforms a car-local box into a world-space bounding box by rotating its eight
-         * corners with the car's full roll/pitch/yaw and taking the bounding box — the exact
-         * box on flat track and a tight bound on gradients.
-         *
-         * @param localBox the box in car-local space (X width, Y up, Z along the car)
-         * @param carPositionAndRotation the car's absolute world position and rotation
-         * @return the world-space bounding box of the rotated corners
-         */
-        private static AABB transformBoxToWorld(AABB localBox, PositionAndRotation carPositionAndRotation) {
-                double minX = Double.POSITIVE_INFINITY;
-                double minY = Double.POSITIVE_INFINITY;
-                double minZ = Double.POSITIVE_INFINITY;
-                double maxX = Double.NEGATIVE_INFINITY;
-                double maxY = Double.NEGATIVE_INFINITY;
-                double maxZ = Double.NEGATIVE_INFINITY;
-                for (int i = 0; i < 8; i++) {
-                        final Vector corner = new Vector(
-                                        (i & 1) == 0 ? localBox.minX : localBox.maxX,
-                                        (i & 2) == 0 ? localBox.minY : localBox.maxY,
-                                        (i & 4) == 0 ? localBox.minZ : localBox.maxZ
-                        ).rotateZ(carPositionAndRotation.roll).rotateX(carPositionAndRotation.pitch).rotateY(carPositionAndRotation.yaw).add(
-                                        carPositionAndRotation.position.x(),
-                                        carPositionAndRotation.position.y(),
-                                        carPositionAndRotation.position.z()
-                        );
-                        minX = Math.min(minX, corner.x());
-                        minY = Math.min(minY, corner.y());
-                        minZ = Math.min(minZ, corner.z());
-                        maxX = Math.max(maxX, corner.x());
-                        maxY = Math.max(maxY, corner.y());
-                        maxZ = Math.max(maxZ, corner.z());
+        /** Rotation coefficients shared by every doorway segment of one car. */
+        static final class CarBoxTransform {
+                private final double xx, xy, xz, yx, yy, yz, zx, zy, zz;
+                private final Vector position;
+
+                CarBoxTransform(Vector position, double yaw, double pitch, double roll) {
+                        this.position = position;
+                        final double cr = Math.cos(roll), sr = Math.sin(roll);
+                        final double cp = Math.cos(pitch), sp = Math.sin(pitch);
+                        final double cy = Math.cos(yaw), sy = Math.sin(yaw);
+                        // Same convention/order as Vector.rotateZ(...).rotateX(...).rotateY(...).
+                        xx = cy * cr + sy * sp * sr;
+                        xy = cy * sr - sy * sp * cr;
+                        xz = sy * cp;
+                        yx = -cp * sr;
+                        yy = cp * cr;
+                        yz = sp;
+                        zx = -sy * cr + cy * sp * sr;
+                        zy = -sy * sr - cy * sp * cr;
+                        zz = cy * cp;
                 }
-                return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+
+                AABB apply(AABB box) {
+                        final double centerX = (box.minX + box.maxX) * 0.5;
+                        final double centerY = (box.minY + box.maxY) * 0.5;
+                        final double centerZ = (box.minZ + box.maxZ) * 0.5;
+                        final double halfX = (box.maxX - box.minX) * 0.5;
+                        final double halfY = (box.maxY - box.minY) * 0.5;
+                        final double halfZ = (box.maxZ - box.minZ) * 0.5;
+                        final double x = xx * centerX + xy * centerY + xz * centerZ + position.x();
+                        final double y = yx * centerX + yy * centerY + yz * centerZ + position.y();
+                        final double z = zx * centerX + zy * centerY + zz * centerZ + position.z();
+                        // abs(R) * halfExtents is the same enclosing AABB as transforming
+                        // all eight corners, without allocating forty immutable Vectors.
+                        final double extentX = Math.abs(xx) * halfX + Math.abs(xy) * halfY + Math.abs(xz) * halfZ;
+                        final double extentY = Math.abs(yx) * halfX + Math.abs(yy) * halfY + Math.abs(yz) * halfZ;
+                        final double extentZ = Math.abs(zx) * halfX + Math.abs(zy) * halfY + Math.abs(zz) * halfZ;
+                        return new AABB(x - extentX, y - extentY, z - extentZ, x + extentX, y + extentY, z + extentZ);
+                }
         }
 
         /**

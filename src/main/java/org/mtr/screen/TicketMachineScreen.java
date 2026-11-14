@@ -29,7 +29,7 @@ public final class TicketMachineScreen extends WindowBase {
 	private final UIWrappedText emeraldsText;
 	private final ButtonComponent[] buttons = new ButtonComponent[BUTTON_COUNT];
 
-	private static final int BUTTON_COUNT = 10;
+	private static final int BUTTON_COUNT = PacketAddBalance.PURCHASE_OPTION_COUNT;
 
 	public TicketMachineScreen(int balance) {
 		this.balance = balance;

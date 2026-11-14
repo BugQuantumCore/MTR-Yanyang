@@ -8,8 +8,6 @@ import net.minecraft.core.BlockPos;
 import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,11 +25,10 @@ import java.util.function.Consumer;
  *       there's no point doing culling against a stale camera position). Rail culling
  *       was removed in favour of per-rail AABB distance checks — see
  *       {@code docs/PERFORMANCE.md} §3.10.</li>
- *   <li>A bounded {@link Deque}-backed queue for dynamic-texture generation, fed by
+ *   <li>A bounded {@link BoundedWorkQueue}-backed queue for dynamic-texture generation, fed by
  *       {@link org.mtr.client.DynamicTextureCache}. Up to
- *       {@value #DYNAMIC_TEXTURE_QUEUE_LIMIT} jobs may sit in flight; older jobs are
- *       discarded once the cap is hit so the queue tracks the user's current viewport
- *       and doesn't accumulate work for textures that scrolled offscreen long ago.</li>
+ *       {@value #DYNAMIC_TEXTURE_QUEUE_LIMIT} jobs may sit in flight; new requests are
+ *       rejected once the cap is hit so callers can retry without losing accepted work.</li>
  * </ul>
  *
  * <p>The loop parks on {@link LockSupport#park()} when there is no work, and is woken by
@@ -61,14 +58,13 @@ public final class WorkerThread {
          * {@value #DYNAMIC_TEXTURE_BATCH} jobs per pass; further work waits for the next pass
          * so the worker remains responsive to occlusion-culling refreshes.
          */
-        private final Deque<Runnable> dynamicTextureQueue = new ArrayDeque<>();
-        private final Object dynamicTextureLock = new Object();
+        private final BoundedWorkQueue<Runnable> dynamicTextureQueue = new BoundedWorkQueue<>(DYNAMIC_TEXTURE_QUEUE_LIMIT);
         @Nullable
         private volatile Thread loopThread;
 
         private static final int COOLDOWN = 100;
         /**
-         * Maximum number of pending dynamic-texture jobs. Older jobs are dropped on overflow.
+         * Maximum number of pending dynamic-texture jobs. New jobs are rejected on overflow.
          */
         private static final int DYNAMIC_TEXTURE_QUEUE_LIMIT = 256;
         /**
@@ -88,27 +84,30 @@ public final class WorkerThread {
          * exited, so the thread is never leaked or duplicated.
          */
         public void start() {
-                if (canStart && loopThread == null && isRunning()) {
+                if (canStart && loopThread == null && !worker.isShutdown() && isRunning()) {
                         canStart = false;
                         worker.submit(() -> {
                                 loopThread = Thread.currentThread();
-                                while (isRunning()) {
-                                        if (occlusionQueueVehicle.get() != null || occlusionQueueLift.get() != null) {
-                                                updateInstance();
-                                                occlusionCullingInstance.resetCache();
-                                                run(occlusionQueueVehicle, task -> task.accept(occlusionCullingInstance));
-                                                run(occlusionQueueLift, task -> task.accept(occlusionCullingInstance));
-                                        }
+                                try {
+                                        while (isRunning() && !Thread.currentThread().isInterrupted()) {
+                                                if (occlusionQueueVehicle.get() != null || occlusionQueueLift.get() != null) {
+                                                        updateInstance();
+                                                        occlusionCullingInstance.resetCache();
+                                                        run(occlusionQueueVehicle, task -> task.accept(occlusionCullingInstance));
+                                                        run(occlusionQueueLift, task -> task.accept(occlusionCullingInstance));
+                                                }
 
-                                        drainDynamicTextureBatch();
+                                                drainDynamicTextureBatch();
 
-                                        // Park briefly if nothing is queued; scheduling methods unpark us
-                                        // directly so the wakeup latency is near zero when work arrives.
-                                        if (!hasWork()) {
-                                                LockSupport.parkNanos(IDLE_PARK_NANOS);
+                                                // Park briefly if nothing is queued; scheduling methods unpark us
+                                                // directly so the wakeup latency is near zero when work arrives.
+                                                if (!hasWork()) {
+                                                        LockSupport.parkNanos(IDLE_PARK_NANOS);
+                                                }
                                         }
+                                } finally {
+                                        loopThread = null;
                                 }
-                                loopThread = null;
                         });
                 }
 
@@ -150,29 +149,22 @@ public final class WorkerThread {
         }
 
         /**
-         * Queue a dynamic-texture-generation task. Tasks are processed FIFO; if more than
-         * {@value #DYNAMIC_TEXTURE_QUEUE_LIMIT} jobs are pending the oldest is discarded.
+         * Queue a dynamic-texture-generation task without discarding accepted work.
          *
-         * <p>Replaces the historical single-slot {@code AtomicReference}-based queue that
-         * silently dropped all but the most recent submission per frame — see
-         * {@code docs/PERFORMANCE.md} §2.1.</p>
+         * @return whether the request was accepted; callers must retry a rejected request
+         * instead of marking it as in flight
          */
-        public void scheduleDynamicTextures(Runnable runnable) {
-                synchronized (dynamicTextureLock) {
-                        while (dynamicTextureQueue.size() >= DYNAMIC_TEXTURE_QUEUE_LIMIT) {
-                                dynamicTextureQueue.pollFirst();
-                        }
-                        dynamicTextureQueue.addLast(runnable);
+        public boolean scheduleDynamicTextures(Runnable runnable) {
+                if (worker.isShutdown() || !dynamicTextureQueue.offer(runnable)) {
+                        return false;
                 }
                 wake();
+                return true;
         }
 
         private void drainDynamicTextureBatch() {
                 for (int i = 0; i < DYNAMIC_TEXTURE_BATCH; i++) {
-                        final Runnable next;
-                        synchronized (dynamicTextureLock) {
-                                next = dynamicTextureQueue.pollFirst();
-                        }
+                        final Runnable next = dynamicTextureQueue.poll();
                         if (next == null) {
                                 return;
                         }
@@ -188,9 +180,7 @@ public final class WorkerThread {
                 if (occlusionQueueVehicle.get() != null || occlusionQueueLift.get() != null) {
                         return true;
                 }
-                synchronized (dynamicTextureLock) {
-                        return !dynamicTextureQueue.isEmpty();
-                }
+                return !dynamicTextureQueue.isEmpty();
         }
 
         private void wake() {

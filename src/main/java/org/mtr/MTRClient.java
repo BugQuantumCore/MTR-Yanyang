@@ -301,6 +301,7 @@ public final class MTRClient {
 
                 EventRegistryClient.registerClientJoin(() -> {
                         MinecraftClientData.reset();
+                        DynamicTextureCache.instance.close();
                         DynamicTextureCache.instance = new DynamicTextureCache();
                         lastMillis = System.currentTimeMillis();
                         gameMillis = 0;
@@ -327,6 +328,18 @@ public final class MTRClient {
                 });
 
                 EventRegistryClient.registerClientDisconnect(() -> {
+                        RegistryClient.clearPacketBuffers();
+                        BlockTrainAnnouncer.clearQueue();
+                        lastClientWorld = null;
+                        if (mapTileProvider != null) {
+                                mapTileProvider.close();
+                        }
+                        mapTileProvider = null;
+                        movePlayer = null;
+                        RenderPassengers.clear();
+                        RenderVehicles.clear();
+                        RenderSignalBase.clearNodePosCache();
+                        DynamicTextureCache.instance.close();
                         if (webserver != null) {
                                 webserver.stop();
                                 webserver = null;
@@ -354,6 +367,12 @@ public final class MTRClient {
                         // If world or dimension changed, reset the data
                         if (clientWorld != null && (lastClientWorld == null || !lastClientWorld.equals(clientWorld))) {
                                 lastClientWorld = clientWorld;
+                                BlockTrainAnnouncer.clearQueue();
+                                RenderSignalBase.clearNodePosCache();
+                                if (mapTileProvider != null) {
+                                        mapTileProvider.close();
+                                        mapTileProvider = null;
+                                }
                                 MinecraftClientData.reset();
                                 RegistryClient.sendPacketToServer(new PacketGetUniqueWorldId());
                         }
@@ -485,7 +504,15 @@ public final class MTRClient {
         public static void processUniqueWorldId(String uniqueWorldId) {
                 final ClientLevel clientWorld = Minecraft.getInstance().level;
                 if (clientWorld != null) {
-                        mapTileProvider = new MapTileProvider(clientWorld, uniqueWorldId, MapTileProvider.MapType.SATELLITE);
+                        if (mapTileProvider != null) {
+                                mapTileProvider.close();
+                        }
+                        mapTileProvider = null;
+                        try {
+                                mapTileProvider = new MapTileProvider(clientWorld, uniqueWorldId, MapTileProvider.MapType.SATELLITE);
+                        } catch (IllegalArgumentException e) {
+                                MTR.LOGGER.warn("Ignoring an invalid server map cache identifier");
+                        }
                 }
         }
 
@@ -498,7 +525,7 @@ public final class MTRClient {
                 webserver.addServlet(new ServletHolder(new ResourcePackCreatorWebServlet(WebserverResources::get, "/creator/")), "/creator/*");
                 webserver.addServlet(new ServletHolder(new ResourcePackCreatorOperationServlet()), "/mtr/api/creator/operation/*");
                 final ServletHolder resourcePackCreatorUploadServletHolder = new ServletHolder(new ResourcePackCreatorUploadServlet());
-                resourcePackCreatorUploadServletHolder.getRegistration().setMultipartConfig(new MultipartConfigElement((String) null));
+                resourcePackCreatorUploadServletHolder.getRegistration().setMultipartConfig(new MultipartConfigElement(null, ResourcePackCreatorUploadServlet.MAX_UPLOAD_BYTES, ResourcePackCreatorUploadServlet.MAX_UPLOAD_BYTES, 0));
                 webserver.addServlet(resourcePackCreatorUploadServletHolder, "/mtr/api/creator/upload/*");
         }
 

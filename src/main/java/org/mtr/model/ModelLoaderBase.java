@@ -91,7 +91,8 @@ public abstract class ModelLoaderBase {
 		return true;
 	}
 
-	private boolean modelLoaded = false;
+	// Publishing this flag makes all worker-written model data visible to the render thread.
+	private volatile boolean modelLoaded = false;
 	@Nullable
 	private BuiltVehicleModelHolder builtModel1;
 	@Nullable

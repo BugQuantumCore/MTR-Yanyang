@@ -143,10 +143,24 @@ public final class ColorInputComponent extends UIContainer {
 	public void draw(UMatrixStack matrixStack) {
 		super.draw(matrixStack);
 		ImageComponentBase.drawRectangle(vertexConsumer -> {
-			drawSlot(matrixStack, vertexConsumer, hueBoxComponent, 1, 0, 0F, hue, (relativeX, relativeY, indexX) -> new Color(Color.HSBtoRGB(getHue(relativeY), 1, 1)));
-			drawSlot(matrixStack, vertexConsumer, saturationBrightnessBoxComponent, 0, 0, brightness, saturation, (relativeX, relativeY, indexX) -> new Color(Color.HSBtoRGB(hue, getSaturation(relativeY), getBrightness(relativeX))));
-			drawSlot(matrixStack, vertexConsumer, colorPreviewComponent, 2, 1, null, null, (relativeX, relativeY, indexX) -> indexX > 0 ? oldColor == null ? Color.BLACK : oldColor : getSelectedColor());
-		}, false);
+			final ColorPickerGeometry.QuadConsumer quads = (left, top, right, bottom, topLeft, bottomLeft, bottomRight, topRight) ->
+				drawQuad(matrixStack, vertexConsumer, left, top, right, bottom, topLeft, bottomLeft, bottomRight, topRight);
+			ColorPickerGeometry.hue(hueBoxComponent.getLeft() + 1, hueBoxComponent.getTop() + 1, hueBoxComponent.getRight() - 1, hueBoxComponent.getBottom() - 1, quads);
+			ColorPickerGeometry.saturationBrightness(hue, saturationBrightnessBoxComponent.getLeft() + 1, saturationBrightnessBoxComponent.getTop() + 1,
+				saturationBrightnessBoxComponent.getRight() - 1, saturationBrightnessBoxComponent.getBottom() - 1, false, quads);
+
+			final float previewLeft = colorPreviewComponent.getLeft() + 1;
+			final float previewRight = colorPreviewComponent.getRight() - 1;
+			final float previewMiddle = (previewLeft + previewRight) / 2;
+			final float previewTop = colorPreviewComponent.getTop() + 1;
+			final float previewBottom = colorPreviewComponent.getBottom() - 1;
+			final int currentColor = Color.HSBtoRGB(hue, saturation, brightness);
+			final int previousColor = oldColor == null ? Color.BLACK.getRGB() : oldColor.getRGB();
+			quads.accept(previewLeft, previewTop, previewMiddle, previewBottom, currentColor, currentColor, currentColor, currentColor);
+			quads.accept(previewMiddle, previewTop, previewRight, previewBottom, previousColor, previousColor, previousColor, previousColor);
+			drawSelection(matrixStack, vertexConsumer, hueBoxComponent, 0, hue, true);
+			drawSelection(matrixStack, vertexConsumer, saturationBrightnessBoxComponent, brightness, saturation, false);
+		}, true);
 
 		if (inputSourceCooldown <= INPUT_SOURCE_COOLDOWN_LIMIT) {
 			inputSourceCooldown++;
@@ -264,52 +278,25 @@ public final class ColorInputComponent extends UIContainer {
 			.setWidth(new ScaleConstraint(new RelativeConstraint(), 1F / 3));
 	}
 
-	private static void drawSlot(UMatrixStack matrixStack, UVertexConsumer vertexConsumer, SlotBackgroundComponent slotBackgroundComponent, int xDimensionCount, int yDimensionCount, @Nullable Float selectionX, @Nullable Float selectionY, DrawColor drawColor) {
-		final float left = slotBackgroundComponent.getLeft() + 1;
-		final float top = slotBackgroundComponent.getTop() + 1;
-		final float width = slotBackgroundComponent.getWidth() - 2;
-		final float height = slotBackgroundComponent.getHeight() - 2;
-		final int widthCount = xDimensionCount == 0 ? (int) Math.ceil(width * 2) : xDimensionCount;
-		final int heightCount = yDimensionCount == 0 ? (int) Math.ceil(height * 2) : yDimensionCount;
-		final float pixelSizeX = width / widthCount;
-		final float pixelSizeY = height / heightCount;
-
-		for (int x = 0; x < widthCount; x++) {
-			for (int y = 0; y < heightCount; y++) {
-				final float drawX1 = left + x * pixelSizeX;
-				final float drawX2 = drawX1 + pixelSizeX;
-				final float drawY1 = top + y * pixelSizeY;
-				final float drawY2 = drawY1 + pixelSizeY;
-				final Color color = drawColor.accept(drawX1 + pixelSizeX / 2 - left, drawY1 + pixelSizeY / 2 - top, x);
-
-				vertexConsumer.pos(matrixStack, drawX1, drawY1, 0).color(color).endVertex();
-				vertexConsumer.pos(matrixStack, drawX1, drawY2, 0).color(color).endVertex();
-				vertexConsumer.pos(matrixStack, drawX2, drawY2, 0).color(color).endVertex();
-				vertexConsumer.pos(matrixStack, drawX2, drawY1, 0).color(color).endVertex();
-			}
-		}
-
-		if (selectionX != null && selectionY != null) {
-			final float drawX1 = left + selectionX * (width - 1);
-			final float drawX2 = drawX1 + (xDimensionCount == 0 ? 1 : width / xDimensionCount);
-			final float drawY1 = top + selectionY * (height - 1);
-			final float drawY2 = drawY1 + (yDimensionCount == 0 ? 1 : height / yDimensionCount);
-
-			vertexConsumer.pos(matrixStack, Utilities.clampSafe(drawX1 - 1, left, left + width), Utilities.clampSafe(drawY1 - 1, top, top + height), 0).color(Color.BLACK).endVertex();
-			vertexConsumer.pos(matrixStack, Utilities.clampSafe(drawX1 - 1, left, left + width), Utilities.clampSafe(drawY2 + 1, top, top + height), 0).color(Color.BLACK).endVertex();
-			vertexConsumer.pos(matrixStack, Utilities.clampSafe(drawX2 + 1, left, left + width), Utilities.clampSafe(drawY2 + 1, top, top + height), 0).color(Color.BLACK).endVertex();
-			vertexConsumer.pos(matrixStack, Utilities.clampSafe(drawX2 + 1, left, left + width), Utilities.clampSafe(drawY1 - 1, top, top + height), 0).color(Color.BLACK).endVertex();
-
-			vertexConsumer.pos(matrixStack, drawX1, drawY1, 0).color(Color.WHITE).endVertex();
-			vertexConsumer.pos(matrixStack, drawX1, drawY2, 0).color(Color.WHITE).endVertex();
-			vertexConsumer.pos(matrixStack, drawX2, drawY2, 0).color(Color.WHITE).endVertex();
-			vertexConsumer.pos(matrixStack, drawX2, drawY1, 0).color(Color.WHITE).endVertex();
-		}
+	private static void drawSelection(UMatrixStack matrixStack, UVertexConsumer vertexConsumer, SlotBackgroundComponent component, float selectionX, float selectionY, boolean fullWidth) {
+		final float left = component.getLeft() + 1;
+		final float top = component.getTop() + 1;
+		final float width = component.getWidth() - 2;
+		final float height = component.getHeight() - 2;
+		final float x1 = left + selectionX * (width - 1);
+		final float x2 = x1 + (fullWidth ? width : 1);
+		final float y1 = top + selectionY * (height - 1);
+		final float y2 = y1 + 1;
+		drawQuad(matrixStack, vertexConsumer, Utilities.clampSafe(x1 - 1, left, left + width), Utilities.clampSafe(y1 - 1, top, top + height),
+			Utilities.clampSafe(x2 + 1, left, left + width), Utilities.clampSafe(y2 + 1, top, top + height), 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000);
+		drawQuad(matrixStack, vertexConsumer, x1, y1, x2, y2, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 	}
 
-	@FunctionalInterface
-	private interface DrawColor {
-		Color accept(float relativeX, float relativeY, int indexX);
+	private static void drawQuad(UMatrixStack matrixStack, UVertexConsumer vertexConsumer, float left, float top, float right, float bottom, int topLeft, int bottomLeft, int bottomRight, int topRight) {
+		vertexConsumer.pos(matrixStack, left, top, 0).color(topLeft >>> 16 & 0xFF, topLeft >>> 8 & 0xFF, topLeft & 0xFF, topLeft >>> 24).endVertex();
+		vertexConsumer.pos(matrixStack, left, bottom, 0).color(bottomLeft >>> 16 & 0xFF, bottomLeft >>> 8 & 0xFF, bottomLeft & 0xFF, bottomLeft >>> 24).endVertex();
+		vertexConsumer.pos(matrixStack, right, bottom, 0).color(bottomRight >>> 16 & 0xFF, bottomRight >>> 8 & 0xFF, bottomRight & 0xFF, bottomRight >>> 24).endVertex();
+		vertexConsumer.pos(matrixStack, right, top, 0).color(topRight >>> 16 & 0xFF, topRight >>> 8 & 0xFF, topRight & 0xFF, topRight >>> 24).endVertex();
 	}
 
 	private enum InputSource {EXTERNAL, HSB, COLOR, RGB}

@@ -19,7 +19,6 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
-import net.minecraft.world.ticks.ScheduledTick;
 import org.mtr.data.TicketSystem;
 import org.mtr.registry.SoundEvents;
 
@@ -56,7 +55,7 @@ public class BlockTicketBarrier extends Block {
 					newOpen -> {
 						world.setBlockAndUpdate(blockPosCopy, state.setValue(OPEN, newOpen));
 						if (newOpen != TicketSystem.EnumTicketBarrierOpen.CLOSED && !world.getBlockTicks().hasScheduledTick(blockPosCopy, this)) {
-							world.getBlockTicks().schedule(new ScheduledTick<>(this, blockPosCopy, 40, 0));
+							world.scheduleTick(blockPosCopy, this, 40);
 						}
 					}
 				);

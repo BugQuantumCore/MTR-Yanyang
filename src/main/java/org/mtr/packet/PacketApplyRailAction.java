@@ -16,7 +16,7 @@ public final class PacketApplyRailAction extends PacketHandler {
 	private final ObjectArrayList<ObjectObjectImmutablePair<BlockPos, BlockPos>> railPairs;
 
 	public PacketApplyRailAction(PacketBufferReceiver packetBufferReceiver) {
-		final int count = packetBufferReceiver.readInt();
+		final int count = packetBufferReceiver.readCount(2 * Long.BYTES);
 		railPairs = new ObjectArrayList<>();
 
 		for (int i = 0; i < count; i++) {

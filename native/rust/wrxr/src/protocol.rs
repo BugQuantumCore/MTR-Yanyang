@@ -38,7 +38,7 @@ pub const CONFIG_FILE: &[u8] = b"wrx.conf";
 // ---------------------------------------------------------------------------
 
 pub const CONTROL_MAGIC: u32 = 0x57525831; // "WRX1"
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const CONTROL_SIZE: usize = 4096;
 
 pub const FLAG_TRANSPORT_FFM: u32 = 1 << 0; // 0 = shm poller, 1 = ffm calls
@@ -46,6 +46,8 @@ pub const FLAG_POLLER_STARTED: u32 = 1 << 1;
 pub const FLAG_VULKAN_READY: u32 = 1 << 2;
 pub const FLAG_ERROR: u32 = 1 << 3;
 pub const FLAG_SHUTDOWN: u32 = 1 << 4;
+// The poller handles builds only; Java invokes wr_submit_frame synchronously.
+pub const FLAG_RENDER_THREAD_FRAMES: u32 = 1 << 5;
 
 // Field offsets inside the control page.
 pub const OFF_CONTROL_MAGIC: usize = 0;
@@ -129,13 +131,15 @@ pub const RES_ERROR: u32 = 3; // reply to any failed request
 // ---------------------------------------------------------------------------
 
 pub const FRAME_MAGIC: u32 = 0x46524D32; // "FRM2"
+// FrameHeader.reserved1a: preserve the active host render pass dynamic state.
+pub const FRAME_FLAG_HOST_DYNAMIC_STATE: u32 = 1;
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 pub const FRAME_MAX_ITEMS: usize = 65536;
-// External (animated) textures resolved through VulkanMod per frame. The
+// Host-owned textures resolved through VulkanMod per frame. The
 // static pool has no per-frame cap — it is bounded by MSG budget checks at
 // upload time (see wrcore: MAX_TEXTURES).
-pub const FRAME_MAX_EXTERNAL: usize = 64;
+pub const FRAME_MAX_EXTERNAL: usize = 4096;
 
 // GPU vertex layout = wrobj's upload layout, used verbatim: float x,y,z,u,v
 // (20 bytes) + 4 packed snorm8 normal bytes = 24-byte stride.
@@ -268,10 +272,10 @@ mod tests {
 
 	#[test]
 	fn frame_offsets_match_wrx_hpp() {
-		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 32 * 64 = 2288
-		assert_eq!(FRAME_ITEMS_OFF_BASE, 2_288);
+		// FRAME_ITEMS_OFF_BASE = sizeof(FrameHeader) + 32 * 4096 = 131312
+		assert_eq!(FRAME_ITEMS_OFF_BASE, 131_312);
 		assert_eq!(FRAME_EXTERNAL_OFF, 8 + 240);
 		// the java-side total: 8 + FRAME_ITEMS_OFFSET + 65536*80
-		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 80, 5_245_176);
+		assert_eq!(8 + FRAME_ITEMS_OFF_BASE + FRAME_MAX_ITEMS * 80, 5_374_200);
 	}
 }

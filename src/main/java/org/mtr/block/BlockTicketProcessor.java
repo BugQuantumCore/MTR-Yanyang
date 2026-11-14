@@ -19,7 +19,6 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
-import net.minecraft.world.ticks.ScheduledTick;
 import org.mtr.data.TicketSystem;
 import org.mtr.registry.SoundEvents;
 
@@ -51,7 +50,7 @@ public class BlockTicketProcessor extends BlockDirectionalDoubleBlockBase {
 				true,
 				open -> world.setBlockAndUpdate(blockPosCopy, state.setValue(LIGHTS, open == TicketSystem.EnumTicketBarrierOpen.CLOSED ? EnumTicketProcessorLights.RED : EnumTicketProcessorLights.GREEN))
 			);
-			world.getBlockTicks().schedule(new ScheduledTick<>(this, blockPosCopy, 20, 0));
+			world.scheduleTick(blockPosCopy, this, 20);
 		}
 		return InteractionResult.SUCCESS;
 	}

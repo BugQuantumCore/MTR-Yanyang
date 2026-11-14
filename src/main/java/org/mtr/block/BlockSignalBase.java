@@ -55,7 +55,7 @@ public abstract class BlockSignalBase extends Block implements EntityBlock {
 	@Override
 	public BlockState getStateForPlacement(BlockPlaceContext ctx) {
 		final int quadrant = Angle.getQuadrant(ctx.getRotation(), true);
-		return defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.fromYRot(quadrant / 4F)).setValue(IS_45, EnumBooleanInverted.fromBoolean(quadrant % 4 >= 2)).setValue(IS_22_5, EnumBooleanInverted.fromBoolean(quadrant % 2 == 1));
+		return defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.fromYRot((quadrant / 4) * 90F)).setValue(IS_45, EnumBooleanInverted.fromBoolean(quadrant % 4 >= 2)).setValue(IS_22_5, EnumBooleanInverted.fromBoolean(quadrant % 2 == 1));
 	}
 
 	@Override

@@ -24,7 +24,6 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.ticks.ScheduledTick;
 import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
 import org.mtr.core.data.Depot;
@@ -69,7 +68,7 @@ public class BlockDriverKeyDispenser extends BlockWaterloggable implements Entit
 		final boolean hasPower = isReceivingRedstonePower(world, pos) || isReceivingRedstonePower(world, pos.above());
 		final boolean isTriggered = state.getValue(TRIGGERED);
 		if (hasPower && !isTriggered) {
-			world.getBlockTicks().schedule(new ScheduledTick<>(this, pos, 4, 0));
+			world.scheduleTick(pos, this, 4);
 			world.setBlock(pos, state.setValue(TRIGGERED, true), 2);
 		} else if (!hasPower && isTriggered) {
 			world.setBlock(pos, state.setValue(TRIGGERED, false), 2);

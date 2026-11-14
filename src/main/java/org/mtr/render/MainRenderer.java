@@ -337,7 +337,7 @@ public class MainRenderer {
          *
          * @param models                      the pre-built optimised models keyed by render stage
          * @param storedMatrixTransformations the transform applied at draw time
-         * @param light                       packed lightmap value (block + sky in the low bits)
+         * @param light                       legacy raw 0-15 brightness or an already packed lightmap value
          */
         public static void renderModel(Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<NewOptimizedModel>> models, StoredMatrixTransformations storedMatrixTransformations, int light) {
                 models.forEach((renderStage, newOptimizedModels) -> newOptimizedModels.forEach(newOptimizedModel -> (renderStage.isTranslucent ? MODEL_RENDERS_TRANSLUCENT : MODEL_RENDERS)
@@ -446,6 +446,7 @@ public class MainRenderer {
         }
 
         private static void renderModel(PoseStack matrixStack, Object2ObjectOpenHashMap<NewOptimizedModel, Object2ObjectOpenHashMap<RenderStage, ObjectArrayList<ObjectIntImmutablePair<StoredMatrixTransformations>>>> modelRenders, Vec3 offset) {
+                final boolean berylActive = org.mtr.client.VulkanCompat.isBerylActive();
                 // Native Vulkan pipeline (protocol v2): models built through the exchange
                 // carry a native mesh; their draws are queued into the shared-memory frame
                 // slot as RAW pose matrices + the RAW packed lightmap int, and the C++ side
@@ -461,7 +462,7 @@ public class MainRenderer {
                 // the shader's current pipeline — translated or Beryl-redirected — instead of
                 // re-using whatever pipeline the previous unrelated draw left bound.
                 final org.mtr.nativeobj.NativeFrameRecorder nativeRecorder;
-                if (org.mtr.nativeobj.NativeRuntime.isActive() && !org.mtr.client.VulkanCompat.isBerylActive()) {
+                if (org.mtr.nativeobj.NativeRuntime.isActive() && !berylActive) {
                         nativeRecorder = new org.mtr.nativeobj.NativeFrameRecorder(org.mtr.nativeobj.NativeRuntime.getInstance());
                 } else {
                         nativeRecorder = null;
@@ -507,6 +508,17 @@ public class MainRenderer {
                                 case INTERIOR_TRANSLUCENT -> MoreRenderLayers.getInteriorTranslucent(texture);
                                 case EXTERIOR -> MoreRenderLayers.getExterior(texture);
                         };
+                        if (newOptimizedModel.usesCapturedRendering()) {
+                                newOptimizedModel.renderCaptured(renderLayer, consumer -> renderDetails.forEach(renderDetailsEntry -> {
+                                        renderDetailsEntry.left().transform(matrixStack, offset);
+                                        try {
+                                                newOptimizedModel.appendCaptured(consumer, matrixStack.last(), renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : CapturedModelLight.toPackedLight(renderDetailsEntry.rightInt()));
+                                        } finally {
+                                                matrixStack.popPose();
+                                        }
+                                }));
+                                return;
+                        }
                         renderLayer.setupRenderState();
                         renderDetails.forEach(renderDetailsEntry -> {
                                 renderDetailsEntry.left().transform(matrixStack, offset);
@@ -519,7 +531,7 @@ public class MainRenderer {
                                 // pitch-black silhouettes. With the corrected per-stage Beryl bake
                                 // (VulkanCompat#staticModelBakedLight) the division of labour under Beryl
                                 // is: the shader pack owns the light, the colour modulator stays neutral.
-                                final float lightMultiplier = renderStage.isFullBrightness || org.mtr.client.VulkanCompat.isBerylActive() ? 1 : (float) renderDetailsEntry.rightInt() / 0xF;
+                                final float lightMultiplier = renderStage.isFullBrightness || berylActive ? 1 : (float) renderDetailsEntry.rightInt() / 0xF;
                                 newOptimizedModel.render(matrixStack.last().pose(), lightMultiplier, RenderSystem.getShader());
                                 matrixStack.popPose();
                         });

@@ -9,7 +9,6 @@ import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
 import org.mtr.config.Config;
 import org.mtr.config.LanguageDisplay;
-import org.mtr.core.servlet.MessageQueue;
 import org.mtr.core.tool.Utilities;
 import org.mtr.data.IGui;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2LongArrayMap;
@@ -28,6 +27,9 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.text.AttributedString;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Supplier;
 
 /**
@@ -59,13 +61,16 @@ import java.util.function.Supplier;
 public class DynamicTextureCache implements IGui {
 
         @Nullable
-        private Font font;
+        private volatile Font font;
         @Nullable
-        private Font fontCjk;
+        private volatile Font fontCjk;
 
         private final Object2ObjectLinkedOpenHashMap<String, DynamicResource> dynamicResources = new Object2ObjectLinkedOpenHashMap<>();
         private final ObjectOpenHashSet<String> generatingResources = new ObjectOpenHashSet<>();
-        private final MessageQueue<Runnable> resourceRegistryQueue = new MessageQueue<>();
+        private final ConcurrentLinkedQueue<Runnable> resourceRegistryQueue = new ConcurrentLinkedQueue<>();
+        private volatile long resourceEpoch;
+        private volatile boolean closed;
+        private long nextEvictionNanos = System.nanoTime();
         private final Object2LongArrayMap<ResourceLocation> deletedResources = new Object2LongArrayMap<>();
 
         public static DynamicTextureCache instance = new DynamicTextureCache();
@@ -76,6 +81,9 @@ public class DynamicTextureCache implements IGui {
         private static final ResourceLocation DEFAULT_WHITE_RESOURCE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
         private static final ResourceLocation DEFAULT_TRANSPARENT_RESOURCE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/transparent.png");
         private static final int MAX_IMAGE_SIZE = 2048;
+        private static final int MAX_PENDING_TEXTURES = 32;
+        private static final int MAX_UPLOADS_PER_FRAME = 4;
+        private static final long EVICTION_INTERVAL_NANOS = 250_000_000L;
         // Bounded font-loading retries before the logical-font fallback (see loadBundledFont).
         private static final int FONT_LOAD_ATTEMPTS = 3;
         private static final String FALLBACK_LOGICAL_FONT = "Dialog";
@@ -83,7 +91,7 @@ public class DynamicTextureCache implements IGui {
         /**
          * Clear all asset-related cache and mark all dynamic textures to be drawn.
          */
-        public void reload() {
+        public synchronized void reload() {
                 font = null;
                 fontCjk = null;
                 refresh();
@@ -92,7 +100,8 @@ public class DynamicTextureCache implements IGui {
         /**
          * Mark all dynamic textures to be redrawn.
          */
-        public void refresh() {
+        public synchronized void refresh() {
+                resourceEpoch++;
                 MTR.LOGGER.debug("Refreshing dynamic resources; {} textures in memory; {} textures queued to be destroyed", dynamicResources.size(), deletedResources.size());
                 dynamicResources.values().forEach(dynamicResource -> dynamicResource.needsRefresh = true);
                 generatingResources.clear();
@@ -103,9 +112,21 @@ public class DynamicTextureCache implements IGui {
          * GL textures are queued for deletion after a {@value #COOLDOWN_TIME} ms grace period)
          * and finalises the deletion of any cooled-off textures from the previous tick.
          *
-         * <p>See {@code docs/PERFORMANCE.md} §2.6 — currently O(cache size) per frame.</p>
+         * <p>Uploads are bounded per frame; expiry scans run at most four times per second.</p>
          */
         public void tick() {
+                for (int i = 0; i < MAX_UPLOADS_PER_FRAME; i++) {
+                        final Runnable registration = resourceRegistryQueue.poll();
+                        if (registration == null) {
+                                break;
+                        }
+                        registration.run();
+                }
+                final long nowNanos = System.nanoTime();
+                if (nowNanos - nextEvictionNanos < 0) {
+                        return;
+                }
+                nextEvictionNanos = nowNanos + EVICTION_INTERVAL_NANOS;
                 final ObjectArrayList<String> keysToRemove = new ObjectArrayList<>();
                 final long currentTimeMillis = System.currentTimeMillis();
                 dynamicResources.forEach((checkKey, checkDynamicResource) -> {
@@ -156,11 +177,11 @@ public class DynamicTextureCache implements IGui {
         }
 
         public DynamicResource getLiftPanelDisplay(String originalText, int textColor) {
-                return getResource(String.format("lift_panel_display_%s", originalText), () -> RouteMapGenerator.generateLiftPanel(originalText, textColor), DefaultRenderingColor.BLACK);
+                return getResource(String.format("lift_panel_display_%s_%s", originalText, textColor), () -> RouteMapGenerator.generateLiftPanel(originalText, textColor), DefaultRenderingColor.BLACK);
         }
 
         public DynamicResource getExitSignLetter(String exitLetter, String exitNumber, int backgroundColor) {
-                return getResource(String.format("exit_sign_letter_%s_%s", exitLetter, exitNumber), () -> RouteMapGenerator.generateExitSignLetter(exitLetter, exitNumber, backgroundColor), DefaultRenderingColor.TRANSPARENT);
+                return getResource(String.format("exit_sign_letter_%s_%s_%s", exitLetter, exitNumber, backgroundColor), () -> RouteMapGenerator.generateExitSignLetter(exitLetter, exitNumber, backgroundColor), DefaultRenderingColor.TRANSPARENT);
         }
 
         public DynamicResource getRouteSquare(int color, String routeName, HorizontalAlignment horizontalAlignment) {
@@ -197,7 +218,9 @@ public class DynamicTextureCache implements IGui {
          * {@link NativeImage}; empty if the fonts have not yet loaded
          */
         public byte[] getTextPixels(String text, int[] dimensions, int maxWidth, int maxHeight, int fontSizeCjk, int fontSize, int padding, @Nullable HorizontalAlignment horizontalAlignment) {
-                if (maxWidth <= 0 || font == null || fontCjk == null) {
+                final Font textFont = font;
+                final Font textFontCjk = fontCjk;
+                if (maxWidth <= 0 || maxHeight <= 0 || textFont == null || textFontCjk == null) {
                         dimensions[0] = 0;
                         dimensions[1] = 0;
                         return new byte[0];
@@ -220,32 +243,27 @@ public class DynamicTextureCache implements IGui {
                 int height = 0;
 
                 for (int index = 0; index < textSplit.length; index++) {
-                        final int newFontSize = IGui.isCjk(textSplit[index]) || font.canDisplayUpTo(textSplit[index]) >= 0 ? fontSizeCjk : fontSize;
+                        final int newFontSize = IGui.isCjk(textSplit[index]) || textFont.canDisplayUpTo(textSplit[index]) >= 0 ? fontSizeCjk : fontSize;
                         attributedStrings[index] = new AttributedString(textSplit[index]);
                         fontSizes[index] = newFontSize;
 
-                        final Font fontSized = font.deriveFont(Font.PLAIN, newFontSize);
-                        final Font fontCjkSized = fontCjk.deriveFont(Font.PLAIN, newFontSize);
+                        final Font fontSized = textFont.deriveFont(Font.PLAIN, newFontSize);
+                        final Font fontCjkSized = textFontCjk.deriveFont(Font.PLAIN, newFontSize);
 
-                        for (int characterIndex = 0; characterIndex < textSplit[index].length(); characterIndex++) {
-                                final char character = textSplit[index].charAt(characterIndex);
+                        for (int characterIndex = 0; characterIndex < textSplit[index].length();) {
+                                final int character = textSplit[index].codePointAt(characterIndex);
+                                final int characterEnd = characterIndex + Character.charCount(character);
                                 final Font newFont;
                                 if (fontSized.canDisplay(character)) {
                                         newFont = fontSized;
                                 } else if (fontCjkSized.canDisplay(character)) {
                                         newFont = fontCjkSized;
                                 } else {
-                                        Font defaultFont = null;
-                                        for (final Font testFont : GraphicsEnvironment.getLocalGraphicsEnvironment().getAllFonts()) {
-                                                if (testFont.canDisplay(character)) {
-                                                        defaultFont = testFont;
-                                                        break;
-                                                }
-                                        }
-                                        newFont = (defaultFont == null ? new Font(null) : defaultFont).deriveFont(Font.PLAIN, newFontSize);
+                                        newFont = SystemFontFallback.find(character).deriveFont(Font.PLAIN, newFontSize);
                                 }
-                                textWidths[index] += newFont.getStringBounds(textSplit[index].substring(characterIndex, characterIndex + 1), context).getBounds().width;
-                                attributedStrings[index].addAttribute(TextAttribute.FONT, newFont, characterIndex, characterIndex + 1);
+                                textWidths[index] += newFont.getStringBounds(textSplit[index].substring(characterIndex, characterEnd), context).getBounds().width;
+                                attributedStrings[index].addAttribute(TextAttribute.FONT, newFont, characterIndex, characterEnd);
+                                characterIndex = characterEnd;
                         }
 
                         if (oneRow) {
@@ -262,6 +280,11 @@ public class DynamicTextureCache implements IGui {
 
                 int textOffset = 0;
                 final int imageHeight = Math.min(height, maxHeight);
+                if (width <= 0 || imageHeight <= 0) {
+                        dimensions[0] = 0;
+                        dimensions[1] = 0;
+                        return new byte[0];
+                }
                 final BufferedImage image = new BufferedImage(width + (oneRow ? 0 : padding * 2), imageHeight + (oneRow ? 0 : padding * 2), BufferedImage.TYPE_BYTE_GRAY);
                 final Graphics2D graphics2D = image.createGraphics();
                 graphics2D.setColor(Color.WHITE);
@@ -328,79 +351,168 @@ public class DynamicTextureCache implements IGui {
         }
 
         private DynamicResource getResource(String key, Supplier<@Nullable NativeImage> supplier, DefaultRenderingColor defaultRenderingColor) {
-                resourceRegistryQueue.process(Runnable::run);
                 final DynamicResource dynamicResource = dynamicResources.get(key);
-
-                if (dynamicResource != null && !dynamicResource.needsRefresh) {
+                if (dynamicResource != null) {
                         dynamicResource.expiryTime = System.currentTimeMillis() + COOLDOWN_TIME;
-                        return dynamicResource;
+                }
+                if (closed || dynamicResource != null && !dynamicResource.needsRefresh || generatingResources.contains(key) || generatingResources.size() >= MAX_PENDING_TEXTURES) {
+                        return dynamicResource == null ? defaultRenderingColor.dynamicResource : dynamicResource;
                 }
 
-                if (generatingResources.contains(key)) {
-                        return defaultRenderingColor.dynamicResource;
-                }
-
-                MainRenderer.WORKER_THREAD.scheduleDynamicTextures(() -> {
-                        // Bounded font loading (see loadBundledFont): a missing or corrupt mtr:font/*.ttf must
-                        // not wedge the single worker thread behind an unbounded retry spin.
-                        if (font == null) {
-                                font = loadBundledFont("font/noto-sans-semibold.ttf", "Noto Sans Semibold");
+                final long requestEpoch = resourceEpoch;
+                final int maximumImageSize = MAX_IMAGE_SIZE * (int) Math.pow(2, Config.getClient().getDynamicTextureResolution());
+                final boolean accepted = MainRenderer.WORKER_THREAD.scheduleDynamicTextures(() -> {
+                        if (closed || requestEpoch != resourceEpoch) {
+                                return;
                         }
-
-                        if (fontCjk == null) {
-                                fontCjk = loadBundledFont("font/noto-serif-tc-semibold.ttf", "Noto Serif TC Semibold");
-                        }
-
-                        // Set the generator constants on the same thread as the generation itself — setting
-                        // them on the caller after scheduling raced against the worker task.
-                        RouteMapGenerator.setConstants();
-
-                        final NativeImage nativeImage = supplier.get();
-
-                        resourceRegistryQueue.put(() -> {
-                                final DynamicResource staticTextureProviderOld = dynamicResources.get(key);
-                                if (staticTextureProviderOld != null) {
-                                        staticTextureProviderOld.remove();
-                                        deletedResources.put(staticTextureProviderOld.identifier, System.currentTimeMillis() + COOLDOWN_TIME);
+                        try {
+                                if (!loadFonts(requestEpoch)) {
+                                        return;
                                 }
-
-                                final DynamicResource dynamicResourceNew;
-                                if (nativeImage != null) {
-                                        final NativeImage newNativeImage;
-                                        final int newMaxImageSize = MAX_IMAGE_SIZE * (int) Math.pow(2, Config.getClient().getDynamicTextureResolution());
-                                        if (nativeImage.getWidth() > newMaxImageSize || nativeImage.getHeight() > newMaxImageSize) {
-                                                newNativeImage = new NativeImage(NativeImage.Format.RGBA, Math.min(newMaxImageSize, nativeImage.getWidth()), Math.min(newMaxImageSize, nativeImage.getHeight()), false);
-                                                for (int x = 0; x < Math.min(newMaxImageSize, nativeImage.getWidth()); x++) {
-                                                        for (int y = 0; y < Math.min(newMaxImageSize, nativeImage.getHeight()); y++) {
-                                                                RouteMapGenerator.setPixel(newNativeImage, x, y, RouteMapGenerator.getPixel(nativeImage, x, y));
-                                                        }
+                                RouteMapGenerator.setConstants();
+                                // Pixel copying belongs on the generation worker, before GPU registration.
+                                final NativeImage nativeImage = cropImage(supplier.get(), maximumImageSize);
+                                synchronized (this) {
+                                        if (closed || requestEpoch != resourceEpoch) {
+                                                if (nativeImage != null) {
+                                                        nativeImage.close();
                                                 }
                                         } else {
-                                                newNativeImage = nativeImage;
+                                                resourceRegistryQueue.offer(() -> registerResource(key, requestEpoch, nativeImage));
                                         }
-
-                                        final DynamicTexture nativeImageBackedTexture = new DynamicTexture(newNativeImage);
-                                        final ResourceLocation identifier = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "id_" + MTR.randomString());
-                                        Minecraft.getInstance().getTextureManager().register(identifier, nativeImageBackedTexture);
-                                        // native Vulkan pool: the pixels were (re)generated under this
-                                        // identifier — flag it so the next render drain re-uploads it if a
-                                        // native model references it (no-op without the native runtime)
-                                        org.mtr.nativeobj.NativeTextureManager.INSTANCE.markDirty(identifier);
-                                        dynamicResourceNew = new DynamicResource(identifier, nativeImageBackedTexture);
-                                        dynamicResources.put(key, dynamicResourceNew);
                                 }
-
-                                generatingResources.remove(key);
-                        });
+                        } catch (Exception e) {
+                                MTR.LOGGER.error("Failed to generate dynamic texture {}", key, e);
+                                resourceRegistryQueue.offer(() -> {
+                                        if (requestEpoch == resourceEpoch) {
+                                                generatingResources.remove(key);
+                                        }
+                                });
+                        }
                 });
-                generatingResources.add(key);
+                if (accepted) {
+                        generatingResources.add(key);
+                }
+                return dynamicResource == null ? defaultRenderingColor.dynamicResource : dynamicResource;
+        }
 
-                if (dynamicResource == null) {
-                        return defaultRenderingColor.dynamicResource;
-                } else {
-                        dynamicResource.expiryTime = System.currentTimeMillis() + COOLDOWN_TIME;
-                        dynamicResource.needsRefresh = false;
-                        return dynamicResource;
+        private boolean loadFonts(long requestEpoch) {
+                final Font currentFont = font;
+                final Font currentFontCjk = fontCjk;
+                final Font loadedFont = currentFont == null ? loadBundledFont("font/noto-sans-semibold.ttf", "Noto Sans Semibold") : currentFont;
+                final Font loadedFontCjk = currentFontCjk == null ? loadBundledFont("font/noto-serif-tc-semibold.ttf", "Noto Serif TC Semibold") : currentFontCjk;
+                synchronized (this) {
+                        if (closed || requestEpoch != resourceEpoch) {
+                                return false;
+                        }
+                        font = loadedFont;
+                        fontCjk = loadedFontCjk;
+                        return true;
+                }
+        }
+
+        @Nullable
+        private static NativeImage cropImage(@Nullable NativeImage image, int maximumSize) {
+                if (image == null || image.getWidth() <= maximumSize && image.getHeight() <= maximumSize) {
+                        return image;
+                }
+                NativeImage cropped = null;
+                try {
+                        cropped = new NativeImage(NativeImage.Format.RGBA, Math.min(maximumSize, image.getWidth()), Math.min(maximumSize, image.getHeight()), false);
+                        for (int y = 0; y < cropped.getHeight(); y++) {
+                                for (int x = 0; x < cropped.getWidth(); x++) {
+                                        RouteMapGenerator.setPixel(cropped, x, y, RouteMapGenerator.getPixel(image, x, y));
+                                }
+                        }
+                        return cropped;
+                } catch (RuntimeException | Error e) {
+                        if (cropped != null) {
+                                cropped.close();
+                        }
+                        throw e;
+                } finally {
+                        image.close();
+                }
+        }
+
+        private void registerResource(String key, long requestEpoch, @Nullable NativeImage image) {
+                if (closed || requestEpoch != resourceEpoch) {
+                        if (image != null) {
+                                image.close();
+                        }
+                        return;
+                }
+                DynamicTexture texture = null;
+                boolean registered = false;
+                try {
+                        if (image == null) {
+                                return;
+                        }
+                        texture = new DynamicTexture(image);
+                        final ResourceLocation identifier = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "id_" + MTR.randomString());
+                        Minecraft.getInstance().getTextureManager().register(identifier, texture);
+                        registered = true;
+                        org.mtr.nativeobj.NativeTextureManager.INSTANCE.markDirty(identifier);
+                        final DynamicResource oldResource = dynamicResources.put(key, new DynamicResource(identifier, texture));
+                        if (oldResource != null) {
+                                oldResource.remove();
+                                deletedResources.put(oldResource.identifier, System.currentTimeMillis() + COOLDOWN_TIME);
+                        }
+                } catch (Exception e) {
+                        MTR.LOGGER.error("Failed to register dynamic texture {}", key, e);
+                } finally {
+                        if (!registered && image != null) {
+                                if (texture == null) {
+                                        image.close();
+                                } else {
+                                        texture.close();
+                                }
+                        }
+                        generatingResources.remove(key);
+                }
+        }
+
+        /** Release textures and stale worker results when leaving a client session. */
+        public synchronized void close() {
+                closed = true;
+                resourceEpoch++;
+                Runnable registration;
+                while ((registration = resourceRegistryQueue.poll()) != null) {
+                        registration.run();
+                }
+                dynamicResources.values().forEach(resource -> {
+                        resource.remove();
+                        Minecraft.getInstance().getTextureManager().release(resource.identifier);
+                });
+                deletedResources.keySet().forEach(identifier -> Minecraft.getInstance().getTextureManager().release(identifier));
+                dynamicResources.clear();
+                deletedResources.clear();
+                generatingResources.clear();
+        }
+
+        /** Lazily initialised on the generation worker; includes negative glyph lookups. */
+        private static final class SystemFontFallback {
+                private static final Font[] FONTS = GraphicsEnvironment.getLocalGraphicsEnvironment().getAllFonts();
+                private static final Font DEFAULT_FONT = Font.decode(FALLBACK_LOGICAL_FONT);
+                private static final Map<Integer, Font> CACHE = new ConcurrentHashMap<>();
+                private static final int MAX_CACHED_GLYPHS = 4096;
+
+                private static Font find(int codePoint) {
+                        final Font cached = CACHE.get(codePoint);
+                        if (cached != null) {
+                                return cached;
+                        }
+                        Font result = DEFAULT_FONT;
+                        for (final Font candidate : FONTS) {
+                                if (candidate.canDisplay(codePoint)) {
+                                        result = candidate;
+                                        break;
+                                }
+                        }
+                        if (CACHE.size() < MAX_CACHED_GLYPHS) {
+                                CACHE.put(codePoint, result);
+                        }
+                        return result;
                 }
         }
 
@@ -422,6 +534,7 @@ public class DynamicTextureCache implements IGui {
 
                 private DynamicResource(ResourceLocation identifier, @Nullable DynamicTexture nativeImageBackedTexture) {
                         this.identifier = identifier;
+                        expiryTime = System.currentTimeMillis() + COOLDOWN_TIME;
                         if (nativeImageBackedTexture != null) {
                                 final NativeImage nativeImage = nativeImageBackedTexture.getPixels();
                                 if (nativeImage != null) {

@@ -22,7 +22,6 @@ import org.mtr.core.tool.Utilities;
 import org.mtr.data.IGui;
 import org.mtr.libraries.it.unimi.dsi.fastutil.ints.IntAVLTreeSet;
 import org.mtr.libraries.it.unimi.dsi.fastutil.ints.IntArrayList;
-import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.longs.LongArrayList;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -37,14 +36,15 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 	/** Colour-indicator texture — allocated once instead of per colour per frame. */
 	private static final ResourceLocation WHITE_TEXTURE = ResourceLocation.fromNamespaceAndPath(MTR.MOD_ID, "textures/block/white.png");
 	/**
-	 * Node scan results for {@link #getNodePos}, cached per (signal position, facing) for
+	 * Node scan results for {@link #getNodePos}, cached per (world, signal position, facing) for
 	 * {@value #NODE_POS_CACHE_TTL_MILLIS} ms. The scan walks 9&times;9&times;11 = 891 block
 	 * positions (three BlockPos allocations each) per signal per side per frame; nodes don't
 	 * move, so a short TTL — refreshed eagerly on expiry — keeps rail edits showing up
 	 * quickly while cutting the scan to a couple of runs per second.
 	 */
-	private static final Long2ObjectOpenHashMap<NodePosCacheEntry> NODE_POS_CACHE = new Long2ObjectOpenHashMap<>();
+	private static final Object2ObjectOpenHashMap<SignalNodeCacheKey, NodePosCacheEntry> NODE_POS_CACHE = new Object2ObjectOpenHashMap<>();
 	private static final long NODE_POS_CACHE_TTL_MILLIS = 500;
+	private static long nodePosCacheLastCleanupMillis;
 	/**
 	 * Amortised growth cap. The cache stays tiny (rendered signals only), so clearing it
 	 * whole on overflow is cheaper than any eviction bookkeeping.
@@ -159,9 +159,13 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 	@Nullable
 	private static BlockPos getNodePos(ClientLevel world, BlockPos pos, Direction facing) {
 		final long now = System.currentTimeMillis();
-		final long cacheKey = nodePosCacheKey(pos, facing);
+		if (now < nodePosCacheLastCleanupMillis || now - nodePosCacheLastCleanupMillis >= NODE_POS_CACHE_TTL_MILLIS) {
+			NODE_POS_CACHE.entrySet().removeIf(entry -> !entry.getKey().hasLiveWorld() || now < entry.getValue().timestampMillis || now - entry.getValue().timestampMillis > NODE_POS_CACHE_TTL_MILLIS);
+			nodePosCacheLastCleanupMillis = now;
+		}
+		final SignalNodeCacheKey cacheKey = new SignalNodeCacheKey(world, pos, facing);
 		final NodePosCacheEntry cached = NODE_POS_CACHE.get(cacheKey);
-		if (cached != null && now - cached.timestampMillis <= NODE_POS_CACHE_TTL_MILLIS) {
+		if (cached != null && now >= cached.timestampMillis && now - cached.timestampMillis <= NODE_POS_CACHE_TTL_MILLIS) {
 			return cached.nodePos;
 		}
 
@@ -193,13 +197,10 @@ public abstract class RenderSignalBase<T extends BlockSignalBase.BlockEntityBase
 		return closestPos;
 	}
 
-	/**
-	 * Lossless bit-packing for the cache key: 21 bits each for the signal X/Z (covers
-	 * &plusmn;1M blocks, far beyond playable coordinates), 12 bits for the Y (covers every
-	 * vanilla-legal dimension height) and 3 bits for the facing ordinal.
-	 */
-	private static long nodePosCacheKey(BlockPos pos, Direction facing) {
-		return ((pos.getX() & 0x1FFFFF) << 43) | ((pos.getZ() & 0x1FFFFF) << 22) | ((pos.getY() & 0xFFF) << 3) | facing.ordinal();
+	/** Clears node lookups at client disconnect and dimension changes. */
+	public static void clearNodePosCache() {
+		NODE_POS_CACHE.clear();
+		nodePosCacheLastCleanupMillis = 0;
 	}
 
 	private static final class NodePosCacheEntry {

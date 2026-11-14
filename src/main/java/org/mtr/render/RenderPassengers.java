@@ -12,6 +12,7 @@ import org.mtr.core.tool.Utilities;
 import org.mtr.core.tool.Vector;
 import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 import org.mtr.tool.CullingHelper;
 import org.mtr.tool.Drawing;
 import org.mtr.tool.PassengerCollisions;
@@ -60,7 +61,7 @@ public class RenderPassengers {
 	private static final long GOLDEN_RATIO_FRACTION = 0x9E3779B97F4A7C15L;
 
 	/**
-	 * Ground-height scan results, cached per quantised world column (0.5 blocks) and scan
+	 * Ground-height scan results, cached per block column and scan
 	 * Y-range for {@link #GROUND_SCAN_CACHE_MILLIS} milliseconds. Previously every idle or
 	 * walking passenger re-scanned up to 3 block states per candidate Y level EVERY frame
 	 * (a platform with 50 passengers was thousands of block lookups per frame); the result
@@ -69,7 +70,7 @@ public class RenderPassengers {
 	 */
 	private static final int GROUND_SCAN_CACHE_MILLIS = 500;
 	private static final int GROUND_SCAN_CACHE_LIMIT = 4096;
-	private static final Long2ObjectLinkedOpenHashMap<CachedGroundY> GROUND_SCAN_CACHE = new Long2ObjectLinkedOpenHashMap<>();
+	private static final Object2ObjectLinkedOpenHashMap<GroundColumn, CachedGroundY> GROUND_SCAN_CACHE = new Object2ObjectLinkedOpenHashMap<>();
 
 	/**
 	 * Rendered-position smoothing (anti-teleport). The analytical positions are already
@@ -100,9 +101,8 @@ public class RenderPassengers {
 		// Dropping the collision boxes of a previous world/session: boxes are dimension-keyed
 		// but a same-dimension rejoin would otherwise resurrect the old crowd's walls.
 		if (clientWorld != cachedCollisionLevel) {
+			clear();
 			cachedCollisionLevel = clientWorld;
-			PassengerCollisions.clear();
-			SMOOTHED_POSITIONS.clear();
 		}
 
 		if (passengers != null) {
@@ -204,6 +204,15 @@ public class RenderPassengers {
 		PassengerCollisions.endFrame();
 	}
 
+	/** Releases client-world references even when disconnect stops all world rendering. */
+	public static void clear() {
+		cachedCollisionLevel = null;
+		PassengerCollisions.clear();
+		SMOOTHED_POSITIONS.clear();
+		GROUND_SCAN_CACHE.clear();
+		PassengerRenderCache.clear();
+	}
+
 	private static PositionAndYaw getIdlePosition(SimpleAreaBase area, long passengerId) {
 		final ClientLevel clientWorld = Minecraft.getInstance().level;
 
@@ -217,7 +226,7 @@ public class RenderPassengers {
 			final long millis = System.currentTimeMillis();
 			final long position2Snapshot = millis / changePositionInterval;
 			final long position1Snapshot = position2Snapshot - 1;
-			final long position3Snapshot = position1Snapshot + 1;
+			final long position3Snapshot = position2Snapshot + 1;
 			final long progress = millis - position2Snapshot * changePositionInterval;
 
 			final double x1 = getRandomValue(position1Snapshot * 3, area.getMinX(), area.getMaxX());
@@ -255,42 +264,44 @@ public class RenderPassengers {
 	 * within the TTL short-circuit before re-scanning.
 	 */
 	private static long findGroundY(ClientLevel clientWorld, double x, double z, long minY, long maxY) {
-		final long quantisedX = (long) Math.floor(x * 2);
-		final long quantisedZ = (long) Math.floor(z * 2);
-		// Lossless bit-packing: 20 bits each for the quantised X/Z column (0.5-block
-		// increments, covers &plusmn;262K blocks — far beyond playable coordinates) and 12
-		// bits each for the scan Y bounds (covers every vanilla-legal dimension height).
-		// The previous XOR-mix key could (rarely) collide across different inputs and
-		// hand back a wrong ground Y.
-		final long cacheKey = (quantisedX & 0xFFFFF) << 44 | (quantisedZ & 0xFFFFF) << 24 | (minY & 0xFFF) << 12 | (maxY & 0xFFF);
-		final long now = System.currentTimeMillis();
+		final int blockX = (int) Math.floor(x);
+		final int blockZ = (int) Math.floor(z);
+		// Block states are constant within a block column. Keep the complete coordinates
+		// and range: the old 20-bit half-block packing aliased columns 524288 blocks apart.
+		final GroundColumn cacheKey = new GroundColumn(blockX, blockZ, minY, maxY);
+		final long now = System.nanoTime();
 
 		final CachedGroundY cached = GROUND_SCAN_CACHE.getAndMoveToFirst(cacheKey);
-		if (cached != null && now - cached.time() <= GROUND_SCAN_CACHE_MILLIS) {
+		if (cached != null && now - cached.time() <= GROUND_SCAN_CACHE_MILLIS * 1_000_000L) {
 			return cached.y();
 		}
 
+		final BlockPos.MutableBlockPos checkPos = new BlockPos.MutableBlockPos();
+		boolean belowAir = clientWorld.getBlockState(checkPos.set(blockX, (int) minY - 1, blockZ)).isAir();
+		boolean feetAir = clientWorld.getBlockState(checkPos.set(blockX, (int) minY, blockZ)).isAir();
 		for (long y = minY; y <= maxY; y++) {
-			final BlockPos checkPos1 = BlockPos.containing(x, y - 1, z);
-			final BlockPos checkPos2 = BlockPos.containing(x, y, z);
-			final BlockPos checkPos3 = BlockPos.containing(x, y + 1, z);
-
-			if (!clientWorld.getBlockState(checkPos1).isAir() && clientWorld.getBlockState(checkPos2).isAir() && clientWorld.getBlockState(checkPos3).isAir()) {
+			final boolean headAir = clientWorld.getBlockState(checkPos.set(blockX, (int) y + 1, blockZ)).isAir();
+			if (!belowAir && feetAir && headAir) {
 				cacheGroundY(cacheKey, y, now);
 				return y;
 			}
+			belowAir = feetAir;
+			feetAir = headAir;
 		}
 
-		final long fallbackY = clientWorld.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) Math.floor(x), (int) Math.floor(z));
+		final long fallbackY = clientWorld.getHeight(Heightmap.Types.MOTION_BLOCKING, blockX, blockZ);
 		cacheGroundY(cacheKey, fallbackY, now);
 		return fallbackY;
 	}
 
-	private static void cacheGroundY(long cacheKey, long y, long now) {
+	private static void cacheGroundY(GroundColumn cacheKey, long y, long now) {
 		GROUND_SCAN_CACHE.putAndMoveToFirst(cacheKey, new CachedGroundY(y, now));
 		while (GROUND_SCAN_CACHE.size() > GROUND_SCAN_CACHE_LIMIT) {
 			GROUND_SCAN_CACHE.removeLast();
 		}
+	}
+
+	private record GroundColumn(int x, int z, long minY, long maxY) {
 	}
 
 	private record CachedGroundY(long y, long time) {

@@ -23,7 +23,7 @@ public final class MapTileProvider extends CachedFileProvider<MapTileResource> {
 	public static final int TILE_SIZE = 256;
 
 	public MapTileProvider(Level world, String uniqueWorldId, MapType mapType) {
-		super(Minecraft.getInstance().gameDirectory.toPath().resolve("config/cache/map").resolve(uniqueWorldId).resolve(MTR.getWorldId(world)));
+		super(MapCachePath.resolve(Minecraft.getInstance().gameDirectory.toPath(), uniqueWorldId, MTR.getWorldId(world)));
 		this.world = world;
 		this.mapType = mapType;
 	}

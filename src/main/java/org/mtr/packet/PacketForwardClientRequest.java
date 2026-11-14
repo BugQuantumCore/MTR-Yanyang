@@ -8,6 +8,7 @@ import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
 import org.mtr.registry.RegistryServer;
 
 import java.util.Random;
+import java.net.URI;
 import java.util.function.BiConsumer;
 
 public final class PacketForwardClientRequest extends PacketHandler {
@@ -51,11 +52,23 @@ public final class PacketForwardClientRequest extends PacketHandler {
 
 	@Override
 	public void runServer(MinecraftServer minecraftServer, ServerPlayer serverPlayerEntity) {
+		if (!isLocalEndpoint(endpoint)) {
+			return;
+		}
 		MTR.REQUEST_HELPER.sendRequest(
 			String.format("http://localhost:%s%s", MTR.getServerPort(), endpoint),
 			content.isEmpty() ? null : content,
 			(response, path) -> RegistryServer.sendPacketToClient(serverPlayerEntity, new PacketForwardClientRequest(response, path, callbackId))
 		);
+	}
+
+	static boolean isLocalEndpoint(String endpoint) {
+		try {
+			final URI uri = URI.create(endpoint);
+			return endpoint.startsWith("/") && !endpoint.startsWith("//") && !uri.isAbsolute() && uri.getRawAuthority() == null && uri.getRawFragment() == null;
+		} catch (IllegalArgumentException e) {
+			return false;
+		}
 	}
 
 	@Override

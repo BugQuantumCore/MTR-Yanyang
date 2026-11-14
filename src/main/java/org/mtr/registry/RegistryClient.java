@@ -35,6 +35,13 @@ import org.mtr.neoforge.ModEventBusClient;
 
 public final class RegistryClient {
 
+	private static final Object PACKET_SCOPE = new Object();
+
+	public static void clearPacketBuffers() {
+		PacketBufferReceiver.clear(PACKET_SCOPE);
+	}
+
+
 	public static <T extends BlockEntity, U extends T> void registerBlockEntityRenderer(ObjectHolder<BlockEntityType<U>> blockEntityType, BlockEntityRendererProvider<T> factory) {
 //? if fabric {
 		BlockEntityRenderers.register(blockEntityType.get(), factory);
@@ -82,7 +89,7 @@ public final class RegistryClient {
 
 	public static void setupPackets() {
 //? if fabric {
-		ClientPlayNetworking.registerGlobalReceiver(MTR.PACKET_IDENTIFIER_S2C, (customPacketS2C, context) -> PacketBufferReceiver.receive(customPacketS2C.buffer(), packetBufferReceiver -> {
+		ClientPlayNetworking.registerGlobalReceiver(MTR.PACKET_IDENTIFIER_S2C, (customPacketS2C, context) -> PacketBufferReceiver.receive(PACKET_SCOPE, customPacketS2C.buffer(), packetBufferReceiver -> {
 			final Function<PacketBufferReceiver, ? extends PacketHandler> getInstance = MTRFabric.PACKETS.get(packetBufferReceiver.readString());
 			if (getInstance != null) {
 				getInstance.apply(packetBufferReceiver).runClient();
@@ -91,7 +98,7 @@ public final class RegistryClient {
 //? }
 
 //? if neoforge {
-		/*RegistryServer.s2cClientHandler = (customPacketS2C, context) -> PacketBufferReceiver.receive(customPacketS2C.buffer(), packetBufferReceiver -> {
+		/*RegistryServer.s2cClientHandler = (customPacketS2C, context) -> PacketBufferReceiver.receive(PACKET_SCOPE, customPacketS2C.buffer(), packetBufferReceiver -> {
 			final Function<PacketBufferReceiver, ? extends PacketHandler> getInstance = ModEventBus.PACKETS.get(packetBufferReceiver.readString());
 			if (getInstance != null) {
 				getInstance.apply(packetBufferReceiver).runClient();

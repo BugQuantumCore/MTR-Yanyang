@@ -54,6 +54,7 @@ public final class PassengerCollisions {
 
         private static final Long2ObjectLinkedOpenHashMap<Entry> ENTRIES = new Long2ObjectLinkedOpenHashMap<>();
         private static volatile List<Shape> SNAPSHOT = List.of();
+        private static boolean snapshotDirty;
 
         private PassengerCollisions() {
         }
@@ -69,15 +70,19 @@ public final class PassengerCollisions {
          * @param z           rendered feet position Z
          */
         public static void update(long passengerId, ResourceKey<Level> dimension, double x, double y, double z) {
-                if (ENTRIES.size() >= LIMIT && !ENTRIES.containsKey(passengerId)) {
+                final long now = System.nanoTime();
+                final Entry previous = ENTRIES.getAndMoveToFirst(passengerId);
+                if (previous != null && previous.shape.dimension == dimension &&
+                                previous.shape.box.minX == x - HALF_WIDTH && previous.shape.box.minY == y && previous.shape.box.minZ == z - HALF_WIDTH) {
+                        previous.time = now;
                         return;
                 }
-                ENTRIES.putAndMoveToFirst(passengerId, new Entry(
-                                new AABB(x - HALF_WIDTH, y, z - HALF_WIDTH, x + HALF_WIDTH, y + HEIGHT, z + HALF_WIDTH),
-                                dimension, System.currentTimeMillis()));
-                while (ENTRIES.size() > LIMIT) {
-                        ENTRIES.removeLast();
+                if (previous == null && ENTRIES.size() >= LIMIT) {
+                        return;
                 }
+                ENTRIES.putAndMoveToFirst(passengerId, new Entry(new Shape(
+                                new AABB(x - HALF_WIDTH, y, z - HALF_WIDTH, x + HALF_WIDTH, y + HEIGHT, z + HALF_WIDTH), dimension), now));
+                snapshotDirty = true;
         }
 
         /**
@@ -85,17 +90,16 @@ public final class PassengerCollisions {
          * after the per-frame passenger update pass.
          */
         public static void endFrame() {
-                final long now = System.currentTimeMillis();
-                boolean dirty = false;
+                final long now = System.nanoTime();
                 final var iterator = ENTRIES.long2ObjectEntrySet().iterator();
                 while (iterator.hasNext()) {
                         final var entry = iterator.next();
-                        if (now - entry.getValue().time > STALE_MILLIS) {
+                        if (now - entry.getValue().time > STALE_MILLIS * 1_000_000) {
                                 iterator.remove();
-                                dirty = true;
+                                snapshotDirty = true;
                         }
                 }
-                publish(dirty);
+                publish();
         }
 
         /**
@@ -103,7 +107,8 @@ public final class PassengerCollisions {
          */
         public static void clear() {
                 ENTRIES.clear();
-                publish(true);
+                SNAPSHOT = List.of();
+                snapshotDirty = false;
         }
 
         /**
@@ -116,12 +121,11 @@ public final class PassengerCollisions {
          * @return the intersecting passenger boxes; empty when the registry holds nothing nearby
          */
         public static List<AABB> collectBoxes(Level level, AABB queryBox) {
-                final List<Shape> snapshot = SNAPSHOT;
-                if (snapshot.isEmpty()) {
-                        return new ArrayList<>();
-                }
+                return collectBoxes(level.dimension(), queryBox);
+        }
 
-                final ResourceKey<Level> dimension = level.dimension();
+        static List<AABB> collectBoxes(ResourceKey<Level> dimension, AABB queryBox) {
+                final List<Shape> snapshot = SNAPSHOT;
                 final List<AABB> result = new ArrayList<>();
                 for (final Shape shape : snapshot) {
                         if (shape.dimension == dimension && shape.box.intersects(queryBox)) {
@@ -155,34 +159,51 @@ public final class PassengerCollisions {
                                 if (result == null) {
                                         result = new ArrayList<>();
                                 }
-                                result.add(Shapes.create(shape.box));
+                                result.add(shape.voxelShape());
                         }
                 }
                 return result == null ? List.of() : result;
         }
 
-        private static void publish(boolean dirty) {
-                if (dirty || SNAPSHOT.isEmpty()) {
+        private static void publish() {
+                if (snapshotDirty) {
                         final List<Shape> snapshot = new ArrayList<>(ENTRIES.size());
                         for (final Entry entry : ENTRIES.values()) {
-                                snapshot.add(new Shape(entry.box, entry.dimension));
+                                snapshot.add(entry.shape);
                         }
                         SNAPSHOT = List.copyOf(snapshot);
+                        snapshotDirty = false;
                 }
         }
 
         private static final class Entry {
-                private final AABB box;
-                private final ResourceKey<Level> dimension;
-                private final long time;
+                private final Shape shape;
+                private long time;
 
-                private Entry(AABB box, ResourceKey<Level> dimension, long time) {
-                        this.box = box;
-                        this.dimension = dimension;
+                private Entry(Shape shape, long time) {
+                        this.shape = shape;
                         this.time = time;
                 }
         }
 
-        private record Shape(AABB box, ResourceKey<Level> dimension) {
+        private static final class Shape {
+                private final AABB box;
+                private final ResourceKey<Level> dimension;
+                @Nullable
+                private VoxelShape voxelShape;
+
+                private Shape(AABB box, ResourceKey<Level> dimension) {
+                        this.box = box;
+                        this.dimension = dimension;
+                }
+
+                // Only client movement queries reach this method; create shapes on demand,
+                // and reuse them until the corresponding passenger actually moves.
+                private VoxelShape voxelShape() {
+                        if (voxelShape == null) {
+                                voxelShape = Shapes.create(box);
+                        }
+                        return voxelShape;
+                }
         }
 }

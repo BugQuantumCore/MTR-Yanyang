@@ -4,11 +4,10 @@ import org.jspecify.annotations.Nullable;
 import org.mtr.MTR;
 import org.mtr.libraries.it.unimi.dsi.fastutil.bytes.ByteArrayList;
 
-import java.awt.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
 
 /**
@@ -16,7 +15,7 @@ import java.util.function.BiConsumer;
  * <br/>
  * The resource also has a lifespan. After the timeout, the resource is regenerated when next requested and rewritten to the filesystem.
  */
-public abstract class CachedFileResource {
+public abstract class CachedFileResource implements AutoCloseable {
 
 
 	private byte @Nullable [] data;
@@ -79,6 +78,11 @@ public abstract class CachedFileResource {
 	 */
 	protected abstract void dataUpdated(byte @Nullable [] data);
 
+	/** Releases resources on the same owner thread used by {@link #get()}. */
+	@Override
+	public void close() {
+	}
+
 	private void generateAndWrite(byte @Nullable [] oldData) {
 		final byte[] newData = generate(oldData);
 
@@ -107,7 +111,7 @@ public abstract class CachedFileResource {
 	 * @return the converted {@code int} value
 	 */
 	public static int getInt(byte[] data, int index) {
-		return new Color(data[index + 1] & 0xFF, data[index + 2] & 0xFF, data[index + 3] & 0xFF, data[index] & 0xFF).getRGB();
+		return (data[index] & 0xFF) << 24 | (data[index + 1] & 0xFF) << 16 | (data[index + 2] & 0xFF) << 8 | data[index + 3] & 0xFF;
 	}
 
 	/**
@@ -117,11 +121,10 @@ public abstract class CachedFileResource {
 	 * @param value         the {@code int} value
 	 */
 	protected static void writeInt(ByteArrayList byteArrayList, int value) {
-		final Color color = new Color(value, true);
-		byteArrayList.add((byte) color.getAlpha());
-		byteArrayList.add((byte) color.getRed());
-		byteArrayList.add((byte) color.getGreen());
-		byteArrayList.add((byte) color.getBlue());
+		byteArrayList.add((byte) (value >>> 24));
+		byteArrayList.add((byte) (value >>> 16));
+		byteArrayList.add((byte) (value >>> 8));
+		byteArrayList.add((byte) value);
 	}
 
 	/**
@@ -145,6 +148,6 @@ public abstract class CachedFileResource {
 	}
 
 	private static int getRandomTimeoutOffset() {
-		return new Random().nextInt(500);
+		return ThreadLocalRandom.current().nextInt(500);
 	}
 }

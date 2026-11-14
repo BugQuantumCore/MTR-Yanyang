@@ -11,7 +11,6 @@ import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.IntegerProperty;
-import net.minecraft.world.ticks.ScheduledTick;
 
 public abstract class BlockTrainPoweredSensorBase extends BlockTrainSensorBase {
 
@@ -28,7 +27,7 @@ public abstract class BlockTrainPoweredSensorBase extends BlockTrainSensorBase {
 		if (oldPowered > 0) {
 			world.setBlockAndUpdate(pos, state.setValue(POWERED, oldPowered - 1));
 			if (!world.getBlockTicks().hasScheduledTick(pos, this)) {
-				world.getBlockTicks().schedule(new ScheduledTick<>(this, pos, UPDATE_TICKS, 0));
+				world.scheduleTick(pos, this, UPDATE_TICKS);
 			}
 		}
 	}
@@ -53,7 +52,7 @@ public abstract class BlockTrainPoweredSensorBase extends BlockTrainSensorBase {
 		if (oldPowered < 2) {
 			world.setBlockAndUpdate(pos, state.setValue(POWERED, 2));
 			if (oldPowered == 0 && !world.getBlockTicks().hasScheduledTick(pos, this)) {
-				world.getBlockTicks().schedule(new ScheduledTick<>(this, pos, UPDATE_TICKS, 0));
+				world.scheduleTick(pos, this, UPDATE_TICKS);
 			}
 		}
 	}

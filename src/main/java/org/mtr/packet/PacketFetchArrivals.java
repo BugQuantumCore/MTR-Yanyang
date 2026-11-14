@@ -26,14 +26,14 @@ public final class PacketFetchArrivals extends PacketHandler {
 
 	public PacketFetchArrivals(PacketBufferReceiver packetBufferReceiver) {
 		platformIds = new LongAVLTreeSet();
-		final int platformIdCount = packetBufferReceiver.readInt();
+		final int platformIdCount = packetBufferReceiver.readCount(Long.BYTES);
 		for (int i = 0; i < platformIdCount; i++) {
 			platformIds.add(packetBufferReceiver.readLong());
 		}
 
 		responseTime = packetBufferReceiver.readLong();
 
-		final int responseCount = packetBufferReceiver.readInt();
+		final int responseCount = packetBufferReceiver.readCount(Integer.BYTES);
 		for (int i = 0; i < responseCount; i++) {
 			responses.add(packetBufferReceiver.readString());
 		}

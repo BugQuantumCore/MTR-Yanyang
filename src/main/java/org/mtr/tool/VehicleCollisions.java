@@ -9,7 +9,7 @@ import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jspecify.annotations.Nullable;
 import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2LongLinkedOpenHashMap;
-import org.mtr.libraries.it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
+import org.mtr.libraries.it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -74,9 +74,10 @@ public final class VehicleCollisions {
         private static final double KNOCKBACK_MAX = 1.7;
         private static final double KNOCKBACK_UP = 0.65;
 
-        private static final Long2ObjectLinkedOpenHashMap<Entry> ENTRIES = new Long2ObjectLinkedOpenHashMap<>();
+        private static final Object2ObjectLinkedOpenHashMap<CarKey, Entry> ENTRIES = new Object2ObjectLinkedOpenHashMap<>();
         private static final Long2LongLinkedOpenHashMap KNOCKBACK_COOLDOWNS = new Long2LongLinkedOpenHashMap();
         private static volatile List<Shape> SNAPSHOT = List.of();
+        private static boolean snapshotDirty;
 
         private VehicleCollisions() {
         }
@@ -100,7 +101,9 @@ public final class VehicleCollisions {
          *                  players standing on a platform (whose surface is level with the floor)
          */
         public static void updateCar(long vehicleId, int carNumber, ResourceKey<Level> dimension, List<AABB> boxes, double floorY) {
+                final CarKey key = new CarKey(vehicleId, carNumber);
                 if (boxes.isEmpty()) {
+                        snapshotDirty |= ENTRIES.remove(key) != null;
                         return;
                 }
 
@@ -122,34 +125,33 @@ public final class VehicleCollisions {
                 final double centerY = (minY + maxY) / 2;
                 final double centerZ = (minZ + maxZ) / 2;
 
-                final long key = key(vehicleId, carNumber);
-                final Entry previous = ENTRIES.get(key);
-                final long now = System.currentTimeMillis();
-
-                final Entry entry;
-                if (previous == null) {
-                        if (ENTRIES.size() >= LIMIT) {
+                final Entry previous = ENTRIES.getAndMoveToFirst(key);
+                final long now = System.nanoTime();
+                double velocityX = 0;
+                double velocityY = 0;
+                double velocityZ = 0;
+                if (previous != null && previous.dimension == dimension) {
+                        final double deltaTime = (now - previous.time) / 1_000_000_000.0;
+                        if (deltaTime > 0 && deltaTime < 0.5) {
+                                // A time-based blend works at 60/144+ FPS too. The old 20 ms
+                                // cutoff reset its timestamp every frame and never sampled there.
+                                final double blend = -Math.expm1(-deltaTime * Math.log(2) / 0.05);
+                                velocityX = previous.velocityX + ((centerX - previous.centerX) / deltaTime - previous.velocityX) * blend;
+                                velocityY = previous.velocityY + ((centerY - previous.centerY) / deltaTime - previous.velocityY) * blend;
+                                velocityZ = previous.velocityZ + ((centerZ - previous.centerZ) / deltaTime - previous.velocityZ) * blend;
+                        }
+                        if (previous.floorY == floorY && previous.boxes.equals(boxes) &&
+                                        previous.velocityX == velocityX && previous.velocityY == velocityY && previous.velocityZ == velocityZ) {
+                                previous.time = now;
                                 return;
                         }
-                        entry = new Entry(vehicleId, List.copyOf(boxes), dimension, floorY, 0, 0, 0, now);
-                } else {
-                        final double deltaTime = (now - previous.time) / 1000.0;
-                        double velocityX = previous.velocityX;
-                        double velocityY = previous.velocityY;
-                        double velocityZ = previous.velocityZ;
-                        if (deltaTime > 0.02 && deltaTime < 0.5) {
-                                // Smoothed (0.5 blend) so a single lumpy frame never spikes the impulse.
-                                velocityX = previous.velocityX * 0.5 + (centerX - previous.centerX) / deltaTime * 0.5;
-                                velocityY = previous.velocityY * 0.5 + (centerY - previous.centerY) / deltaTime * 0.5;
-                                velocityZ = previous.velocityZ * 0.5 + (centerZ - previous.centerZ) / deltaTime * 0.5;
-                        }
-                        entry = new Entry(vehicleId, List.copyOf(boxes), dimension, floorY, velocityX, velocityY, velocityZ, now);
+                } else if (previous == null && ENTRIES.size() >= LIMIT) {
+                        return;
                 }
 
-                ENTRIES.putAndMoveToFirst(key, entry);
-                while (ENTRIES.size() > LIMIT) {
-                        ENTRIES.removeLast();
-                }
+                ENTRIES.putAndMoveToFirst(key, new Entry(vehicleId, List.copyOf(boxes), dimension, floorY,
+                                velocityX, velocityY, velocityZ, centerX, centerY, centerZ, now));
+                snapshotDirty = true;
         }
 
         /**
@@ -157,17 +159,16 @@ public final class VehicleCollisions {
          * once after the per-frame car registration pass.
          */
         public static void endFrame() {
-                final long now = System.currentTimeMillis();
-                boolean dirty = false;
-                final var iterator = ENTRIES.long2ObjectEntrySet().iterator();
+                final long now = System.nanoTime();
+                final var iterator = ENTRIES.object2ObjectEntrySet().iterator();
                 while (iterator.hasNext()) {
                         final var entry = iterator.next();
-                        if (now - entry.getValue().time > STALE_MILLIS) {
+                        if (now - entry.getValue().time > STALE_MILLIS * 1_000_000) {
                                 iterator.remove();
-                                dirty = true;
+                                snapshotDirty = true;
                         }
                 }
-                publish(dirty);
+                publish();
         }
 
         /**
@@ -176,7 +177,19 @@ public final class VehicleCollisions {
         public static void clear() {
                 ENTRIES.clear();
                 KNOCKBACK_COOLDOWNS.clear();
-                publish(true);
+                SNAPSHOT = List.of();
+                snapshotDirty = false;
+        }
+
+        /** Removes an embarked vehicle immediately, rather than leaving its old hull for 500 ms. */
+        public static void removeVehicle(long vehicleId) {
+                final var iterator = ENTRIES.values().iterator();
+                while (iterator.hasNext()) {
+                        if (iterator.next().vehicleId == vehicleId) {
+                                iterator.remove();
+                                snapshotDirty = true;
+                        }
+                }
         }
 
         /**
@@ -202,7 +215,7 @@ public final class VehicleCollisions {
                                 if (result == null) {
                                         result = new ArrayList<>();
                                 }
-                                result.add(Shapes.create(shape.box));
+                                result.add(shape.voxelShape());
                         }
                 }
                 return result == null ? List.of() : result;
@@ -218,12 +231,11 @@ public final class VehicleCollisions {
          * @return the intersecting car boxes; empty when the registry holds nothing nearby
          */
         public static List<AABB> collectBoxes(Level level, AABB queryBox) {
-                final List<Shape> snapshot = SNAPSHOT;
-                if (snapshot.isEmpty()) {
-                        return new ArrayList<>();
-                }
+                return collectBoxes(level.dimension(), queryBox);
+        }
 
-                final ResourceKey<Level> dimension = level.dimension();
+        static List<AABB> collectBoxes(ResourceKey<Level> dimension, AABB queryBox) {
+                final List<Shape> snapshot = SNAPSHOT;
                 final List<AABB> result = new ArrayList<>();
                 for (final Shape shape : snapshot) {
                         if (shape.dimension == dimension && shape.box.intersects(queryBox)) {
@@ -284,27 +296,23 @@ public final class VehicleCollisions {
                 }
         }
 
-        private static void publish(boolean dirty) {
-                if (dirty || SNAPSHOT.isEmpty()) {
-                        List<Shape> snapshot = null;
+        private static void publish() {
+                if (snapshotDirty) {
+                        final List<Shape> snapshot = new ArrayList<>(ENTRIES.size());
                         for (final Entry entry : ENTRIES.values()) {
-                                for (final AABB box : entry.boxes) {
-                                        if (snapshot == null) {
-                                                snapshot = new ArrayList<>(ENTRIES.size());
-                                        }
-                                        snapshot.add(new Shape(box, entry.dimension, entry.floorY, entry.velocityX, entry.velocityY, entry.velocityZ, entry.vehicleId));
-                                }
+                                snapshot.addAll(entry.shapes);
                         }
-                        SNAPSHOT = snapshot == null ? List.of() : List.copyOf(snapshot);
+                        SNAPSHOT = List.copyOf(snapshot);
+                        snapshotDirty = false;
                 }
         }
 
-        private static long key(long vehicleId, int carNumber) {
-                return vehicleId << 16 | carNumber & 0xFFFF;
+        private record CarKey(long vehicleId, int carNumber) {
         }
 
         private static final class Entry {
                 private final List<AABB> boxes;
+                private final List<Shape> shapes;
                 private final ResourceKey<Level> dimension;
                 private final double floorY;
                 private final double velocityX;
@@ -314,33 +322,50 @@ public final class VehicleCollisions {
                 private final double centerX;
                 private final double centerY;
                 private final double centerZ;
-                private final long time;
+                private long time;
 
-                private Entry(long vehicleId, List<AABB> boxes, ResourceKey<Level> dimension, double floorY, double velocityX, double velocityY, double velocityZ, long time) {
+                private Entry(long vehicleId, List<AABB> boxes, ResourceKey<Level> dimension, double floorY, double velocityX, double velocityY, double velocityZ, double centerX, double centerY, double centerZ, long time) {
                         this.boxes = boxes;
+                        shapes = new ArrayList<>(boxes.size());
+                        for (final AABB box : boxes) {
+                                shapes.add(new Shape(box, dimension, floorY, velocityX, velocityY, velocityZ, vehicleId));
+                        }
                         this.dimension = dimension;
                         this.floorY = floorY;
                         this.velocityX = velocityX;
                         this.velocityY = velocityY;
                         this.velocityZ = velocityZ;
                         this.vehicleId = vehicleId;
-                        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
-                        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
-                        for (final AABB box : boxes) {
-                                minX = Math.min(minX, box.minX);
-                                minY = Math.min(minY, box.minY);
-                                minZ = Math.min(minZ, box.minZ);
-                                maxX = Math.max(maxX, box.maxX);
-                                maxY = Math.max(maxY, box.maxY);
-                                maxZ = Math.max(maxZ, box.maxZ);
-                        }
-                        this.centerX = (minX + maxX) / 2;
-                        this.centerY = (minY + maxY) / 2;
-                        this.centerZ = (minZ + maxZ) / 2;
+                        this.centerX = centerX;
+                        this.centerY = centerY;
+                        this.centerZ = centerZ;
                         this.time = time;
                 }
         }
 
-        private record Shape(AABB box, ResourceKey<Level> dimension, double floorY, double velocityX, double velocityY, double velocityZ, long vehicleId) {
+        private static final class Shape {
+                private final AABB box;
+                private final ResourceKey<Level> dimension;
+                private final double floorY, velocityX, velocityY, velocityZ;
+                private final long vehicleId;
+                @Nullable
+                private VoxelShape voxelShape;
+
+                private Shape(AABB box, ResourceKey<Level> dimension, double floorY, double velocityX, double velocityY, double velocityZ, long vehicleId) {
+                        this.box = box;
+                        this.dimension = dimension;
+                        this.floorY = floorY;
+                        this.velocityX = velocityX;
+                        this.velocityY = velocityY;
+                        this.velocityZ = velocityZ;
+                        this.vehicleId = vehicleId;
+                }
+
+                private VoxelShape voxelShape() {
+                        if (voxelShape == null) {
+                                voxelShape = Shapes.create(box);
+                        }
+                        return voxelShape;
+                }
         }
 }

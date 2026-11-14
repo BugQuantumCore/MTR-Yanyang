@@ -4,19 +4,19 @@
 //
 // Design (see docs/NATIVE_VULKAN.md for the full rationale):
 //
-//   * JNI is gone. The single native library is loaded with System.load purely
-//     for its constructor-time boot (POSIX) / DllMain boot (Windows); every byte
-//     exchanged with Java travels through memory-mapped files created by Java
-//     before the library loads.
+//   * The single native library is loaded with System.load for constructor-time
+//     boot (POSIX) / DllMain boot (Windows). Every payload byte travels through
+//     memory-mapped files; two zero-payload JNI calls support synchronous frame
+//     recording and shutdown on JDK 21, with optional FFM calls on JDK 22+.
 //
 //   * The transport that maps those files and drains the queues is the Rust
 //     core (native/rust/wrxr, protocol.rs mirrors this header byte for byte);
 //     the C++ side (wrcore_domain.cpp) owns the registry + wrobj + wrvk and
 //     answers through the wrcore_* C ABI.
 //   * Two transports share one protocol:
-//       - SHARED_MEMORY (default): a C++ poller thread drains the message
-//         queues and records frames; Java rings a sequence doorbell and waits
-//         a bounded time for the ack.
+//       - SHARED_MEMORY (default): a Rust poller thread drains build messages.
+//         Java invokes frame recording synchronously on the render thread;
+//         FLAG_RENDER_THREAD_FRAMES keeps the poller off host command buffers.
 //       - PANAMA_FFM (JDK 22+): Java calls the wr_* C-ABI entry points
 //         directly; the same slots are processed synchronously on the calling
 //         thread. No poller, no races.
@@ -29,7 +29,9 @@
 // org.mtr.nativeobj.WrxRegion, and the Rust core mirrors them in
 // rust/wrxr/src/protocol.rs — three sides, one contract.
 //
-// PROTOCOL VERSION 2 — "zero-Java model rendering under Vulkan":
+// PROTOCOL VERSION 3 — synchronous embedded rendering with host textures:
+//   * FRM2 item/header byte layouts remain unchanged. The v3 control handshake
+//     requires synchronous frame entry and a 4096-entry external texture budget.
 //   * The per-frame texture table is gone. Textures live in a native pool
 //     (Vulkan images wrvk owns itself), uploaded once through
 //     MSG_UPLOAD_TEXTURE; only animated (mcmeta) textures stay external and
@@ -74,7 +76,7 @@ inline constexpr const char* CONFIG_FILE = "wrx.conf";
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t CONTROL_MAGIC = 0x57525831; // "WRX1"
-inline constexpr uint32_t PROTOCOL_VERSION = 2;
+inline constexpr uint32_t PROTOCOL_VERSION = 3;
 inline constexpr uint32_t CONTROL_SIZE = 4096;
 
 inline constexpr uint32_t FLAG_TRANSPORT_FFM = 1u << 0; // 0 = shm poller, 1 = ffm calls
@@ -82,6 +84,8 @@ inline constexpr uint32_t FLAG_POLLER_STARTED = 1u << 1;
 inline constexpr uint32_t FLAG_VULKAN_READY = 1u << 2;
 inline constexpr uint32_t FLAG_ERROR = 1u << 3;
 inline constexpr uint32_t FLAG_SHUTDOWN = 1u << 4;
+// Host command buffers are externally synchronized by the Java render thread.
+inline constexpr uint32_t FLAG_RENDER_THREAD_FRAMES = 1u << 5;
 
 struct ControlBlock {
         std::atomic<uint32_t> magic;
@@ -172,13 +176,15 @@ inline constexpr uint32_t RES_ERROR = 3;    // reply to any failed request
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t FRAME_MAGIC = 0x46524D32; // "FRM2"
+// FrameHeader.reserved1a: inherit viewport/scissor from the active host pass.
+inline constexpr uint32_t FRAME_FLAG_HOST_DYNAMIC_STATE = 1u;
 
 // Budgets; the overflow error path keeps a run-away pack from wedging the game.
 inline constexpr uint32_t FRAME_MAX_ITEMS = 65536;
-// External (animated) textures resolved through VulkanMod per frame. The
+// Host-owned textures resolved through VulkanMod per frame. The
 // static pool has no per-frame cap — it is bounded by MSG budget checks at
 // upload time (see wrcore: MAX_TEXTURES).
-inline constexpr uint32_t FRAME_MAX_EXTERNAL = 64;
+inline constexpr uint32_t FRAME_MAX_EXTERNAL = 4096;
 
 // GPU vertex layout = wrobj's upload layout, used verbatim: float x,y,z,u,v
 // (20 bytes) + 4 packed snorm8 normal bytes (x,y,z + pad) = 24-byte stride.

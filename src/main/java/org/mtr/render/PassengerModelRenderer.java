@@ -279,6 +279,10 @@ public final class PassengerModelRenderer {
 	 */
 	public static void clear() {
 		animationStates.clear();
+		// Model layers can be replaced by resource packs; rebake against the new layer set.
+		wideModel = null;
+		slimModel = null;
+		phoneModel = null;
 	}
 
 	private static PlayerModel getWideModel() {

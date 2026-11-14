@@ -7,11 +7,10 @@ import org.mtr.generated.lang.TranslationProvider;
  * (see {@code docs/NATIVE_VULKAN.md}).
  *
  * <ul>
- *   <li>{@link #SHARED_MEMORY} — the default. All data travels through the
- *       memory-mapped exchange region and a native poller thread drains it;
- *       on JDK releases below 22 the region is accessed through
- *       {@code sun.misc.Unsafe}-level primitives, which is exactly where the
- *       small stability risk comes from. Works on every supported JDK.</li>
+ *   <li>{@link #SHARED_MEMORY} — the default. Build commands travel through
+ *       the memory-mapped region and are drained by the native poller. Frames
+ *       use the same region but are recorded synchronously through JNI on the
+ *       render thread. Publication uses acquire/release VarHandles. JDK 21+.</li>
  *   <li>{@link #PANAMA_FFM} — Java calls the native entry points directly
  *       through the Foreign Function &amp; Memory API and drives the same
  *       region synchronously. Deterministic, no poller thread, but the FFM

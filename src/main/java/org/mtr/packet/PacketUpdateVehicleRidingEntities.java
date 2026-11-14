@@ -12,6 +12,7 @@ import org.mtr.core.serializer.JsonReader;
 import org.mtr.core.serializer.SerializedDataBase;
 import org.mtr.core.servlet.OperationProcessor;
 import org.mtr.core.tool.Utilities;
+import org.mtr.libraries.com.google.gson.JsonObject;
 
 public final class PacketUpdateVehicleRidingEntities extends PacketRequestResponseBase implements Utilities {
 
@@ -43,11 +44,15 @@ public final class PacketUpdateVehicleRidingEntities extends PacketRequestRespon
 	}
 
 	@Override
-	protected void runServerOutbound(ServerLevel serverWorld, @Nullable ServerPlayer serverPlayerEntity) {
-		super.runServerOutbound(serverWorld, serverPlayerEntity);
+	protected void onServerRequestForwarded(ServerLevel serverWorld, @Nullable ServerPlayer serverPlayerEntity) {
 		if (serverPlayerEntity != null) {
 			MTR.updateRidingEntity(serverPlayerEntity, dismount);
 		}
+	}
+
+	@Override
+	protected boolean isValidServerRequest(JsonObject requestJson, @Nullable ServerPlayer serverPlayerEntity) {
+		return serverPlayerEntity != null && VehicleRidingRequestValidator.isValid(requestJson, serverPlayerEntity.getUUID(), dismount);
 	}
 
 	@Override

@@ -63,14 +63,12 @@ public class SignalColorScreen extends SingleTabBackgroundScreenBase {
 
 		final CheckboxComponent newCheckBoxAcceptRedstone = createMainCheckbox(TranslationProvider.GUI_MTR_ACCEPT_REDSTONE.getString() + " (BETA)", blockEntity.getAcceptRedstone());
 		newCheckBoxAcceptRedstone.onClick(() -> {
-			newCheckBoxAcceptRedstone.setChecked(!newCheckBoxAcceptRedstone.isChecked());
 			toggleRedstoneCheckboxes1();
 		});
 		checkBoxAcceptRedstone = newCheckBoxAcceptRedstone;
 
 		final CheckboxComponent newCheckBoxOutputRedstone = createMainCheckbox(TranslationProvider.GUI_MTR_OUTPUT_REDSTONE.getString() + " (BETA)", blockEntity.getOutputRedstone());
 		newCheckBoxOutputRedstone.onClick(() -> {
-			newCheckBoxOutputRedstone.setChecked(!newCheckBoxOutputRedstone.isChecked());
 			toggleRedstoneCheckboxes2();
 		});
 		checkBoxOutputRedstone = newCheckBoxOutputRedstone;

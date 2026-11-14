@@ -1,184 +1,124 @@
-# Native Vulkan pipeline (protocol v2 — "zero-Java model rendering")
+# Native Vulkan pipeline — transport protocol v3
 
-This document describes how MTR-Yanyang renders its optimised models (OBJ
-rail/vehicle/station models and Blockbench geometry) **entirely through
-Rust + C++** whenever [VulkanMod](https://github.com/xCollateral/VulkanMod)
-is driving the frame. The Java side is a thin data bridge: it provides
-resource bytes at load time, one small frame header per frame, and one
-16-float pose copy per queued draw. Every rendering computation — mesh
-building, GPU upload, texture objects, model-view/normal matrices, colours,
-pipeline state, command-buffer recording — happens natively.
+The pipeline combines Java resource/session integration, Rust shared-memory
+transport and a C++ OBJ/Vulkan recorder. It records model draws into VulkanMod's
+active command buffer. It does not replace the host's frame graph, texture
+manager or GPU submission/fence ownership.
 
-The byte contract lives in `native/include/wrx/wrx.hpp` and is mirrored in
-`native/rust/wrxr/src/protocol.rs` (Rust transport core) and
-`org.mtr.nativeobj.WrxRegion` (Java): **three sides, one contract**.
+The byte contract is mirrored by `native/include/wrx/wrx.hpp`,
+`native/rust/wrxr/src/protocol.rs` and `org.mtr.nativeobj.WrxRegion`.
+All three must ship from the same revision. Transport **v3** rejects older
+native binaries; the existing **FRM2** frame payload layout remains unchanged.
 
-## Activation and gating
+## Renderer selection
 
-| environment                         | what renders MTR models                                        |
-|-------------------------------------|----------------------------------------------------------------|
-| no VulkanMod (OpenGL)               | the original Java/OpenGL renderer — byte-identical, untouched  |
-| VulkanMod, no shader pipeline       | **native pipeline** (this document)                            |
-| VulkanMod + Beryl, shaders off      | **native pipeline** (this document) — Beryl is dormant          |
-| VulkanMod + Beryl, shaders on       | Java renderer through Beryl's own pipelines (see below)        |
+| Environment | Model submission |
+|---|---|
+| OpenGL | Java VBO path, with explicit binding and shader-state restoration |
+| Plain VulkanMod | Native recorder when the host bridge resolves successfully |
+| VulkanMod with active Beryl pipeline | Java path through the host's shader pipelines |
+| Active Radiance | Model/stage batches through `RenderType.draw(MeshData)` so Radiance captures the geometry |
 
-Activation is automatic and conservative (`NativeRuntime.initialise`): the
-pipeline only boots when VulkanMod is detected and every Vulkan handle
-resolves; any failure latches the session back to the Java renderer with one
-log line. There is no user toggle — the graphics API being Vulkan *is* the
-switch.
+Backend transitions require model resources to be rebuilt; runtime-failure
+fallback coverage still needs validation. The Radiance path transforms
+positions and normals into the submitted vertex stream. Legacy scalar model
+brightness (0-15) is converted to packed block/sky coordinates at the capture
+boundary, while already packed and full-bright values are preserved. The scalar
+source does not retain separate block and sky samples. This is capture-compatible
+batching, not a claim of hardware instancing or a measured frame-rate improvement.
 
-**Beryl gating is a runtime check, not mod presence.** Beryl being
-*installed* is not the same as Beryl *driving the frame*: with its shaders
-disabled, Beryl's `RenderingPipeline.beginRender` returns before touching
-anything and the frame is plain VulkanMod. `VulkanCompat.isBerylActive()`
-reads Beryl's own runtime flag (`RenderingPipeline.useShaderPipeline`,
-fallback `BerylMod.CONFIG.shadersOn`) so:
+The host bridge checks the native handles and pipeline-cache invalidation
+fields before activation. Unknown host APIs fail closed to the Java path.
+Compatibility still needs game-level validation for each supported renderer
+version, resource pack and driver; unit tests cannot establish visual parity.
 
-* the boot defers — without latching — while Beryl's shaders are on, and
-  boots the moment they are off (the deferral is one cached-field reflection
-  read per frame);
-* the render drain re-checks every pass, so Beryl's keybind toggle takes
-  effect immediately;
-* a mid-session toggle rebuilds the models for the new path
-  (`MainRenderer.render` watches the state and calls
-  `CustomResourceLoader.reload()`), because models are built for one path at
-  load time — dual-path models (native mesh **and** GL vertex buffer, see
-  `NewOptimizedModelGroup.build`) cover the transition window;
-* `CustomResourceLoader.reload()` boots the runtime *before* parsing models,
-  so every rebuild picks the native path from its very first model.
+## Ownership and synchronisation
 
-The original class-presence-only check disabled the native pipeline
-permanently for anyone with the Beryl jar in their mods folder — even with
-shaders off — which silently routed every model through the Java GL path
-under VulkanMod (mispositioned/stretched geometry, missing parts).
+- Shared memory carries model-build commands and replies. The Rust poller may
+  process this work asynchronously.
+- `FLAG_RENDER_THREAD_FRAMES` (`1 << 5`) prohibits the poller from recording
+  frames. Every frame submission completes synchronously on the Java render
+  thread, before Minecraft records another command into that buffer.
+- The default shared-memory mode uses two small JNI entry points for frame
+  submission and shutdown on **JDK 21+**. No geometry crosses JNI arguments.
+- The optional **JDK 22+** FFM mode uses the final `FunctionDescriptor` API.
+  The two modes share the same native handlers and shared-memory payload.
+- Java publishes shared counters with acquire/release VarHandles, paired with
+  Rust atomic accesses. Rust bounds every queue against its actual mapping.
+- `FrameHeader.reserved1a` bit 0 (`FRAME_FLAG_HOST_DYNAMIC_STATE`) preserves
+  the active host viewport and scissor. Native draws do not overwrite them.
+- On return, Java invalidates VulkanMod's pipeline-binding cache. It does not
+  reset the host's descriptor pools or take over command submission.
 
-**Beryl exception (by design):** Beryl swaps every entity-family shader for
-its own G-buffer pipelines and composes the swapchain itself at the end of
-the frame. Geometry recorded straight into VulkanMod's command buffer (the
-native path) would either bypass Beryl's G-buffers entirely or be overwritten
-by Beryl's fullscreen compose — so while Beryl's shaders are on, the Java
-renderer draws MTR models through Beryl's own pipelines (with the
-`VulkanFrameState` per-draw bridge keeping positions correct). Models are
-shaded by Beryl there; the native path cannot offer that.
+## Resources and draw flow
 
-## The data flow (v2)
+At load time, `MSG_LOAD_OBJ` carries OBJ/MTL bytes and group filters;
+`MSG_UPLOAD_MESH` carries Java-generated Blockbench/fallback vertex lists;
+`MSG_INSTANCE` requests placements. Group filters use their real length,
+per-material indices are rebased into each mesh, and placements retain the
+source material index. One placement transforms the entire model once, rather
+than duplicating the complete model once per material.
 
-```
-load time (Java → native, build queue)
-  MSG_LOAD_OBJ        OBJ + MTL text ── wrobj parses/builds GPU meshes (C++)
-  MSG_UPLOAD_MESH     Blockbench quads / javagl-fallback triangles (Java-side
-                      vertex lists, 24 B GPU layout) ── same native pipeline
-  MSG_UPLOAD_TEXTURE  RGBA8 pixels ── wrvk's own VkImage/view/sampler pool
-  MSG_INSTANCE        translate/flip placements, GPU data aliased
+Production textures are **owned by Minecraft/VulkanMod**. Java assigns stable
+keys and provides current image/view/sampler handles for each distinct texture
+used in a pass. This covers static, dynamic and animated textures, preserving
+the host's filtering, upload and reload behaviour. It avoids PNG re-decoding,
+CPU pixel staging and duplicate GPU texture ownership.
 
-per frame (Java → native, seqlocked frame slot)
-  FrameHeader  view + projection (one 16-float copy each), fog, directional
-               lights, viewport, VulkanMod's current cmd buffer + render pass
-  FrameItem ×N meshId, textureKey, stage, RAW packed light, RAW pose (16 f32)
-  FrameExternal ×≤64  animated (mcmeta) textures: VulkanMod's image/view/
-               sampler handles for this frame only
+`MSG_UPLOAD_TEXTURE` remains an internal, recording-test-covered API. Java does
+not use it: buffer-to-image copies cannot be recorded inside the active render
+pass. Do not re-enable it without a separate transfer phase and explicit host
+fence/queue coordination.
 
-native (Rust + C++)
-  Rust wrxr    maps the region, drains the queues, snapshots the frame slot,
-               drives the poller / wr_* FFM entry points
-  wrcore (C++) model/mesh/texture registry, reply payloads
-  wrvk (C++)   pipelines, per-mesh VkBuffers, the texture pool, per-item
-               MV = view × pose, inverse-transpose normal matrix,
-               Kd × brightness colour, push constants, draw recording into
-               VulkanMod's command buffer
-```
+For each draw, C++ prepares the model-view/normal matrix and material/light
+colour, then records a GPU vertex/index draw. Consecutive equal poses reuse
+matrix calculations; consecutive equal meshes reuse bindings. A reusable,
+generation-stamped hash table provides texture/descriptor lookup. Rust retains
+frame-snapshot storage without clearing it before overwriting the payload.
+Vertex transformation, lighting and rasterisation execute in the shaders.
+No new compute-shader AI or collision path is introduced by this audit.
 
-### What Java still does (the irreducible bridge)
+## Frame payload
 
-* **Boot once**: extract the library, map the region, resolve VulkanMod's
-  instance/device/queue/render-pass handles through reflection
-  (`VulkanHostAccess`).
-* **Load time**: read resource bytes (OBJ/MTL text, PNG pixels, Blockbench
-  vertex lists) and publish them as build messages. `NativeTextureManager`
-  assigns each texture a session-stable pool key, uploads static textures
-  once, keeps animated (`.mcmeta`) textures external, and re-uploads dynamic
-  textures (PIDS displays, route maps) when MTR's `DynamicTextureCache`
-  regenerates them.
-* **Per frame**: write ONE frame header (≈60 floats + two handle queries)
-  and append raw draw items (a 16-float `Matrix4f.get` copy each). No JOML
-  math, no reflection, no colour arithmetic per item.
-
-### Matrix and colour semantics (byte-compatible with v1)
-
-The v1 pipeline computed, in Java per item: `MV = RenderSystem view × pose`,
-`N = transpose(inverse(MV₃ₓ₃))` and `colour = Kd × brightness` where
-`brightness = isFullBrightness ? 1 : light / 0xF` (the RAW packed lightmap
-int divided by 15, unclamped — anything ≥ 15 saturates). Protocol v2 moves
-exactly these computations into the C++ recorder; the push-constant layout
-(vec4 colour + mat4 MV + 3×vec4 N, 128 bytes) and the SPIR-V shaders are
-byte-identical, and the wrvk suite unit-tests the math against hand-computed
-JOML-semantics cases (rotation×translation, mirrors, non-uniform scale).
-
-The full-brightness table follows `org.mtr.resource.RenderStage`:
-`LIGHT`, `ALWAYS_ON_LIGHT`, `INTERIOR`, `INTERIOR_TRANSLUCENT` are full-bright;
-only `EXTERIOR` uses the lightmap value.
-
-### The native texture pool
-
-Textures are wrvk-owned `VkImage`s (R8G8B8A8_UNORM, LINEAR filtering, REPEAT
-addressing) fed by host-visible staging buffers. `MSG_UPLOAD_TEXTURE` carries
-RGBA8 rows (top-left origin); the copy + layout transitions execute inside
-the next frame's command buffer, so uploads never stall the render thread
-beyond the standard build-ack handshake. A repeated key re-uploads (dynamic
-textures reuse this path). `MSG_FREE_TEXTURE` retires entries at resource
-reload with the same device-idle discipline as mesh frees.
-
-Animated textures (a `.mcmeta` companion exists) never enter the pool:
-VulkanMod animates them itself, so they are resolved per frame through
-VulkanMod's GL-texture emulation layer and travel as `FrameExternal` handle
-overrides; items reference them by the same stable key and the recorder
-substitutes the per-frame handles.
-
-## Frame slot layout (v2)
-
-After the 8-byte seqlock word (`WrxRegion` owns the seq protocol):
+After the 8-byte seqlock word:
 
 ```
 FrameHeader (240 bytes)
-  u32 magic 0x46524D32 "FRM2"   u32 itemCount   u32 externalCount   u32 r0
-  f32 view[16]  (camera view, column-major, JOML get order)
-  f32 projection[16]
-  f32 fogColor[4]  f32 fogStart  f32 fogEnd
-  f32 lightDir0[3] f32 lightDir1[3]
-  u32 viewportWidth u32 viewportHeight  u32 r1a u32 r1b
-  u64 cmdBuffer  u64 renderPass  u64 r2 u64 r3
-FrameExternal × externalCount (32 bytes each, back-to-back)
-  u32 key u32 reserved  u64 image  u64 view  u64 sampler
-FrameItem × itemCount (80 bytes each, immediately after the last external)
-  u32 meshId  u32 textureKey  u32 stage  u32 light  f32 pose[16]
+  u32 magic = 0x46524D32 (FRM2), itemCount, externalCount, reserved0
+  f32 view[16], projection[16]
+  f32 fogColor[4], fogStart, fogEnd, lightDir0[3], lightDir1[3]
+  u32 viewportWidth, viewportHeight, reserved1a (flags), reserved1b
+  u64 cmdBuffer, renderPass, reserved2, reserved3
+FrameExternal (32 bytes each)
+  u32 key, reserved; u64 image, view, sampler
+FrameItem (80 bytes each)
+  u32 meshId, textureKey, stage, packedLight; f32 pose[16]
 ```
 
-Budgets: 65 536 items, 64 externals per frame; the region reserves
-`8 + 240 + 64·32 + 65536·80` bytes (≈5.2 MB, down from v1's 8.4 MB).
-`FRAME_MAX_EXTERNAL` bounds the budget only — the externals and items are
-written back-to-back and the Rust reader snapshots exactly
-`externalCount·32 + itemCount·80` contiguous bytes.
+Budgets are 65,536 draw items and 4,096 texture references. The frame mapping
+reserves `8 + 240 + 4096 * 32 + 65536 * 80 = 5,374,200` bytes. Actual externals
+and items are packed consecutively, and only their occupied span is copied.
 
-## Testing
+The std140 frame UBO has offsets `0/64/80/84/96/112` for projection, fog colour,
+fog start/end and two light vectors. Its payload is 128 bytes; slot stride
+respects `minUniformBufferOffsetAlignment`. Buffer allocation filters memory
+types using both required property flags and `memoryTypeBits`.
 
-* `wrvk_tests` (C++, 172 checks): texture-pool lifecycle (create/stage/
-  re-upload dedup/free/leak-zero), native matrix math against hand-computed
-  JOML-semantics cases, brightness/colour semantics, v2 frame end-to-end
-  recording, external-handle overrides, plus the original pipeline/leak
-  suite.
-* `wrxr` (Rust, 11 tests): transport round-trips for the three new
-  messages, v2 frame validation (old magic rejected, count overflows
-  rejected), plus the original queue/poller/shutdown protocol suite.
-* `wrctor_tests` (22 checks) and `wrobj_tests` (198 checks) — unchanged
-  green.
-* Java: the `org.mtr.nativeobj` package, the Blockbench/javagl integration
-  points and the drain were compile-verified against the official 1.21.1
-  and 1.21.4 Mojang mappings; CI builds all four loader/version targets.
+## Verification and remaining boundaries
 
-## Historical note
+Run builds/tests through `.github/workflows/native_1.21.x.yml`. The workflow
+builds desktop and cross-platform libraries, runs C++/Rust regressions on
+supported runners, compiles/validates GLSL, and verifies every packaged JAR.
+No build or test was executed locally during the 2026-11-14 audit.
 
-v1 (4.1.0-beta.2/3) computed model-view matrices, normal matrices, colours
-and per-frame texture tables in Java (`NativeFrameRecorder`), and resolved
-every texture through VulkanMod's `VkGlTexture` reflection chain per frame.
-v2 removes all of it — that Java code no longer exists on the Vulkan path.
+Recording-dispatch tests cover layouts, handle widths, memory selection,
+pipeline creation, texture/state behaviour and domain meshes. Transport tests
+cover mapping bounds, publication, ownership flags, startup and teardown.
+Java tests cover placement selection, region layout and real FFM binding.
+Successful results must be read from the matching GitHub Actions revision.
+
+Remaining architectural limits include descriptor/UBO ring reuse without an
+explicit host fence-token contract, the 24-byte uploaded vertex layout's lack
+of a per-vertex colour channel, native/Java fallback rebuilds after runtime
+failure, and visual validation of translucent stages and renderer transitions.
+See [the audit ledger](AUDIT_2026-11-14.md) for scope and follow-up work.

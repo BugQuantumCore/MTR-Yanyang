@@ -39,7 +39,7 @@ struct Reader {
 
         template <typename T>
         T read() {
-                if (pos + sizeof(T) > size) {
+                if (pos > size || sizeof(T) > size - pos) {
                         overflow = true;
                         return T{};
                 }
@@ -50,7 +50,7 @@ struct Reader {
         }
 
         bool bytes(uint32_t count, const uint8_t*& out, uint32_t& outCount) {
-                if (pos + count > size) {
+                if (pos > size || count > size - pos) {
                         overflow = true;
                         out = nullptr;
                         outCount = 0;
@@ -267,6 +267,12 @@ struct Core {
                                 const auto* sourceIndices = static_cast<const uint32_t*>(result->indexData);
                                 mesh->indices.assign(sourceIndices + draw.indexOffset,
                                         sourceIndices + draw.indexOffset + draw.indexCount);
+                                // wrobj emits one combined vertex buffer with global
+                                // indices. Each native GPU mesh owns only this draw's
+                                // vertex slice, so its indices must be local to that slice.
+                                for (uint32_t& index : mesh->indices) {
+                                        index -= static_cast<uint32_t>(draw.vertexOffset);
+                                }
 
                                 wrx::MeshInfo info{};
                                 info.meshId = nextMeshId++;
@@ -321,7 +327,7 @@ struct Core {
                                         buildOne(wr_obj_builder_create_group(objText, objTextLen, mtlText, mtlTextLen,
                                                 keyTextureHandles.data(), keyColorSet.data(), static_cast<int32_t>(keyTextureHandles.size()),
                                                 hasMtl ? 1 : 0, flipTextureV ? 1 : 0,
-                                                groups->entries[g].name, -1), groupBuild.name);
+                                                groups->entries[g].name, static_cast<int32_t>(groupBuild.name.size())), groupBuild.name);
                                         if (!groupMeshesScratch.empty()) {
                                                 groupBuild.modelId = nextModelId++;
                                                 groupBuild.meshInfos = std::move(groupMeshesScratch);
@@ -406,7 +412,7 @@ struct Core {
 
         // --- INSTANCE -----------------------------------------------------------
         // NewOptimizedModelGroup.merge semantics: translate + optional flip. The
-        // flip mirrors x/z of positions and normals and swaps winding, matching
+        // flip rotates x/z of positions and normals by 180 degrees, matching
         // the Java path's per-vertex modify() plus the culling behaviour it
         // produces. Identity transforms alias the source GPU data — no copy.
         bool handleInstance(Reader& reader, WrcoreReply& out) {
@@ -459,11 +465,9 @@ struct Core {
                                                 normal[2] = static_cast<uint8_t>(-static_cast<int8_t>(normal[2]));
                                         }
                                 }
-                                if (flip) {
-                                        for (size_t t = 0; t + 2 < mesh->indices.size(); t += 3) {
-                                                std::swap(mesh->indices[t + 1], mesh->indices[t + 2]);
-                                        }
-                                }
+                                // Negating BOTH x and z preserves handedness. Java keeps
+                                // vertex order, so swapping winding here would cull the
+                                // visible side of every flipped train/carriage part.
 
                                 float aabb[6];
                                 std::memcpy(aabb, model->meshInfos[i].aabb, sizeof(aabb));
@@ -495,6 +499,7 @@ struct Core {
                         if (recorder != nullptr && !recorder->uploadMesh(meshId, *mesh, model->meshInfos[i].kd)) {
                                 uploadFailed = true;
                         }
+                        model->meshes.push_back(mesh);
                         meshIndex[meshId] = std::move(mesh);
                         createdMeshIds.push_back(meshId);
                 }
@@ -795,7 +800,7 @@ WrcoreReply wrcore_init_vulkan(const uint8_t* data, uint32_t size) {
                 c.recorder->attachHost(host);
         }
         WrcoreReply out = c.finish(WRCORE_OK, 0);
-        out.vulkanReady = c.recorder != nullptr ? 1u : 0u;
+        out.vulkanReady = c.recorder != nullptr && c.recorder->hasHost() ? 1u : 0u;
         return out;
 }
 
@@ -912,6 +917,10 @@ void wrcore_shutdown_domain(void) {
         c.models.clear();
         c.meshIndex.clear();
         c.textures.clear();
+        // wrmain destroys this recorder immediately after domain shutdown.
+        // Rebooted non-Vulkan handlers must never retain the old raw pointer.
+        c.recorder = nullptr;
+        c.host_ = {};
 }
 
 uint32_t wrcore_live_models(void) {
@@ -938,9 +947,10 @@ uint32_t wrcore_live_textures(void) {
 // wrmain.cpp's host-init trampoline after it creates the dispatch and the
 // recorder). Not part of the Rust ABI — C++-only wiring.
 namespace wrcore {
-void attachRecorder(wrvk::WrvkRecorder* recorder) {
+void attachRecorderDuringInit(wrvk::WrvkRecorder* recorder) {
+        // Called only by the host-init callback, while wrcore_init_vulkan
+        // already owns Core::mutex. Taking it again would deadlock boot.
         Core& c = core();
-        std::lock_guard<std::mutex> lock(c.mutex);
         c.recorder = recorder;
 }
 } // namespace wrcore

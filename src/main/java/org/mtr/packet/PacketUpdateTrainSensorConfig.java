@@ -17,7 +17,7 @@ public class PacketUpdateTrainSensorConfig extends BlockEntityPacketHandler {
 
 	public PacketUpdateTrainSensorConfig(PacketBufferReceiver packetBufferReceiver) {
 		blockPos = BlockPos.of(packetBufferReceiver.readLong());
-		final int routeIdCount = packetBufferReceiver.readInt();
+		final int routeIdCount = packetBufferReceiver.readCount(Long.BYTES);
 		filterRouteIds = new LongAVLTreeSet();
 		for (int i = 0; i < routeIdCount; i++) {
 			filterRouteIds.add(packetBufferReceiver.readLong());

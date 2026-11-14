@@ -15,10 +15,11 @@ import java.util.function.Function;
  *
  * @param <T> the {@link CachedFileResource} implementation
  */
-public abstract class CachedFileProvider<T extends CachedFileResource> {
+public abstract class CachedFileProvider<T extends CachedFileResource> implements AutoCloseable {
 
 	private final Path cacheDirectory;
 	private final Long2ObjectAVLTreeMap<T> dataMap = new Long2ObjectAVLTreeMap<>();
+	private boolean closed;
 
 	private static long nextCreationTime;
 
@@ -38,11 +39,27 @@ public abstract class CachedFileProvider<T extends CachedFileResource> {
 				keysToRemove.add(key);
 			}
 		});
-		keysToRemove.forEach(dataMap::remove);
+		keysToRemove.forEach((long key) -> {
+			final T removed = dataMap.remove(key);
+			if (removed != null) {
+				removed.close();
+			}
+		});
+	}
+
+	/** Call on the provider's owner thread, including when discarding a world. */
+	@Override
+	public final void close() {
+		closed = true;
+		dataMap.values().forEach(CachedFileResource::close);
+		dataMap.clear();
 	}
 
 	@Nullable
 	protected final T get(long key, Function<Path, T> createInstance) {
+		if (closed) {
+			return null;
+		}
 		final T data = dataMap.get(key);
 		final long currentTime = System.currentTimeMillis();
 		if (currentTime < nextCreationTime) {

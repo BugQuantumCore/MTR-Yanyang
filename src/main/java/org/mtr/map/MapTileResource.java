@@ -139,7 +139,7 @@ public final class MapTileResource extends CachedFileResource {
 	@Override
 	protected void dataUpdated(byte @Nullable [] data) {
 		if (data == null) {
-			this.vertexBuffer = null;
+			close();
 		} else {
 			final boolean[] noVertices = {true};
 
@@ -182,10 +182,19 @@ public final class MapTileResource extends CachedFileResource {
 
 			if (noVertices[0]) {
 				vertexBuffer.close();
-				this.vertexBuffer = null;
+				close();
 			} else {
+				close();
 				this.vertexBuffer = vertexBuffer;
 			}
+		}
+	}
+
+	@Override
+	public void close() {
+		if (vertexBuffer != null) {
+			vertexBuffer.close();
+			vertexBuffer = null;
 		}
 	}
 

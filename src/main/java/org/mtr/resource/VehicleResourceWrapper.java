@@ -16,6 +16,7 @@ public final class VehicleResourceWrapper extends VehicleResourceWrapperSchema {
 		TransportMode transportMode,
 		double length,
 		double width,
+		long capacity,
 		double bogie1Position,
 		double bogie2Position,
 		double couplingPadding1,
@@ -65,6 +66,7 @@ public final class VehicleResourceWrapper extends VehicleResourceWrapperSchema {
 			legacyDoorSoundBaseResource,
 			legacyDoorCloseSoundTime
 		);
+		this.capacity = capacity;
 		this.tags.addAll(tags);
 		this.models.addAll(models);
 		this.bogie1Models.addAll(bogie1Models);
