@@ -11,7 +11,7 @@ public final class PathBatcher {
 	private final PathComputePool pool;
 	private final RailGraph graph;
 	private final Epoch epoch;
-	private final LinkedHashMap<Long, Ticket> cache = new LinkedHashMap<>();
+	private final LinkedHashMap<Long, Ticket> cache = new LinkedHashMap<>(16, 0.75F, true);
 	private final ArrayList<Ticket> pending = new ArrayList<>();
 	private final ArrayDeque<Batch> running = new ArrayDeque<>();
 	private int cachedNodes;
@@ -69,10 +69,14 @@ public final class PathBatcher {
 			Batch batch = new Batch(graph, epoch, tickets, pool.metrics);
 			if (running.size() >= MAX_BATCHES || !pool.execute(batch)) {
 				// Rejected searches remain on the caller's original incremental finder.
-				for (Ticket ticket : tickets) ticket.failed = true;
-				batch.done = true;
+				for (Ticket ticket : tickets) {
+					ticket.failed = true;
+					ticket.published = true;
+					cache.remove(((long) ticket.start << 32) | (ticket.end & 0xffffffffL));
+				}
+			} else {
+				running.addLast(batch);
 			}
-			running.addLast(batch);
 		}
 		pending.clear();
 	}
@@ -90,10 +94,15 @@ public final class PathBatcher {
 					if (pool.metrics.enabled) pool.metrics.stale.increment();
 					ticket.nodes = null;
 					ticket.failed = true;
-				} else if (ticket.nodes != null) {
+				} else if (!ticket.failed && ticket.nodes != null) {
 					cachedNodes += ticket.nodes.length;
 				}
 				ticket.published = true;
+				if (ticket.failed) {
+					// A failed/cancelled computation is a fallback for its current caller,
+					// not a negative result to retain for future identical requests.
+					cache.remove(((long) ticket.start << 32) | (ticket.end & 0xffffffffL));
+				}
 			}
 		}
 		if (cachedNodes > MAX_CACHED_NODES) {
