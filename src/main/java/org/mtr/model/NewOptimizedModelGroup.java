@@ -98,7 +98,7 @@ public final class NewOptimizedModelGroup {
                                                         .get(texture);
                                         if (cached != null) {
                                                 newOptimizedModels.computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
-                                                                .add(new NewOptimizedModel(texture, drawMode, vertexCallback, cached));
+                                                                .add(new NewOptimizedModel(texture, drawMode, vertexCallback, cached, storedVertexDataList.size()));
                                                 return;
                                         }
                                         if (org.mtr.nativeobj.NativeRuntime.isActive() && stride != 0 && !storedVertexDataList.isEmpty() && storedVertexDataList.size() % stride == 0) {
@@ -107,13 +107,13 @@ public final class NewOptimizedModelGroup {
                                                 if (nativeModel != null) {
                                                         nativeUploadCache.computeIfAbsent(renderStage, key -> new Object2ObjectOpenHashMap<>()).put(texture, nativeModel);
                                                         newOptimizedModels.computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
-                                                                        .add(new NewOptimizedModel(texture, drawMode, vertexCallback, nativeModel));
+                                                                        .add(new NewOptimizedModel(texture, drawMode, vertexCallback, nativeModel, storedVertexDataList.size()));
                                                         return;
                                                 }
                                         }
                                         newOptimizedModels
                                                         .computeIfAbsent(renderStage, key -> new ObjectArrayList<>())
-                                                        .add(new NewOptimizedModel(texture, drawMode, vertexCallback));
+                                                        .add(new NewOptimizedModel(texture, drawMode, vertexCallback, null, storedVertexDataList.size()));
                                 });
                         }
                 });

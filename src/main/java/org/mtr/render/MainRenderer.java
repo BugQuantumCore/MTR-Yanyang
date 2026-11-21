@@ -33,6 +33,9 @@ import org.mtr.resource.RenderStage;
 
 import java.awt.*;
 import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -160,6 +163,26 @@ public class MainRenderer {
         private static final ArrayDeque<ObjectArrayList<ScheduledRender>> RENDER_LIST_POOL = new ArrayDeque<>();
         private static final int RENDER_LIST_POOL_LIMIT = 256;
         private static final int RECYCLABLE_LIST_SIZE = 1024;
+        /**
+         * Multi-instance batching thresholds for the {@link #renderModel} drain: a mesh
+         * queued this many times or more (and small enough to replay cheaply) is drawn by
+         * replaying every instance into the one shared per-(layer, texture) buffer of the
+         * scheduled path instead of paying one {@code setupRenderState} +
+         * {@code drawWithShader} round per instance. Repeated rail segments and per-car
+         * vehicle parts are exactly this shape — a 300 m siding is hundreds of identical
+         * rail-model instances, and a train multiplies every shared part by its car count —
+         * and shader pipelines (Iris + a shader pack) make each per-instance round trip
+         * expensive enough to tank the frame rate.
+         */
+        private static final int MODEL_INSTANCE_BATCH_MIN_INSTANCES = 3;
+        private static final int MODEL_INSTANCE_BATCH_MAX_VERTICES = 4096;
+        /**
+         * Log-once bookkeeping for scheduled draws that throw (see
+         * {@link #logScheduledRenderFailure}); bounded so a broken pack cannot grow it
+         * without end.
+         */
+        private static final Set<String> LOGGED_RENDER_FAILURES = Collections.synchronizedSet(new HashSet<>());
+        private static final int LOGGED_RENDER_FAILURES_LIMIT = 128;
 
         static {
                 for (int i = 0; i < TOTAL_RENDER_STAGES; i++) {
@@ -322,7 +345,13 @@ public class MainRenderer {
                                                 case EXTERIOR_TRANSLUCENT -> MoreRenderLayers.getExteriorTranslucent(key);
                                                 case LINES -> RenderType.lines();
                                         };
-                                        value.forEach(renderer -> renderer.accept(matrixStack, vertexConsumerProvider.getBuffer(renderLayer), offset));
+                                        value.forEach(renderer -> {
+                                                try {
+                                                        renderer.accept(matrixStack, vertexConsumerProvider.getBuffer(renderLayer), offset);
+                                                } catch (Throwable t) {
+                                                        logScheduledRenderFailure(key, queuedRenderLayer, t);
+                                                }
+                                        });
                                 });
                         }
                 }
@@ -406,6 +435,51 @@ public class MainRenderer {
                 if (renderList.size() <= RECYCLABLE_LIST_SIZE && RENDER_LIST_POOL.size() < RENDER_LIST_POOL_LIMIT) {
                         renderList.clear();
                         RENDER_LIST_POOL.add(renderList);
+                }
+        }
+
+        /**
+         * Maps a {@link RenderStage} onto the queued-layer family whose scheduled drain
+         * resolves to the same render layer the direct {@code renderModel} drain uses, so
+         * a batched replay lands in the identical pipeline. While VulkanMod owns the GL,
+         * the light stages redirect to the entity layers exactly like the direct drain's
+         * {@code lightStagesNeedNewEntity} switch (the beacon-beam layers are
+         * BLOCK-formatted and VulkanMod's translated pipeline misreads NEW_ENTITY
+         * vertices through them).
+         */
+        private static QueuedRenderLayer stageToQueuedRenderLayer(RenderStage renderStage, boolean lightStagesNeedNewEntity) {
+                return switch (renderStage) {
+                        case LIGHT -> lightStagesNeedNewEntity ? QueuedRenderLayer.EXTERIOR : QueuedRenderLayer.LIGHT;
+                        case ALWAYS_ON_LIGHT -> lightStagesNeedNewEntity ? QueuedRenderLayer.EXTERIOR_TRANSLUCENT : QueuedRenderLayer.LIGHT_TRANSLUCENT;
+                        case INTERIOR -> QueuedRenderLayer.INTERIOR;
+                        case INTERIOR_TRANSLUCENT -> QueuedRenderLayer.INTERIOR_TRANSLUCENT;
+                        case EXTERIOR -> QueuedRenderLayer.EXTERIOR;
+                };
+        }
+
+        /**
+         * One throwing scheduled draw must not take the render thread — and with it the
+         * game — down. The concrete case this guards: a pack references a texture that no
+         * resource pack provides (missing {@code <id>/<id>_connector_*.png} files), the
+         * render layer binds it anyway, and under VulkanMod the missing-texture fallback
+         * carries a {@code null VkGlTexture} whose bind throws
+         * {@code NullPointerException: getVulkanImage()} straight out of
+         * {@code RenderLayer#startDrawing} (the 2026-11-21 crash). The first failure per
+         * (identifier, layer) is logged in full; repeats are silenced, and the set is
+         * capped so a pathological pack cannot grow it without end.
+         */
+        private static void logScheduledRenderFailure(@Nullable ResourceLocation identifier, QueuedRenderLayer queuedRenderLayer, Throwable t) {
+                final String key = (identifier == null || identifier.equals(EMPTY_IDENTIFIER) ? "(none)" : identifier.toString()) + "->" + queuedRenderLayer;
+                final boolean first;
+                synchronized (LOGGED_RENDER_FAILURES) {
+                        first = LOGGED_RENDER_FAILURES.add(key);
+                        if (first && LOGGED_RENDER_FAILURES.size() > LOGGED_RENDER_FAILURES_LIMIT) {
+                                LOGGED_RENDER_FAILURES.clear();
+                                LOGGED_RENDER_FAILURES.add(key);
+                        }
+                }
+                if (first) {
+                        MTR.LOGGER.warn("[{}] Scheduled draw failed; further failures of this draw are silenced", key, t);
                 }
         }
 
@@ -517,6 +591,33 @@ public class MainRenderer {
                                                 matrixStack.popPose();
                                         }
                                 }));
+                                return;
+                        }
+                        // Multi-instance batching: when the same small mesh is queued many
+                        // times this frame (repeated rail segments, a part shared by every
+                        // car of a train, per-car script modules), replay every instance
+                        // into the shared scheduled buffer for its (layer, texture) bucket
+                        // instead of one VBO bind + drawWithShader per instance. The replay
+                        // drains later this same frame (the pending maps swap after this
+                        // drain returns), through exactly the render layers mapped by
+                        // stageToQueuedRenderLayer, so the geometry lands in the same
+                        // pipelines the direct draws would have used.
+                        if (renderDetails.size() >= MODEL_INSTANCE_BATCH_MIN_INSTANCES
+                                        && newOptimizedModel.canAppendVertices()
+                                        && newOptimizedModel.getVertexCount() >= 0
+                                        && newOptimizedModel.getVertexCount() <= MODEL_INSTANCE_BATCH_MAX_VERTICES) {
+                                final ObjectArrayList<ObjectIntImmutablePair<StoredMatrixTransformations>> batchDetails = renderDetails;
+                                scheduleRender(texture, false, stageToQueuedRenderLayer(renderStage, lightStagesNeedNewEntity), (ms, vc, off) -> {
+                                        for (int i = 0; i < batchDetails.size(); i++) {
+                                                final ObjectIntImmutablePair<StoredMatrixTransformations> renderDetailsEntry = batchDetails.get(i);
+                                                renderDetailsEntry.left().transform(ms, off);
+                                                try {
+                                                        newOptimizedModel.appendCaptured(vc, ms.last(), renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : CapturedModelLight.toPackedLight(renderDetailsEntry.rightInt()));
+                                                } finally {
+                                                        ms.popPose();
+                                                }
+                                        }
+                                });
                                 return;
                         }
                         renderLayer.setupRenderState();

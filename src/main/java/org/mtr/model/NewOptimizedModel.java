@@ -41,284 +41,327 @@ import net.minecraft.client.renderer.CompiledShaderProgram;
  */
 public final class NewOptimizedModel {
 
-	public final ResourceLocation texture;
-	@Nullable
-	private final VertexBuffer vertexBuffer;
-	/**
-	 * The native Vulkan mesh when this model was built through the native
-	 * pipeline (see {@code docs/NATIVE_VULKAN.md}); null means the GL path.
-	 * Dual-path build: when present, the GL {@link #vertexBuffer} is built
-	 * too, and the render drain decides per frame which path draws — native
-	 * under plain VulkanMod, GL under Beryl's pipeline or on plain OpenGL.
-	 */
-	@Nullable
-	private final NativeModel nativeModel;
-	private final VertexFormat.Mode drawMode;
-	@Nullable
-	private final Consumer<VertexConsumer> capturedVertices;
-	private static final CapturedVertexConsumer CAPTURED_CONSUMER = new CapturedVertexConsumer();
+        public final ResourceLocation texture;
+        @Nullable
+        private final VertexBuffer vertexBuffer;
+        /**
+         * The native Vulkan mesh when this model was built through the native
+         * pipeline (see {@code docs/NATIVE_VULKAN.md}); null means the GL path.
+         * Dual-path build: when present, the GL {@link #vertexBuffer} is built
+         * too, and the render drain decides per frame which path draws — native
+         * under plain VulkanMod, GL under Beryl's pipeline or on plain OpenGL.
+         */
+        @Nullable
+        private final NativeModel nativeModel;
+        private final VertexFormat.Mode drawMode;
+        @Nullable
+        private final Consumer<VertexConsumer> capturedVertices;
+        /**
+         * Source vertex count of the retained emitter, for the multi-instance batching
+         * heuristic in {@code MainRenderer#renderModel} (see {@link #getVertexCount()});
+         * {@code -1} when unknown.
+         */
+        private final int vertexCount;
+        private static final CapturedVertexConsumer CAPTURED_CONSUMER = new CapturedVertexConsumer();
 
-	/**
-	 * Reusable model-view matrix scratch — render is single-threaded on the GL thread, so
-	 * a single buffer avoids a per-draw allocation. See {@code docs/PERFORMANCE.md} §3.2.
-	 */
-	private static final Matrix4f MODEL_VIEW_SCRATCH = new Matrix4f();
-	/**
-	 * Reusable shader-colour save/restore scratch, same render-thread-confinement pattern
-	 * as {@link #MODEL_VIEW_SCRATCH}. Copied element-wise because getShaderColor may hand
-	 * back RenderSystem's internal array, so it must never be kept across a draw.
-	 */
-	private static final float[] SAVED_COLOR_SCRATCH = new float[4];
-	/**
-	 * Live instances that own a GL vertex buffer, so a resource reload can close them all
-	 * before the model caches holding them are cleared (see {@link #releaseAll()}). Without
-	 * this, every F3+T / pack change / Beryl toggle leaked the entire previous model set's
-	 * VAO+VBO ids — the caches were cleared but the buffers were never closed. Guarded by
-	 * itself; {@code CustomResourceLoader.reload()} drains it on the render thread.
-	 */
-	private static final Set<NewOptimizedModel> LIVE_GL_MODELS = new HashSet<>();
-	/**
-	 * Pre-built {@code colorModulator} arrays for every value of {@code lightMultiplier}
-	 * the renderer ever emits. The renderer derives {@code lightMultiplier} from a 4-bit
-	 * lightmap value (16 levels), or sets {@code 1.0f} for full-bright stages. We pack
-	 * that into a 17-entry table — index {@code 0..15} for {@code i / 15f}, index
-	 * {@code 16} for the full-bright case. Callers that supply a different value (e.g.
-	 * fractional dimming for cinematic fades) fall back to a freshly allocated array.
-	 * See {@code docs/PERFORMANCE.md} §3.2 item 1.
-	 */
-	private static final float[][] COLOR_MODULATORS;
+        /**
+         * Reusable model-view matrix scratch — render is single-threaded on the GL thread, so
+         * a single buffer avoids a per-draw allocation. See {@code docs/PERFORMANCE.md} §3.2.
+         */
+        private static final Matrix4f MODEL_VIEW_SCRATCH = new Matrix4f();
+        /**
+         * Reusable shader-colour save/restore scratch, same render-thread-confinement pattern
+         * as {@link #MODEL_VIEW_SCRATCH}. Copied element-wise because getShaderColor may hand
+         * back RenderSystem's internal array, so it must never be kept across a draw.
+         */
+        private static final float[] SAVED_COLOR_SCRATCH = new float[4];
+        /**
+         * Live instances that own a GL vertex buffer, so a resource reload can close them all
+         * before the model caches holding them are cleared (see {@link #releaseAll()}). Without
+         * this, every F3+T / pack change / Beryl toggle leaked the entire previous model set's
+         * VAO+VBO ids — the caches were cleared but the buffers were never closed. Guarded by
+         * itself; {@code CustomResourceLoader.reload()} drains it on the render thread.
+         */
+        private static final Set<NewOptimizedModel> LIVE_GL_MODELS = new HashSet<>();
+        /**
+         * Pre-built {@code colorModulator} arrays for every value of {@code lightMultiplier}
+         * the renderer ever emits. The renderer derives {@code lightMultiplier} from a 4-bit
+         * lightmap value (16 levels), or sets {@code 1.0f} for full-bright stages. We pack
+         * that into a 17-entry table — index {@code 0..15} for {@code i / 15f}, index
+         * {@code 16} for the full-bright case. Callers that supply a different value (e.g.
+         * fractional dimming for cinematic fades) fall back to a freshly allocated array.
+         * See {@code docs/PERFORMANCE.md} §3.2 item 1.
+         */
+        private static final float[][] COLOR_MODULATORS;
 
-	static {
-		COLOR_MODULATORS = new float[17][];
-		for (int i = 0; i < 16; i++) {
-			final float v = i / 15f;
-			COLOR_MODULATORS[i] = new float[]{v, v, v, 1f};
-		}
-		COLOR_MODULATORS[16] = new float[]{1f, 1f, 1f, 1f};
-	}
+        static {
+                COLOR_MODULATORS = new float[17][];
+                for (int i = 0; i < 16; i++) {
+                        final float v = i / 15f;
+                        COLOR_MODULATORS[i] = new float[]{v, v, v, 1f};
+                }
+                COLOR_MODULATORS[16] = new float[]{1f, 1f, 1f, 1f};
+        }
 
-	/**
-	 * @param texture  the texture this mesh draws with
-	 * @param drawMode the GL primitive type ({@code TRIANGLES} for OBJ, {@code QUADS} for
-	 *                 Blockbench)
-	 * @param callback the vertex-emitter callback invoked exactly once to populate the
-	 *                 buffer, or {@code null} to skip buffer creation entirely
-	 */
-	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback) {
-		this(texture, drawMode, callback, null);
-	}
+        /**
+         * @param texture  the texture this mesh draws with
+         * @param drawMode the GL primitive type ({@code TRIANGLES} for OBJ, {@code QUADS} for
+         *                 Blockbench)
+         * @param callback the vertex-emitter callback invoked exactly once to populate the
+         *                 buffer, or {@code null} to skip buffer creation entirely
+         */
+        public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback) {
+                this(texture, drawMode, callback, null);
+        }
 
-	public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel) {
-		final boolean capture = org.mtr.client.VulkanCompat.isRadianceActive();
-		this.vertexBuffer = callback == null || capture ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
-		this.capturedVertices = capture ? callback : null;
-		this.drawMode = drawMode;
-		this.texture = texture;
-		this.nativeModel = nativeModel;
-		if (vertexBuffer != null) {
-			synchronized (LIVE_GL_MODELS) {
-				LIVE_GL_MODELS.add(this);
-			}
-		}
-	}
+        public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel) {
+                this(texture, drawMode, callback, nativeModel, -1);
+        }
 
-	/** The native mesh handle, or null when this model renders through MC's GL path. */
-	@Nullable
-	public NativeModel getNativeModel() {
-		return nativeModel;
-	}
+        public NewOptimizedModel(ResourceLocation texture, VertexFormat.Mode drawMode, @Nullable Consumer<VertexConsumer> callback, @Nullable NativeModel nativeModel, int vertexCount) {
+                final boolean capture = org.mtr.client.VulkanCompat.isRadianceActive();
+                this.vertexBuffer = callback == null || capture ? null : createVertexBuffer(drawMode, DefaultVertexFormat.NEW_ENTITY, callback);
+                // The emitter is retained on the GL path too (not just under Radiance): the
+                // group's stored vertex data already outlives this model, so this only pins
+                // the closure, and it lets the render drain replay MANY instances of one
+                // small mesh through a single shared buffer (MainRenderer#renderModel's
+                // multi-instance batching) instead of paying one draw call per instance —
+                // hundreds of repeated rail segments and per-car vehicle parts otherwise
+                // turn into hundreds of setupRenderState + drawWithShader rounds per frame,
+                // which shader pipelines (Iris + a pack) make painfully expensive.
+                this.capturedVertices = callback;
+                this.drawMode = drawMode;
+                this.texture = texture;
+                this.nativeModel = nativeModel;
+                this.vertexCount = callback == null ? -1 : vertexCount;
+                if (vertexBuffer != null) {
+                        synchronized (LIVE_GL_MODELS) {
+                                LIVE_GL_MODELS.add(this);
+                        }
+                }
+        }
 
-	public boolean usesCapturedRendering() {
-		return capturedVertices != null;
-	}
+        /** The native mesh handle, or null when this model renders through MC's GL path. */
+        @Nullable
+        public NativeModel getNativeModel() {
+                return nativeModel;
+        }
 
-	/**
-	 * Radiance captures RenderType.draw(MeshData), not direct VBO draws. One
-	 * mesh per model/stage batch gives it all instances with camera-relative
-	 * positions and transformed normals already in the vertex stream.
-	 * Ownership of the built mesh passes to RenderType/Radiance.
-	 */
-	public void renderCaptured(RenderType layer, Consumer<VertexConsumer> instances) {
-		final BufferBuilder builder = Tesselator.getInstance().begin(drawMode, DefaultVertexFormat.NEW_ENTITY);
-		instances.accept(builder);
-		final MeshData mesh = builder.build();
-		if (mesh != null) {
-			layer.draw(mesh);
-		}
-	}
+        /**
+         * Whether this mesh MUST render through the captured (vertex-replay) path —
+         * i.e. it has retained vertices but no GL buffer (the Radiance build mode).
+         * Models that own a GL buffer but also retain their emitter answer
+         * {@code false} here; they render per-instance VBO draws unless the drain's
+         * multi-instance batching chooses to replay them instead.
+         */
+        public boolean usesCapturedRendering() {
+                return vertexBuffer == null && capturedVertices != null;
+        }
 
-	public void appendCaptured(VertexConsumer target, PoseStack.Pose pose, int light) {
-		if (capturedVertices != null) {
-			CAPTURED_CONSUMER.target = target;
-			CAPTURED_CONSUMER.pose = pose;
-			CAPTURED_CONSUMER.light = light;
-			capturedVertices.accept(CAPTURED_CONSUMER);
-		}
-	}
+        /**
+         * Whether this mesh can replay its source vertices into a shared buffer —
+         * the prerequisite for multi-instance batching (see
+         * {@code MainRenderer#renderModel}).
+         */
+        public boolean canAppendVertices() {
+                return capturedVertices != null;
+        }
 
-	/**
-	 * Close the GL vertex buffer owned by this model and forget it in the live registry.
-	 * Idempotent: the registry removal happens exactly once per instance, so a later close
-	 * (for example one racing the reload's {@link #releaseAll()}) is a no-op. The native
-	 * mesh, when present, is owned and freed by the native runtime instead.
-	 */
-	public void close() {
-		synchronized (LIVE_GL_MODELS) {
-			if (!LIVE_GL_MODELS.remove(this)) {
-				return;
-			}
-		}
-		if (vertexBuffer != null) {
-			vertexBuffer.close();
-		}
-	}
+        /**
+         * Source vertex count for the batching heuristic, or {@code -1} when the
+         * emitter was not retained / the count was not supplied at build time.
+         */
+        public int getVertexCount() {
+                return vertexCount;
+        }
 
-	/**
-	 * Close every live model's GL vertex buffer and clear the registry. Called from
-	 * {@code CustomResourceLoader#reload()} on the render thread right before the model
-	 * caches are cleared — the GL-path counterpart of the native pipeline's
-	 * {@code freeAllModelsForReload} leak safety. Models rebuilt later in the same reload
-	 * register fresh buffers.
-	 */
-	public static void releaseAll() {
-		synchronized (LIVE_GL_MODELS) {
-			final Iterator<NewOptimizedModel> iterator = LIVE_GL_MODELS.iterator();
-			while (iterator.hasNext()) {
-				final NewOptimizedModel model = iterator.next();
-				iterator.remove();
-				if (model.vertexBuffer != null) {
-					model.vertexBuffer.close();
-				}
-			}
-		}
-	}
+        /**
+         * Radiance captures RenderType.draw(MeshData), not direct VBO draws. One
+         * mesh per model/stage batch gives it all instances with camera-relative
+         * positions and transformed normals already in the vertex stream.
+         * Ownership of the built mesh passes to RenderType/Radiance.
+         */
+        public void renderCaptured(RenderType layer, Consumer<VertexConsumer> instances) {
+                final BufferBuilder builder = Tesselator.getInstance().begin(drawMode, DefaultVertexFormat.NEW_ENTITY);
+                instances.accept(builder);
+                final MeshData mesh = builder.build();
+                if (mesh != null) {
+                        layer.draw(mesh);
+                }
+        }
 
-	/**
-	 * Issue the draw call for this mesh.
-	 *
-	 * @param matrix4f        the per-instance model matrix (the pose, without the camera view)
-	 * @param lightMultiplier brightness scale in {@code [0, 1]}; {@code 1} for full-bright stages
-	 * @param shaderProgram   the active shader (set by the render layer's state setup), may be {@code null} during reload
-	 */
+        public void appendCaptured(VertexConsumer target, PoseStack.Pose pose, int light) {
+                if (capturedVertices != null) {
+                        CAPTURED_CONSUMER.target = target;
+                        CAPTURED_CONSUMER.pose = pose;
+                        CAPTURED_CONSUMER.light = light;
+                        capturedVertices.accept(CAPTURED_CONSUMER);
+                }
+        }
+
+        /**
+         * Close the GL vertex buffer owned by this model and forget it in the live registry.
+         * Idempotent: the registry removal happens exactly once per instance, so a later close
+         * (for example one racing the reload's {@link #releaseAll()}) is a no-op. The native
+         * mesh, when present, is owned and freed by the native runtime instead.
+         */
+        public void close() {
+                synchronized (LIVE_GL_MODELS) {
+                        if (!LIVE_GL_MODELS.remove(this)) {
+                                return;
+                        }
+                }
+                if (vertexBuffer != null) {
+                        vertexBuffer.close();
+                }
+        }
+
+        /**
+         * Close every live model's GL vertex buffer and clear the registry. Called from
+         * {@code CustomResourceLoader#reload()} on the render thread right before the model
+         * caches are cleared — the GL-path counterpart of the native pipeline's
+         * {@code freeAllModelsForReload} leak safety. Models rebuilt later in the same reload
+         * register fresh buffers.
+         */
+        public static void releaseAll() {
+                synchronized (LIVE_GL_MODELS) {
+                        final Iterator<NewOptimizedModel> iterator = LIVE_GL_MODELS.iterator();
+                        while (iterator.hasNext()) {
+                                final NewOptimizedModel model = iterator.next();
+                                iterator.remove();
+                                if (model.vertexBuffer != null) {
+                                        model.vertexBuffer.close();
+                                }
+                        }
+                }
+        }
+
+        /**
+         * Issue the draw call for this mesh.
+         *
+         * @param matrix4f        the per-instance model matrix (the pose, without the camera view)
+         * @param lightMultiplier brightness scale in {@code [0, 1]}; {@code 1} for full-bright stages
+         * @param shaderProgram   the active shader (set by the render layer's state setup), may be {@code null} during reload
+         */
 //? if >= 1.21.4 {
-	public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable CompiledShaderProgram shaderProgram) {
+        public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable CompiledShaderProgram shaderProgram) {
 //? } else {
-	/*public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable ShaderInstance shaderProgram) {
+        /*public void render(Matrix4f matrix4f, float lightMultiplier, @Nullable ShaderInstance shaderProgram) {
 //
 *///? }
-		if (vertexBuffer != null && shaderProgram != null) {
-			// Full per-instance model-view: camera view (RenderSystem snapshot) * pose.
-			MODEL_VIEW_SCRATCH.set(RenderSystem.getModelViewMatrix()).mul(matrix4f);
-			final float[] colorModulator = colorModulatorFor(lightMultiplier);
-			// The light multiplier travels through the shader colour so every backend picks
-			// it up: pure GL reads COLOR_MODULATOR via setDefaultUniforms inside
-			// drawWithShader, and VulkanMod's translated pipelines plus Beryl's redirected
-			// pipelines read the VRenderSystem colour that RenderSystem.setShaderColor
-			// keeps in sync. The colour is restored afterwards so later vanilla batches
-			// are not tinted by this instance.
-			final float[] currentColor = RenderSystem.getShaderColor();
-			System.arraycopy(currentColor, 0, SAVED_COLOR_SCRATCH, 0, 4);
-			RenderSystem.setShaderColor(colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
-			// drawWithShader — never the raw draw() — is the same contract every vanilla
-			// batch uses: it applies setDefaultUniforms (the per-instance MODEL_VIEW,
-			// COLOR_MODULATOR and fog uniforms) and, under VulkanMod, additionally binds
-			// the shader's CURRENT pipeline (VulkanMod-translated, or Beryl-redirected),
-			// syncs the per-draw MVP into VRenderSystem, binds the shader textures and
-			// uploads the UBOs, then restores the frame MVP. The previous raw draw()
-			// relied on whichever pipeline the previous unrelated draw left bound: under
-			// VulkanMod/Beryl that drew NEW_ENTITY data through stale terrain or entity
-			// pipelines — stretched rectangles, wrong-blend translucent stages
-			// (see-through ceilings and windows) and non-additive light stages
-			// (misplaced colour blocks).
-			try {
-				vertexBuffer.bind();
-				vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
-			} finally {
-				VertexBuffer.unbind();
-				RenderSystem.setShaderColor(SAVED_COLOR_SCRATCH[0], SAVED_COLOR_SCRATCH[1], SAVED_COLOR_SCRATCH[2], SAVED_COLOR_SCRATCH[3]);
-			}
-		}
-	}
+                if (vertexBuffer != null && shaderProgram != null) {
+                        // Full per-instance model-view: camera view (RenderSystem snapshot) * pose.
+                        MODEL_VIEW_SCRATCH.set(RenderSystem.getModelViewMatrix()).mul(matrix4f);
+                        final float[] colorModulator = colorModulatorFor(lightMultiplier);
+                        // The light multiplier travels through the shader colour so every backend picks
+                        // it up: pure GL reads COLOR_MODULATOR via setDefaultUniforms inside
+                        // drawWithShader, and VulkanMod's translated pipelines plus Beryl's redirected
+                        // pipelines read the VRenderSystem colour that RenderSystem.setShaderColor
+                        // keeps in sync. The colour is restored afterwards so later vanilla batches
+                        // are not tinted by this instance.
+                        final float[] currentColor = RenderSystem.getShaderColor();
+                        System.arraycopy(currentColor, 0, SAVED_COLOR_SCRATCH, 0, 4);
+                        RenderSystem.setShaderColor(colorModulator[0], colorModulator[1], colorModulator[2], colorModulator[3]);
+                        // drawWithShader — never the raw draw() — is the same contract every vanilla
+                        // batch uses: it applies setDefaultUniforms (the per-instance MODEL_VIEW,
+                        // COLOR_MODULATOR and fog uniforms) and, under VulkanMod, additionally binds
+                        // the shader's CURRENT pipeline (VulkanMod-translated, or Beryl-redirected),
+                        // syncs the per-draw MVP into VRenderSystem, binds the shader textures and
+                        // uploads the UBOs, then restores the frame MVP. The previous raw draw()
+                        // relied on whichever pipeline the previous unrelated draw left bound: under
+                        // VulkanMod/Beryl that drew NEW_ENTITY data through stale terrain or entity
+                        // pipelines — stretched rectangles, wrong-blend translucent stages
+                        // (see-through ceilings and windows) and non-additive light stages
+                        // (misplaced colour blocks).
+                        try {
+                                vertexBuffer.bind();
+                                vertexBuffer.drawWithShader(MODEL_VIEW_SCRATCH, RenderSystem.getProjectionMatrix(), shaderProgram);
+                        } finally {
+                                VertexBuffer.unbind();
+                                RenderSystem.setShaderColor(SAVED_COLOR_SCRATCH[0], SAVED_COLOR_SCRATCH[1], SAVED_COLOR_SCRATCH[2], SAVED_COLOR_SCRATCH[3]);
+                        }
+                }
+        }
 
-	public static VertexBuffer createVertexBuffer(VertexFormat.Mode drawMode, VertexFormat vertexFormat, Consumer<VertexConsumer> callback) {
+        public static VertexBuffer createVertexBuffer(VertexFormat.Mode drawMode, VertexFormat vertexFormat, Consumer<VertexConsumer> callback) {
 //? if >= 1.21.4 {
-		return VertexBuffer.uploadStatic(drawMode, vertexFormat, callback);
+                return VertexBuffer.uploadStatic(drawMode, vertexFormat, callback);
 //? } else {
-		/*final BufferBuilder builder = Tesselator.getInstance().begin(drawMode, vertexFormat);
-		callback.accept(builder);
-		final MeshData renderedBuffer = builder.build();
-		final VertexBuffer vertexBuffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
-		vertexBuffer.bind();
-		vertexBuffer.upload(renderedBuffer);
-		return vertexBuffer;
+                /*final BufferBuilder builder = Tesselator.getInstance().begin(drawMode, vertexFormat);
+                callback.accept(builder);
+                final MeshData renderedBuffer = builder.build();
+                final VertexBuffer vertexBuffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
+                vertexBuffer.bind();
+                vertexBuffer.upload(renderedBuffer);
+                return vertexBuffer;
 *///? }
-	}
+        }
 
-	private static float[] colorModulatorFor(float lightMultiplier) {
-		// Map [0, 1] → 16-step quantised table when possible; otherwise allocate.
-		if (lightMultiplier >= 1f) {
-			return COLOR_MODULATORS[16];
-		}
-		if (lightMultiplier <= 0f) {
-			return COLOR_MODULATORS[0];
-		}
-		final int index = Math.round(lightMultiplier * 15f);
-		final float quantised = index / 15f;
-		// Only return the cached array when the requested value rounds cleanly — otherwise
-		// allocate to preserve exact appearance for callers passing arbitrary floats.
-		//noinspection FloatingPointEquality
-		if (quantised == lightMultiplier) {
-			return COLOR_MODULATORS[index];
-		}
-		return new float[]{lightMultiplier, lightMultiplier, lightMultiplier, 1f};
-	}
+        private static float[] colorModulatorFor(float lightMultiplier) {
+                // Map [0, 1] → 16-step quantised table when possible; otherwise allocate.
+                if (lightMultiplier >= 1f) {
+                        return COLOR_MODULATORS[16];
+                }
+                if (lightMultiplier <= 0f) {
+                        return COLOR_MODULATORS[0];
+                }
+                final int index = Math.round(lightMultiplier * 15f);
+                final float quantised = index / 15f;
+                // Only return the cached array when the requested value rounds cleanly — otherwise
+                // allocate to preserve exact appearance for callers passing arbitrary floats.
+                //noinspection FloatingPointEquality
+                if (quantised == lightMultiplier) {
+                        return COLOR_MODULATORS[index];
+                }
+                return new float[]{lightMultiplier, lightMultiplier, lightMultiplier, 1f};
+        }
 
-	/** Render-thread scratch adapter; source geometry is retained without a redundant GL upload. */
-	private static final class CapturedVertexConsumer implements VertexConsumer {
-		private VertexConsumer target;
-		private PoseStack.Pose pose;
-		private int light;
-		private final Vector3f normal = new Vector3f();
+        /** Render-thread scratch adapter; source geometry is retained without a redundant GL upload. */
+        private static final class CapturedVertexConsumer implements VertexConsumer {
+                private VertexConsumer target;
+                private PoseStack.Pose pose;
+                private int light;
+                private final Vector3f normal = new Vector3f();
 
-		@Override
-		public VertexConsumer addVertex(float x, float y, float z) {
-			target.addVertex(pose.pose(), x, y, z);
-			return this;
-		}
+                @Override
+                public VertexConsumer addVertex(float x, float y, float z) {
+                        target.addVertex(pose.pose(), x, y, z);
+                        return this;
+                }
 
-		@Override
-		public VertexConsumer setColor(int red, int green, int blue, int alpha) {
-			target.setColor(red, green, blue, alpha);
-			return this;
-		}
+                @Override
+                public VertexConsumer setColor(int red, int green, int blue, int alpha) {
+                        target.setColor(red, green, blue, alpha);
+                        return this;
+                }
 
-		@Override
-		public VertexConsumer setUv(float u, float v) {
-			target.setUv(u, v);
-			return this;
-		}
+                @Override
+                public VertexConsumer setUv(float u, float v) {
+                        target.setUv(u, v);
+                        return this;
+                }
 
-		@Override
-		public VertexConsumer setUv1(int u, int v) {
-			target.setUv1(u, v);
-			return this;
-		}
+                @Override
+                public VertexConsumer setUv1(int u, int v) {
+                        target.setUv1(u, v);
+                        return this;
+                }
 
-		@Override
-		public VertexConsumer setUv2(int u, int v) {
-			target.setLight(light);
-			return this;
-		}
+                @Override
+                public VertexConsumer setUv2(int u, int v) {
+                        target.setLight(light);
+                        return this;
+                }
 
-		@Override
-		public VertexConsumer setNormal(float x, float y, float z) {
-			pose.normal().transform(x, y, z, normal);
-			if (normal.lengthSquared() > 0) {
-				normal.normalize();
-			}
-			target.setNormal(normal.x, normal.y, normal.z);
-			return this;
-		}
-	}
+                @Override
+                public VertexConsumer setNormal(float x, float y, float z) {
+                        pose.normal().transform(x, y, z, normal);
+                        if (normal.lengthSquared() > 0) {
+                                normal.normalize();
+                        }
+                        target.setNormal(normal.x, normal.y, normal.z);
+                        return this;
+                }
+        }
 
 }
