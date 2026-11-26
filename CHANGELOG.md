@@ -2,6 +2,28 @@
 
 Concise, newest first. Tag scheme changed at `4.1.0-beta-2.yanyang.4` (previously `YYMTR-4.1.0-beta.N`); the jars are drop-in upgrades of one another.
 
+## 4.1.0-beta-2.yanyang.19 (2026-11-21)
+
+**Gangway textures that resource packs don't provide no longer show the missingno checkerboard on GL or crash the render thread under VulkanMod; one broken scheduled draw can no longer kill the whole frame; repeated rail-segment and per-car meshes are batched into a single draw call 风挡/护栏贴图缺失不再花屏或导致 VulkanMod 渲染线程崩溃；单次绘制异常不再中断整帧渲染；重复轨道段与逐车厢网格合并为单次绘制调用**
+
+- **The 2026-11-21 crash (2026-11-21 崩溃)**: a gangway/barrier panel texture that the installed resource pack simply doesn't ship reached the renderer as a live reference to a missing texture — on GL it drew the missingno checkerboard between every car (`Failed to load texture: mtr:wr2a03/wr2a03_connector_*.png`), and under VulkanMod, whose missing-texture fallback carries a null `VkGlTexture`, it crashed the render thread straight out of `RenderLayer#startDrawing`. `ModelProperties` now drops the reference when the texture file doesn't exist — the panel renders exactly as if the optional field had been left unset — with dynamic textures (`dynamic/...` ids) exempt and each drop logged once.
+- **Per-draw crash guard (逐绘制崩溃防护)**: `MainRenderer` now wraps every scheduled draw; a throwing one (broken texture bind, disposed dynamic texture, driver error) is skipped and logged once per (identifier, layer) instead of killing the render thread and the game with it. The rest of the frame renders normally.
+- **Multi-instance batching (多实例合批)**: a mesh queued for many instances in one frame (≥ 3 instances, ≤ 4096 vertices — repeated rail segments, parts shared by every car of a train, per-car script modules) is now drawn by replaying all instances into the one shared scheduled buffer for its (layer, texture) bucket, instead of one `setupRenderState` + `drawWithShader` round per instance. A 300 m siding of custom rail models meant hundreds of extra draw calls per frame, which Iris plus a shader pack makes expensive enough to visibly tank the frame rate. The vertex emitter is retained on the GL path (the group's stored data already outlives the model, so only the closure is pinned), and the light-stage → queued-layer mapping keeps the VulkanMod beacon-beam redirect (`lightStagesNeedNewEntity`) intact.
+
+## 4.1.0-beta-2.yanyang.18 (2026-11-14)
+
+**Rendering, Vulkan and passenger performance work; NeoForge release-jar packaging fixes 渲染、Vulkan 与乘客性能优化；NeoForge 发行 JAR 打包修复**
+
+- Rust/C++ Vulkan device handles, std140/UBO alignment, memory-type selection, init and teardown paths, and OBJ material/group indices corrected; one full-model placement per transform with material-mesh selection; frame data, matching poses and bindings reused to cut repeated computation and allocation.
+- Native communication upgraded to protocol v3; host command buffers recorded synchronously on the render thread; host textures reused and render state maintained.
+- Radiance renders through the capturable batched-draw path; raw lightness is converted to packed light at the capture boundary (already-packed light preserved); OpenGL VBO binding and colour restore fixed.
+- Train/passenger collision snapshots, full vehicle keys, high-framerate speed estimation and containment eviction fixed; rotated-AABB computation and Blockbench local bounds optimised.
+- AI passenger first-car selection, connectors, invalid consists, deleted-vehicle references and same-line journey syncing fixed; walking-transfer grid range and path-rejection fallback completed.
+- Dynamic texture queue and per-frame upload capped, background culling with stale-result isolation; map GPU buffers released; cache, path and input boundary fixes.
+- Colour picker rebuilt on a fixed quad count with GPU interpolation/blending instead of per-pixel CPU geometry.
+- Signal cache keys, empty PIDS language, block tick scheduling, sensor saving, announcement queue, sign input and several UI state issues fixed.
+- NeoForge merged-dependency duplicate annotation classes and Maven metadata fixed; TSC's relocated annotations and a single metadata copy kept; the final duplicate entry now fails the build instead of shipping.
+
 ## 4.1.0-beta-2.yanyang.17 (2026-11-03)
 
 **Every Radiance release — including every loader and MC build — is now safe to run with the mod: pre-0.1.6 builds no longer crash the JVM when an MTR screen opens; 全部 Radiance 版本（含各加载器与 MC 构建）可与本模组一同使用：0.1.6 之前的版本打开 MTR 界面不再崩溃**
