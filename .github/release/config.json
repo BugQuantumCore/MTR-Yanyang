@@ -1,8 +1,8 @@
 {
-  "run_id": "43532827781",
-  "source_sha": "9c2ccf62d8d0b24aecc01b12153d7408dba88f6a",
-  "tag": "4.1.0-beta-2.yanyang.18",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.18 — 渲染、Vulkan 与乘客性能优化",
+  "run_id": "45909904381",
+  "source_sha": "4378b34a1bab4722055911b8b700cfa08a3520cf",
+  "tag": "4.1.0-beta-2.yanyang.19",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.19 — 风挡贴图与渲染崩溃修复、多实例合批渲染",
   "notes_file": "notes.md",
   "prerelease": false
 }

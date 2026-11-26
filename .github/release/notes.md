@@ -1,23 +1,18 @@
-# MTR-Yanyang 4.1.0-beta-2.yanyang.18
+# MTR-Yanyang 4.1.0-beta-2.yanyang.19
 
 适用组合：Minecraft 1.21.1 / 1.21.4，Fabric / NeoForge。
 
-此版本汇总本轮源码审查、性能优化和回归修复。构建与测试全部在 GitHub Actions 执行，没有在本地构建、测试、运行游戏或进行性能基准。发布附件的具体来源、构建 run、提交 SHA 和 SHA-256 以 release 随附的构建来源清单及校验和为准。
+此版本在 yanyang.18 基础上发布三项渲染修复：资源包缺失风挡/护栏贴图的崩溃与花屏修复、逐绘制崩溃防护、多实例合批渲染。构建与测试全部在 GitHub Actions 执行，没有在本地构建、测试、运行游戏或进行性能基准。发布附件的具体来源、构建 run、提交 SHA 和 SHA-256 以 release 随附的构建来源清单及校验和为准。
 
 ## 主要修改
 
-- 修正 Rust/C++ Vulkan 设备句柄、std140/UBO 对齐、内存类型选择、初始化和销毁路径，以及 OBJ 材质/组索引。
-- 每次模型变换仅放置一次整模型，再选择材质网格；复用帧数据、相同姿态与绑定，减少重复计算和分配。
-- 原生通信升级到协议 v3；在渲染线程同步录制宿主命令缓冲，复用宿主纹理并维护渲染状态。
-- Radiance 使用可捕获的批量绘制通道；在捕获边界正确转换原始亮度为打包光照值，保留已经打包的光照。修复 OpenGL VBO 绑定和颜色恢复。
-- 修复列车/乘客碰撞快照、完整车辆键、高帧率速度估算和包含关系推出；优化旋转 AABB 计算及 Blockbench 局部边界。
-- 修复 AI 乘客首节车厢选择、连接段、非法编组、已删除车辆引用和同线路行程同步；补齐步行换乘网格范围及路径拒绝回退。
-- 限制动态纹理队列和每帧上传量，后台裁切、隔离过期结果；释放地图 GPU 缓冲，修复缓存、路径和输入边界。
-- 颜色选择器改用固定数量的四边形，由 GPU 插值/混合替代逐像素 CPU 几何生成。
-- 修复信号缓存键、空 PIDS 语言、方块 tick 调度、传感器存档、播报队列、标牌输入及多处 UI 状态问题。
-- 修复 NeoForge 合并依赖时的重复注解类及 Maven 元数据，保留 TSC 已重定位的注解和一份元数据；不改变服务文件或许可证处理，并让最终重复条目直接阻断构建。
+- **风挡贴图缺失修复（2026-11-21 VulkanMod 崩溃）**：资源包未提供的风挡/护栏面板贴图不再作为缺失贴图引用进入渲染器。原版 GL 下它会在每节车厢之间渲染出 missingno 棋盘格（`Failed to load texture: mtr:wr2a03/wr2a03_connector_*.png`）；VulkanMod 的缺失贴图回退携带 null `VkGlTexture`，会直接从 `RenderLayer#startDrawing` 崩溃渲染线程。现在 `ModelProperties` 在贴图文件不存在时丢弃该引用——面板按可选字段未设置的样式渲染；动态贴图（`dynamic/...` id）豁免，每次丢弃仅记录一次日志。
+- **逐绘制崩溃防护**：`MainRenderer` 包装每个计划绘制；异常的绘制（贴图绑定损坏、动态贴图已释放、驱动错误）按 (identifier, layer) 跳过并各记录一次日志，不再连带杀死渲染线程与游戏，帧内其余部分正常渲染。
+- **多实例合批渲染**：一帧内排队多次的网格（≥ 3 个实例、≤ 4096 顶点——重复的轨道段、每节车厢共享的部件、逐车厢脚本模块）改为把所有实例回放到对应 (layer, texture) 桶的同一个共享计划缓冲中一次绘制，替代原先每实例一次 `setupRenderState` + `drawWithShader`。300 米自定义轨道模型侧线原先意味着每帧数百次额外绘制调用，在 Iris + 光影包下足以显著拖垮帧率。GL 路径保留顶点发射器，light stage → queued layer 映射保持 VulkanMod 信标光柱重定向（`lightStagesNeedNewEntity`）不变。
 
-TSC 依赖固定为已合并提交 `601876836d8eb4fdf010c6a2ff969dda8ee19b72`。主模组与依赖修改分别通过 PR #2、PR #1 追踪。
+以上三项修复同时覆盖三种渲染环境：原版 GL 路径修正花屏；VulkanMod 路径消除 null 纹理崩溃；Radiance 批量捕获路径经同一计划渲染管线受益于崩溃防护与合批。
+
+TSC 依赖保持固定提交 `601876836d8eb4fdf010c6a2ff969dda8ee19b72`。
 
 ## 发布检查
 
@@ -29,17 +24,13 @@ TSC 依赖固定为已合并提交 `601876836d8eb4fdf010c6a2ff969dda8ee19b72`。
 
 - 根据 Minecraft 版本和加载器选择对应的 JAR，替换旧版模组文件，避免同时保留多个 MTR-Yanyang 版本。
 - 未进行真实 GPU、Radiance/Beryl 游戏画面、帧时间或显存基准，不能据此承诺具体 FPS 提升或所有驱动/模组组合兼容。
-- Android/iOS 为交叉编译；录制式 Vulkan 单元测试不是显卡驱动验证。Java/C++ 模型 golden 等价比较尚未执行。
-- 新增碰撞仅作用于客户端玩家；保守 AABB 不等于服务端权威碰撞、精确 OBB、连续碰撞检测或斜坡地板。
-- GPU fence/frame-slot 所有权、原生失败后的完整模型回退、每顶点颜色、共享模型跨列车文字/门映射、实际嵌套 Blockbench 父变换链，以及部分资源生命周期和服务器授权仍有后续工作。
-
-详细覆盖、修复和未完成项见 `docs/AUDIT_2026-11-14.zh-CN.md` 及专项审查记录。本说明没有将源码审查或 CI 成功等同于游戏实机验证。
+- 合批收益取决于场景中重复网格的数量；逐像素验证与实机帧率对比不在本次 CI 范围内。
 
 ## 本次发布的执行证据
 
-- 源码提交：`9c2ccf62d8d0b24aecc01b12153d7408dba88f6a`。
-- [完整原生构建、测试和四个发行 JAR 校验](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/43532827781)：成功。
-- [Fabric/NeoForge × 1.21.1/1.21.4 构建与测试](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/43532827744)：成功。
-- [发布来源校验器回归](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/43532827727)：成功。
+- 源码提交：`4378b34a1bab4722055911b8b700cfa08a3520cf`。
+- [完整原生构建、测试和四个发行 JAR 校验](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/45909904381)：成功。
+- [Fabric/NeoForge × 1.21.1/1.21.4 构建与测试](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/45909904332)：成功。
+- [发布来源校验器回归](https://github.com/BugQuantumCore/MTR-Yanyang/actions/runs/45909904371)：成功。
 - 每个发行 JAR 已包含对应原生库；普通安装无需单独解压原生库 ZIP。
 - `SHA256SUMS` 列出发行附件校验和；`build-provenance.json` 记录构建、源码、TSC、artifact 与内嵌库/shader 摘要。
