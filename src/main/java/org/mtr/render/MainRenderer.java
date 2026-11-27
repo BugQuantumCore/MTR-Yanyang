@@ -3,6 +3,7 @@ package org.mtr.render;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import lombok.Getter;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -458,6 +459,46 @@ public class MainRenderer {
         }
 
         /**
+         * Whether the render layers the scheduled drain resolves for this queued layer
+         * build quad-based buffers ({@code VertexFormat.Mode.QUADS}).
+         *
+         * <p>The multi-instance batching replays model vertices directly into those
+         * shared buffers, so the replay's primitive grouping must match the buffer's
+         * mode: a 3-vertices-per-triangle OBJ stream appended into a QUADS builder is
+         * regrouped into 4-vertex chunks and mangled — the yanyang.19 rail-model
+         * regression (OBJ rails, including the default 3D rail, rendered as sheared
+         * fragments on both the OpenGL and the VulkanMod+Beryl paths). The answer is
+         * probed from the actual layer objects at runtime (not assumed), cached per
+         * family; if a future Minecraft version flips any family away from QUADS, the
+         * batching simply stops engaging for it and every draw falls back to the
+         * per-instance VBO path, which is always correct.</p>
+         */
+        private static final Object2ObjectOpenHashMap<QueuedRenderLayer, Boolean> QUAD_BASED_QUEUED_LAYER = new Object2ObjectOpenHashMap<>();
+
+        private static boolean isQuadBasedQueuedLayer(QueuedRenderLayer queuedRenderLayer) {
+                final Boolean cached = QUAD_BASED_QUEUED_LAYER.get(queuedRenderLayer);
+                if (cached != null) {
+                        return cached;
+                }
+                final RenderType probeLayer = switch (queuedRenderLayer) {
+                        case LIGHT -> MoreRenderLayers.getLight(EMPTY_IDENTIFIER, false);
+                        case LIGHT_TRANSLUCENT -> MoreRenderLayers.getLight(EMPTY_IDENTIFIER, true);
+                        case LIGHT_2 -> MoreRenderLayers.getLight2(EMPTY_IDENTIFIER);
+                        case INTERIOR -> MoreRenderLayers.getInterior(EMPTY_IDENTIFIER);
+                        case INTERIOR_TRANSLUCENT -> MoreRenderLayers.getInteriorTranslucent(EMPTY_IDENTIFIER);
+                        case EXTERIOR -> MoreRenderLayers.getExterior(EMPTY_IDENTIFIER);
+                        case EXTERIOR_TRANSLUCENT -> MoreRenderLayers.getExteriorTranslucent(EMPTY_IDENTIFIER);
+                        case LINES -> RenderType.lines();
+                };
+                // Creating a RenderType is pure Java (no GL state); probing one instance
+                // per family through the same factories the drain uses reads the mode the
+                // actual buffers will be built with.
+                final boolean quadBased = probeLayer.mode() == VertexFormat.Mode.QUADS;
+                QUAD_BASED_QUEUED_LAYER.put(queuedRenderLayer, quadBased);
+                return quadBased;
+        }
+
+        /**
          * One throwing scheduled draw must not take the render thread — and with it the
          * game — down. The concrete case this guards: a pack references a texture that no
          * resource pack provides (missing {@code <id>/<id>_connector_*.png} files), the
@@ -602,17 +643,34 @@ public class MainRenderer {
                         // drain returns), through exactly the render layers mapped by
                         // stageToQueuedRenderLayer, so the geometry lands in the same
                         // pipelines the direct draws would have used.
+                        //
+                        // Primitive-mode safety (the yanyang.19 rail-model regression): the
+                        // shared scheduled buffers are QUADS-based, so a QUADS-mode mesh
+                        // (Blockbench) replays its vertex stream directly, while a
+                        // TRIANGLES-mode mesh (OBJ — the default 3D rail and most custom
+                        // rails) replays as degenerate quads (v0, v1, v2, v2). Anything
+                        // else — or a queued layer that no longer builds quad-based
+                        // buffers — skips the batching and keeps the per-instance VBO path.
+                        final QueuedRenderLayer replayLayer = stageToQueuedRenderLayer(renderStage, lightStagesNeedNewEntity);
+                        final VertexFormat.Mode modelDrawMode = newOptimizedModel.getDrawMode();
                         if (renderDetails.size() >= MODEL_INSTANCE_BATCH_MIN_INSTANCES
                                         && newOptimizedModel.canAppendVertices()
                                         && newOptimizedModel.getVertexCount() >= 0
-                                        && newOptimizedModel.getVertexCount() <= MODEL_INSTANCE_BATCH_MAX_VERTICES) {
+                                        && newOptimizedModel.getVertexCount() <= MODEL_INSTANCE_BATCH_MAX_VERTICES
+                                        && (modelDrawMode == VertexFormat.Mode.QUADS || modelDrawMode == VertexFormat.Mode.TRIANGLES)
+                                        && isQuadBasedQueuedLayer(replayLayer)) {
                                 final ObjectArrayList<ObjectIntImmutablePair<StoredMatrixTransformations>> batchDetails = renderDetails;
-                                scheduleRender(texture, false, stageToQueuedRenderLayer(renderStage, lightStagesNeedNewEntity), (ms, vc, off) -> {
+                                scheduleRender(texture, false, replayLayer, (ms, vc, off) -> {
                                         for (int i = 0; i < batchDetails.size(); i++) {
                                                 final ObjectIntImmutablePair<StoredMatrixTransformations> renderDetailsEntry = batchDetails.get(i);
                                                 renderDetailsEntry.left().transform(ms, off);
                                                 try {
-                                                        newOptimizedModel.appendCaptured(vc, ms.last(), renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : CapturedModelLight.toPackedLight(renderDetailsEntry.rightInt()));
+                                                        final int packedLight = renderStage.isFullBrightness ? LightTexture.FULL_BRIGHT : CapturedModelLight.toPackedLight(renderDetailsEntry.rightInt());
+                                                        if (modelDrawMode == VertexFormat.Mode.QUADS) {
+                                                                newOptimizedModel.appendCaptured(vc, ms.last(), packedLight);
+                                                        } else {
+                                                                newOptimizedModel.appendCapturedAsQuads(vc, ms.last(), packedLight);
+                                                        }
                                                 } finally {
                                                         ms.popPose();
                                                 }

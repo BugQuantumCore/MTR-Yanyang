@@ -4,9 +4,11 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.texture.OverlayTexture;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
+import org.mtr.libraries.it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.mtr.nativeobj.NativeModel;
 
 import java.util.HashSet;
@@ -168,6 +170,19 @@ public final class NewOptimizedModel {
         }
 
         /**
+         * The primitive mode the emitter's vertex stream is structured in ({@code QUADS}
+         * for Blockbench models — 4 vertices per face, {@code TRIANGLES} for OBJ —
+         * 3 vertices per face). The multi-instance batching replay must respect this:
+         * the shared scheduled buffers are quad-based, so a triangle stream is replayed
+         * through {@link #appendCapturedAsQuads} as degenerate quads
+         * (v0, v1, v2, v2) — the zero-area second triangle is discarded by the
+         * rasterizer and the geometry stays exact.
+         */
+        public VertexFormat.Mode getDrawMode() {
+                return drawMode;
+        }
+
+        /**
          * Source vertex count for the batching heuristic, or {@code -1} when the
          * emitter was not retained / the count was not supplied at build time.
          */
@@ -198,6 +213,46 @@ public final class NewOptimizedModel {
                         capturedVertices.accept(CAPTURED_CONSUMER);
                 }
         }
+
+        /**
+         * Multi-instance batching replay for {@code TRIANGLES}-mode meshes (OBJ models).
+         *
+         * <p>The shared scheduled buffers the batching replays into are quad-based (see
+         * {@code MainRenderer#isQuadBasedQueuedLayer}), so a 3-vertices-per-triangle
+         * stream cannot be appended directly — the builder would regroup it into
+         * 4-vertex chunks and mangle everything after the first triangle. That was the
+         * yanyang.19 rail-model regression: OBJ rails (including the default 3D rail)
+         * on a long siding queued hundreds of instances, tripped the batching
+         * threshold and rendered as sheared fragments on both the OpenGL and the
+         * VulkanMod+Beryl (Java-renderer) paths.</p>
+         *
+         * <p>Fix: the emitter is recorded once (lazily, on the first batched replay)
+         * and replayed as <b>degenerate quads</b> — every triangle (v0, v1, v2) is
+         * emitted as (v0, v1, v2, v2). The duplicated vertex forms a zero-area second
+         * triangle that rasterizers discard, so the rendered geometry is exact while
+         * the vertex stream stays 4-per-primitive for the quad-based buffer. The
+         * per-instance light overrides the recorded lightmap exactly like
+         * {@link #appendCaptured}.</p>
+         */
+        public void appendCapturedAsQuads(VertexConsumer target, PoseStack.Pose pose, int light) {
+                if (capturedVertices == null) {
+                        return;
+                }
+                if (quadReplay == null) {
+                        final QuadReplayRecorder recorder = new QuadReplayRecorder();
+                        capturedVertices.accept(recorder);
+                        recorder.finish();
+                        quadReplay = recorder;
+                }
+                CAPTURED_CONSUMER.target = target;
+                CAPTURED_CONSUMER.pose = pose;
+                CAPTURED_CONSUMER.light = light;
+                quadReplay.replayAsDegenerateQuads(CAPTURED_CONSUMER);
+        }
+
+        /** Lazily-recorded triangle stream of {@link #capturedVertices}, for {@link #appendCapturedAsQuads}. */
+        @Nullable
+        private QuadReplayRecorder quadReplay;
 
         /**
          * Close the GL vertex buffer owned by this model and forget it in the live registry.
@@ -361,6 +416,122 @@ public final class NewOptimizedModel {
                         }
                         target.setNormal(normal.x, normal.y, normal.z);
                         return this;
+                }
+        }
+
+        /**
+         * Records one {@link #capturedVertices} emitter run as a flat per-vertex list,
+         * then replays it as degenerate quads for the multi-instance batching
+         * (see {@link #appendCapturedAsQuads}). Render-thread only; built once per
+         * model and reused every frame.
+         *
+         * <p>The emitter drives the 1.21 vertex-consumer chain (addVertex first, then
+         * the per-vertex setters), so the recorder buffers one vertex's attributes at
+         * a time and commits it when the next {@code addVertex} arrives (or on
+         * {@link #finish()}). The recorded lightmap is deliberately dropped — the
+         * replay supplies the per-instance light instead, exactly like
+         * {@link CapturedVertexConsumer#setUv2}.</p>
+         */
+        private static final class QuadReplayRecorder implements VertexConsumer {
+
+                /** x, y, z, u, v, nx, ny, nz per recorded vertex. */
+                private final ObjectArrayList<float[]> vertices = new ObjectArrayList<>();
+                private final ObjectArrayList<Integer> colors = new ObjectArrayList<>();
+                private final ObjectArrayList<Integer> overlays = new ObjectArrayList<>();
+
+                private final float[] current = new float[8];
+                private int currentColor = 0xFFFFFFFF;
+                private int currentOverlay = OverlayTexture.NO_OVERLAY;
+                private boolean vertexStarted;
+
+                @Override
+                public VertexConsumer addVertex(float x, float y, float z) {
+                        commit();
+                        current[0] = x;
+                        current[1] = y;
+                        current[2] = z;
+                        vertexStarted = true;
+                        return this;
+                }
+
+                @Override
+                public VertexConsumer setColor(int red, int green, int blue, int alpha) {
+                        // Pack into the standard 0xAARRGGBB form so the replay can use the
+                        // single-argument setColor(int) default, which unpacks it symmetrically.
+                        currentColor = (alpha & 0xFF) << 24 | (red & 0xFF) << 16 | (green & 0xFF) << 8 | (blue & 0xFF);
+                        return this;
+                }
+
+                @Override
+                public VertexConsumer setUv(float u, float v) {
+                        current[3] = u;
+                        current[4] = v;
+                        return this;
+                }
+
+                @Override
+                public VertexConsumer setUv1(int u, int v) {
+                        currentOverlay = (u & 0xFFFF) | (v & 0xFFFF) << 16;
+                        return this;
+                }
+
+                @Override
+                public VertexConsumer setUv2(int u, int v) {
+                        // The per-instance light replaces the baked lightmap at replay time.
+                        return this;
+                }
+
+                @Override
+                public VertexConsumer setNormal(float x, float y, float z) {
+                        current[5] = x;
+                        current[6] = y;
+                        current[7] = z;
+                        return this;
+                }
+
+                private void commit() {
+                        if (vertexStarted) {
+                                vertices.add(current.clone());
+                                colors.add(currentColor);
+                                overlays.add(currentOverlay);
+                        }
+                        vertexStarted = false;
+                }
+
+                /** Commit the trailing vertex after the emitter run completes. */
+                void finish() {
+                        commit();
+                }
+
+                /**
+                 * Replay the recorded triangle stream (3 vertices per triangle) as degenerate
+                 * quads (v0, v1, v2, v2) into the given downstream consumer.
+                 */
+                void replayAsDegenerateQuads(VertexConsumer out) {
+                        final int count = vertices.size();
+                        for (int i = 0; i + 2 < count; i += 3) {
+                                emit(out, i);
+                                emit(out, i + 1);
+                                emit(out, i + 2);
+                                // Duplicate the closing vertex: quad (v0, v1, v2, v2) keeps the
+                                // triangle exact and adds one zero-area triangle the rasterizer drops.
+                                emit(out, i + 2);
+                        }
+                        // A trailing partial group (fewer than 3 vertices, or a stream that is not a
+                        // whole number of triangles) cannot be replayed quad-safely; skip it —
+                        // it renders nothing, exactly like an unindexed partial primitive.
+                }
+
+                private void emit(VertexConsumer out, int index) {
+                        final float[] vertex = vertices.get(index);
+                        final int color = colors.get(index);
+                        final int overlay = overlays.get(index);
+                        out.addVertex(vertex[0], vertex[1], vertex[2]);
+                        out.setColor(color);
+                        out.setUv(vertex[3], vertex[4]);
+                        out.setUv1(overlay & 0xFFFF, overlay >>> 16);
+                        out.setUv2(0, 0);
+                        out.setNormal(vertex[5], vertex[6], vertex[7]);
                 }
         }
 
