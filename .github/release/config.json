@@ -1,8 +1,8 @@
 {
-  "run_id": "45909904381",
-  "source_sha": "4378b34a1bab4722055911b8b700cfa08a3520cf",
-  "tag": "4.1.0-beta-2.yanyang.19",
-  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.19 — 风挡贴图与渲染崩溃修复、多实例合批渲染",
+  "run_id": "45980894990",
+  "source_sha": "bc2190086ec4c58f135f8c2b22caaf6fd2888fcb",
+  "tag": "4.1.0-beta-2.yanyang.20",
+  "title": "MTR-Yanyang 4.1.0-beta-2.yanyang.20 — 轨道模型渲染错乱修复",
   "notes_file": "notes.md",
   "prerelease": false
 }
